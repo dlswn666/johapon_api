@@ -13,6 +13,7 @@ export interface AlimtalkRecipient {
     failoverMessage?: string; // 대체 발송 내용 (LMS용)
     content?: string; // 템플릿 메시지 내용 (변수 포함)
     buttons?: AlimtalkButton[]; // 버튼 정보
+    emtitle?: string; // 강조표기형 알림톡 서브타이틀
 }
 
 /**
@@ -37,6 +38,7 @@ export interface Recipient {
     failoverMessage?: string; // 대체 발송 내용 (LMS용)
     content?: string; // 템플릿 메시지 내용 (변수 포함)
     buttons?: AlimtalkButton[]; // 버튼 정보
+    emtitle?: string; // 강조표기형 알림톡 서브타이틀
 }
 
 /**

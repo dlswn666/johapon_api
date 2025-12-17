@@ -131,6 +131,18 @@ class AligoService {
             formData.append(`receiver_${idx}`, phoneNumber);
             formData.append(`subject_${idx}`, title);
 
+            // 강조표기형 서브타이틀 추가 (있는 경우)
+            if (recipient.emtitle) {
+                let emtitle = recipient.emtitle;
+                // 변수 치환 적용
+                if (recipient.variables) {
+                    for (const [key, value] of Object.entries(recipient.variables)) {
+                        emtitle = emtitle.replace(new RegExp(`#{${key}}`, 'g'), value);
+                    }
+                }
+                formData.append(`emtitle_${idx}`, emtitle);
+            }
+
             // 메시지 생성: content가 있으면 content 사용, 없으면 title 사용
             let message = recipient.content || title;
 
