@@ -3,11 +3,7 @@ import axios, { AxiosInstance } from 'axios';
 import { env } from '../config/env';
 import { supabaseService } from './supabase.service';
 import { SendAlimtalkRequest, AlimtalkTemplate, Recipient } from '../types/alimtalk.types';
-import { 
-    AligoSendResponse, 
-    AligoTemplateListResponse, 
-    SenderKeyInfo 
-} from '../types/aligo.types';
+import { AligoSendResponse, AligoTemplateListResponse, SenderKeyInfo } from '../types/aligo.types';
 import { formatPhoneNumber } from '../utils/phone';
 
 const ALIGO_BASE_URL = 'https://kakaoapi.aligo.in';
@@ -49,7 +45,7 @@ class AligoService {
 
     constructor() {
         // Keep-Alive 설정으로 TCP 연결 재사용
-        const httpsAgent = new https.Agent({ 
+        const httpsAgent = new https.Agent({
             keepAlive: true,
             maxSockets: 10, // 최대 동시 연결 수
             maxFreeSockets: 5, // 유지할 유휴 연결 수
@@ -73,7 +69,7 @@ class AligoService {
     async getSenderKey(unionId: string): Promise<SenderKeyInfo> {
         // 조합별 Sender Key 조회 시도
         const unionSenderKey = await supabaseService.getUnionSenderKey(unionId);
-        
+
         if (unionSenderKey) {
             const channelName = await supabaseService.getUnionChannelName(unionId);
             return {
@@ -126,10 +122,10 @@ class AligoService {
         recipients.forEach((recipient, index) => {
             const idx = index + 1;
             const phoneNumber = formatPhoneNumber(recipient.phoneNumber);
-            
+
             formData.append(`receiver_${idx}`, phoneNumber);
             formData.append(`subject_${idx}`, title);
-            
+
             // 변수 치환된 메시지 생성
             let message = title;
             if (recipient.variables) {
@@ -140,8 +136,8 @@ class AligoService {
             formData.append(`message_${idx}`, message);
         });
 
-        // 대체발송 설정 (알림톡 실패 시 SMS/LMS 발송)
-        formData.append('failover', 'Y');
+        // 대체발송 설정 (알림톡 실패 시 SMS/LMS 발송하지 않음)
+        formData.append('failover', 'N');
 
         try {
             const response = await this.httpClient.post<AligoSendResponse>(
@@ -220,13 +216,7 @@ class AligoService {
             const batch = batches[i];
             console.log(`[배치 ${i + 1}/${totalBatches}] ${batch.length}명 발송 시작`);
 
-            const result = await this.sendBatch(
-                batch,
-                templateCode,
-                title,
-                senderKeyInfo,
-                i
-            );
+            const result = await this.sendBatch(batch, templateCode, title, senderKeyInfo, i);
 
             batchResults.push(result);
             totalKakaoSuccess += result.kakaoSuccessCount;
@@ -235,12 +225,12 @@ class AligoService {
 
             // 배치 간 딜레이 (알리고 API 부하 방지)
             if (i < batches.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 100));
+                await new Promise((resolve) => setTimeout(resolve, 100));
             }
         }
 
         // 전체 성공 여부 (모든 배치가 성공해야 전체 성공)
-        const allSuccess = batchResults.every(r => r.success);
+        const allSuccess = batchResults.every((r) => r.success);
 
         console.log(`[알림톡 발송 완료] 성공: ${totalKakaoSuccess}, SMS: ${totalSmsSuccess}, 실패: ${totalFail}`);
 
@@ -281,7 +271,7 @@ class AligoService {
             }
 
             // 알리고 템플릿을 내부 형식으로 변환
-            return result.list.map(template => ({
+            return result.list.map((template) => ({
                 template_code: template.templtCode,
                 template_name: template.templtName,
                 template_content: template.templtContent,
