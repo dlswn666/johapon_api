@@ -7,14 +7,17 @@ WORKDIR /app
 # package.json과 package-lock.json 복사
 COPY package*.json ./
 
-# 의존성 설치
-RUN npm ci --only=production
+# 모든 의존성 설치 (devDependencies 포함 - TypeScript 빌드 필요)
+RUN npm ci
 
 # 소스 코드 복사
 COPY . .
 
 # TypeScript 빌드
 RUN npm run build
+
+# 불필요한 devDependencies 제거 (이미지 크기 최적화)
+RUN npm prune --production
 
 # 프로덕션 이미지
 FROM node:20-alpine AS production
