@@ -18,6 +18,8 @@ export interface Recipient {
     phoneNumber: string;
     name?: string;
     variables?: Record<string, string>;
+    failoverSubject?: string; // 대체 발송 제목 (LMS용)
+    failoverMessage?: string; // 대체 발송 내용 (LMS용)
 }
 
 /**

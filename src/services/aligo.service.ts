@@ -20,6 +20,7 @@ interface BatchResult {
     kakaoSuccessCount: number;
     smsSuccessCount: number;
     failCount: number;
+    actualCost: number; // 알리고 응답의 total 값 (실제 비용)
     aligoResponse: AligoSendResponse | null;
     error?: string;
 }
@@ -34,6 +35,7 @@ export interface SendResult {
     kakaoSuccessCount: number;
     smsSuccessCount: number;
     failCount: number;
+    totalActualCost: number; // 전체 실제 비용 (알리고 응답의 total 합산)
     batchResults: BatchResult[];
 }
 
@@ -118,6 +120,9 @@ class AligoService {
             sender: env.ALIGO_SENDER_PHONE,
         });
 
+        // 대체발송 활성화 여부 확인 (수신자 중 하나라도 대체발송 메시지가 있으면 활성화)
+        const hasFailover = recipients.some((r) => r.failoverMessage);
+
         // 수신자 정보 추가 (최대 500건)
         recipients.forEach((recipient, index) => {
             const idx = index + 1;
@@ -134,10 +139,25 @@ class AligoService {
                 }
             }
             formData.append(`message_${idx}`, message);
+
+            // 대체발송 메시지 추가 (LMS)
+            if (hasFailover && recipient.failoverSubject && recipient.failoverMessage) {
+                // 대체발송 제목에도 변수 치환 적용
+                let failoverSubject = recipient.failoverSubject;
+                let failoverMessage = recipient.failoverMessage;
+                if (recipient.variables) {
+                    for (const [key, value] of Object.entries(recipient.variables)) {
+                        failoverSubject = failoverSubject.replace(new RegExp(`#{${key}}`, 'g'), value);
+                        failoverMessage = failoverMessage.replace(new RegExp(`#{${key}}`, 'g'), value);
+                    }
+                }
+                formData.append(`fsubject_${idx}`, failoverSubject);
+                formData.append(`fmessage_${idx}`, failoverMessage);
+            }
         });
 
-        // 대체발송 설정 (알림톡 실패 시 SMS/LMS 발송하지 않음)
-        formData.append('failover', 'N');
+        // 대체발송 설정 (알림톡 실패 시 LMS 발송)
+        formData.append('failover', hasFailover ? 'Y' : 'N');
 
         try {
             const response = await this.httpClient.post<AligoSendResponse>(
@@ -154,6 +174,9 @@ class AligoService {
                 const kakaoSuccessCount = result.info.scnt || 0;
                 const failCount = result.info.fcnt || 0;
                 const smsSuccessCount = 0; // 상세 결과에서 확인 필요
+                const actualCost = result.info.total || 0; // 알리고 응답의 실제 비용
+
+                console.log(`[배치 ${batchIndex + 1}] 실제 비용: ${actualCost}원`);
 
                 return {
                     batchIndex,
@@ -161,6 +184,7 @@ class AligoService {
                     kakaoSuccessCount,
                     smsSuccessCount,
                     failCount,
+                    actualCost,
                     aligoResponse: result,
                 };
             } else {
@@ -171,6 +195,7 @@ class AligoService {
                     kakaoSuccessCount: 0,
                     smsSuccessCount: 0,
                     failCount: recipients.length,
+                    actualCost: 0,
                     aligoResponse: result,
                     error: result.message,
                 };
@@ -184,6 +209,7 @@ class AligoService {
                 kakaoSuccessCount: 0,
                 smsSuccessCount: 0,
                 failCount: recipients.length,
+                actualCost: 0,
                 aligoResponse: null,
                 error: errorMessage,
             };
@@ -210,6 +236,7 @@ class AligoService {
         let totalKakaoSuccess = 0;
         let totalSmsSuccess = 0;
         let totalFail = 0;
+        let totalActualCost = 0;
 
         // 순차적으로 배치 처리 (병렬 처리 시 알리고 API 부하 고려)
         for (let i = 0; i < batches.length; i++) {
@@ -222,6 +249,7 @@ class AligoService {
             totalKakaoSuccess += result.kakaoSuccessCount;
             totalSmsSuccess += result.smsSuccessCount;
             totalFail += result.failCount;
+            totalActualCost += result.actualCost;
 
             // 배치 간 딜레이 (알리고 API 부하 방지)
             if (i < batches.length - 1) {
@@ -232,7 +260,9 @@ class AligoService {
         // 전체 성공 여부 (모든 배치가 성공해야 전체 성공)
         const allSuccess = batchResults.every((r) => r.success);
 
-        console.log(`[알림톡 발송 완료] 성공: ${totalKakaoSuccess}, SMS: ${totalSmsSuccess}, 실패: ${totalFail}`);
+        console.log(
+            `[알림톡 발송 완료] 성공: ${totalKakaoSuccess}, SMS: ${totalSmsSuccess}, 실패: ${totalFail}, 비용: ${totalActualCost}원`
+        );
 
         return {
             success: allSuccess,
@@ -241,6 +271,7 @@ class AligoService {
             kakaoSuccessCount: totalKakaoSuccess,
             smsSuccessCount: totalSmsSuccess,
             failCount: totalFail,
+            totalActualCost,
             batchResults,
         };
     }
