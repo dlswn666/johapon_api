@@ -21,6 +21,7 @@ export interface AlimtalkRecipient {
 export interface AlimtalkButton {
     name: string;
     linkType: string; // WL: 웹링크, AL: 앱링크, DS: 배송조회, BK: 봇키워드, MD: 메시지전달
+    linkTypeName: string; // 웹링크, 앱링크, 배송조회, 봇키워드, 메시지전달
     linkMo: string; // 모바일 웹 링크
     linkPc?: string; // PC 웹 링크
 }

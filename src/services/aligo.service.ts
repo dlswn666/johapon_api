@@ -133,7 +133,7 @@ class AligoService {
 
             // 메시지 생성: content가 있으면 content 사용, 없으면 title 사용
             let message = recipient.content || title;
-            
+
             // 변수 치환 적용
             if (recipient.variables) {
                 for (const [key, value] of Object.entries(recipient.variables)) {
@@ -159,8 +159,9 @@ class AligoService {
                     return {
                         name: btn.name,
                         linkType: btn.linkType,
-                        linkM: linkMo,
-                        linkP: linkPc,
+                        linkTypeName: btn.linkTypeName,
+                        linkMo: linkMo,
+                        linkPc: linkPc,
                     };
                 });
 
