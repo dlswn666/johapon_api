@@ -102,7 +102,7 @@ class SupabaseService {
                 content: log.content,
                 notice_id: log.notice_id,
                 sender_channel_name: log.sender_channel_name,
-                total_count: log.total_count,
+                recipient_count: log.total_count,
                 kakao_success_count: log.kakao_success_count,
                 sms_success_count: log.sms_success_count,
                 fail_count: log.fail_count,

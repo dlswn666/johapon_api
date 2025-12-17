@@ -10,7 +10,7 @@ import {
 } from '../types/aligo.types';
 import { formatPhoneNumber } from '../utils/phone';
 
-const ALIGO_BASE_URL = 'https://apis.aligo.in';
+const ALIGO_BASE_URL = 'https://kakaoapi.aligo.in';
 
 // 배치 처리 상수
 const BATCH_SIZE = 500; // 알리고 API 최대 수신자 수
