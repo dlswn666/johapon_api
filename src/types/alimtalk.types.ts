@@ -9,6 +9,20 @@ export interface AlimtalkRecipient {
     phoneNumber: string;
     name: string;
     variables?: Record<string, string>;
+    failoverSubject?: string; // 대체 발송 제목 (LMS용)
+    failoverMessage?: string; // 대체 발송 내용 (LMS용)
+    content?: string; // 템플릿 메시지 내용 (변수 포함)
+    buttons?: AlimtalkButton[]; // 버튼 정보
+}
+
+/**
+ * 알림톡 버튼 정보
+ */
+export interface AlimtalkButton {
+    name: string;
+    linkType: string; // WL: 웹링크, AL: 앱링크, DS: 배송조회, BK: 봇키워드, MD: 메시지전달
+    linkMo: string; // 모바일 웹 링크
+    linkPc?: string; // PC 웹 링크
 }
 
 /**
@@ -20,6 +34,8 @@ export interface Recipient {
     variables?: Record<string, string>;
     failoverSubject?: string; // 대체 발송 제목 (LMS용)
     failoverMessage?: string; // 대체 발송 내용 (LMS용)
+    content?: string; // 템플릿 메시지 내용 (변수 포함)
+    buttons?: AlimtalkButton[]; // 버튼 정보
 }
 
 /**
@@ -118,4 +134,3 @@ export interface TemplateSyncResult {
     deleted: number;
     syncedAt: string;
 }
-

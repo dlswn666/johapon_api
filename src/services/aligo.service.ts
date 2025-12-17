@@ -131,14 +131,43 @@ class AligoService {
             formData.append(`receiver_${idx}`, phoneNumber);
             formData.append(`subject_${idx}`, title);
 
-            // 변수 치환된 메시지 생성
-            let message = title;
+            // 메시지 생성: content가 있으면 content 사용, 없으면 title 사용
+            let message = recipient.content || title;
+            
+            // 변수 치환 적용
             if (recipient.variables) {
                 for (const [key, value] of Object.entries(recipient.variables)) {
                     message = message.replace(new RegExp(`#{${key}}`, 'g'), value);
                 }
             }
             formData.append(`message_${idx}`, message);
+
+            // 버튼 정보 추가 (있는 경우)
+            if (recipient.buttons && recipient.buttons.length > 0) {
+                // 버튼 링크에도 변수 치환 적용
+                const buttonsWithVars = recipient.buttons.map((btn) => {
+                    let linkMo = btn.linkMo;
+                    let linkPc = btn.linkPc || '';
+                    if (recipient.variables) {
+                        for (const [key, value] of Object.entries(recipient.variables)) {
+                            linkMo = linkMo.replace(new RegExp(`#{${key}}`, 'g'), value);
+                            if (linkPc) {
+                                linkPc = linkPc.replace(new RegExp(`#{${key}}`, 'g'), value);
+                            }
+                        }
+                    }
+                    return {
+                        name: btn.name,
+                        linkType: btn.linkType,
+                        linkM: linkMo,
+                        linkP: linkPc,
+                    };
+                });
+
+                // 알리고 API 버튼 형식으로 JSON 생성
+                const buttonJson = JSON.stringify({ button: buttonsWithVars });
+                formData.append(`button_${idx}`, buttonJson);
+            }
 
             // 대체발송 메시지 추가 (LMS)
             if (hasFailover && recipient.failoverSubject && recipient.failoverMessage) {
