@@ -1,0 +1,111 @@
+import { Router, Request, Response } from 'express';
+import { queueService } from '../services/queue.service';
+
+const router = Router();
+
+/**
+ * 메모리 사용량을 바이트에서 MB로 변환
+ */
+function formatMemoryUsage(bytes: number): number {
+    return Math.round((bytes / 1024 / 1024) * 100) / 100;
+}
+
+/**
+ * 헬스체크 엔드포인트
+ * GET /health
+ */
+router.get('/', (req: Request, res: Response) => {
+    const memoryUsage = process.memoryUsage();
+    const queueStatus = queueService.getQueueStatus();
+
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        version: '1.0.0',
+        uptime: process.uptime(),
+        memory: {
+            heapUsed: formatMemoryUsage(memoryUsage.heapUsed),
+            heapTotal: formatMemoryUsage(memoryUsage.heapTotal),
+            rss: formatMemoryUsage(memoryUsage.rss),
+            external: formatMemoryUsage(memoryUsage.external),
+            unit: 'MB',
+        },
+        queue: {
+            pending: queueStatus.pending,
+            running: queueStatus.running,
+            concurrency: queueStatus.concurrency,
+            maxSize: queueStatus.maxSize,
+            isFull: queueStatus.isFull,
+        },
+    });
+});
+
+/**
+ * 상세 헬스체크 엔드포인트 (모니터링용)
+ * GET /health/detailed
+ */
+router.get('/detailed', async (req: Request, res: Response) => {
+    const memoryUsage = process.memoryUsage();
+    const queueStatus = queueService.getQueueStatus();
+    const cpuUsage = process.cpuUsage();
+
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        version: '1.0.0',
+        node: {
+            version: process.version,
+            platform: process.platform,
+            arch: process.arch,
+        },
+        process: {
+            pid: process.pid,
+            uptime: process.uptime(),
+            uptimeFormatted: formatUptime(process.uptime()),
+        },
+        memory: {
+            heapUsed: formatMemoryUsage(memoryUsage.heapUsed),
+            heapTotal: formatMemoryUsage(memoryUsage.heapTotal),
+            rss: formatMemoryUsage(memoryUsage.rss),
+            external: formatMemoryUsage(memoryUsage.external),
+            arrayBuffers: formatMemoryUsage(memoryUsage.arrayBuffers || 0),
+            unit: 'MB',
+        },
+        cpu: {
+            user: cpuUsage.user,
+            system: cpuUsage.system,
+        },
+        queue: {
+            pending: queueStatus.pending,
+            running: queueStatus.running,
+            concurrency: queueStatus.concurrency,
+            maxSize: queueStatus.maxSize,
+            isFull: queueStatus.isFull,
+            available: queueStatus.maxSize - queueStatus.pending - queueStatus.running,
+        },
+        environment: {
+            nodeEnv: process.env.NODE_ENV || 'development',
+            port: process.env.PORT || 3100,
+        },
+    });
+});
+
+/**
+ * 업타임을 사람이 읽기 쉬운 형식으로 변환
+ */
+function formatUptime(seconds: number): string {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+
+    const parts: string[] = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (minutes > 0) parts.push(`${minutes}m`);
+    if (secs > 0 || parts.length === 0) parts.push(`${secs}s`);
+
+    return parts.join(' ');
+}
+
+export default router;

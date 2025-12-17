@@ -1,0 +1,46 @@
+# 의존성
+node_modules
+npm-debug.log
+
+# Docker 관련
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Git
+.git
+.gitignore
+
+# 환경 변수 (보안)
+.env
+.env.*
+!.env.example
+
+# 빌드 결과물 (로컬)
+dist
+
+# 로그
+logs
+*.log
+
+# 에디터/IDE
+.cursor
+.vscode
+.idea
+*.swp
+*.swo
+
+# 테스트
+coverage
+*.test.ts
+*.spec.ts
+
+# 문서
+docs
+*.md
+!README.md
+
+# 기타
+.DS_Store
+Thumbs.db
+

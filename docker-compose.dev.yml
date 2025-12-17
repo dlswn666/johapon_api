@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  alimtalk-proxy-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: alimtalk-proxy-dev
+    ports:
+      - "${PORT:-3100}:3100"
+    environment:
+      - NODE_ENV=development
+      - PORT=3100
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+      - ./logs:/app/logs
+    command: npm run dev
+

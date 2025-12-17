@@ -1,0 +1,44 @@
+{
+  "name": "alimtalk-proxy-server",
+  "version": "1.0.0",
+  "description": "알림톡 프록시 서버 - 고정 IP로 알리고 API 연동",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop alimtalk-proxy",
+    "pm2:restart": "pm2 restart alimtalk-proxy",
+    "pm2:logs": "pm2 logs alimtalk-proxy",
+    "docker:build": "docker build -t alimtalk-proxy .",
+    "docker:run": "docker run -d -p 3100:3100 --env-file .env --name alimtalk-proxy alimtalk-proxy",
+    "docker:stop": "docker stop alimtalk-proxy && docker rm alimtalk-proxy",
+    "docker:logs": "docker logs -f alimtalk-proxy",
+    "docker:compose:up": "docker-compose up -d",
+    "docker:compose:down": "docker-compose down"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "p-queue": "^8.0.1",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.5",
+    "@types/node": "^20.10.0",
+    "@types/uuid": "^9.0.0",
+    "tsx": "^4.6.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
+
