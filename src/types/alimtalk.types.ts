@@ -20,11 +20,14 @@ export interface AlimtalkRecipient {
  * 알림톡 버튼 정보
  */
 export interface AlimtalkButton {
+    ordering?: number; // 버튼 순서 (1 ~ 5)
     name: string;
-    linkType: string; // WL: 웹링크, AL: 앱링크, DS: 배송조회, BK: 봇키워드, MD: 메시지전달
-    linkTypeName: string; // 웹링크, 앱링크, 배송조회, 봇키워드, 메시지전달
-    linkMo: string; // 모바일 웹 링크
-    linkPc?: string; // PC 웹 링크
+    linkType: string; // WL: 웹링크, AL: 앱링크, DS: 배송조회, BK: 봇키워드, MD: 메시지전달, AC: 채널 추가
+    linkTypeName: string; // 웹링크, 앱링크, 배송조회, 봇키워드, 메시지전달, 채널 추가
+    linkMo?: string; // 모바일 웹 링크 (WL일때)
+    linkPc?: string; // PC 웹 링크 (WL일때)
+    linkIos?: string; // IOS 앱링크 (AL일때)
+    linkAnd?: string; // 안드로이드 앱링크 (AL일때)
 }
 
 /**
@@ -90,17 +93,27 @@ export interface AlimtalkLogInput {
 }
 
 /**
- * 알림톡 템플릿 정보
+ * 알림톡 템플릿 정보 (DB 스키마와 일치, 알리고 API 응답 구조 그대로 저장)
  */
 export interface AlimtalkTemplate {
     id?: string;
-    template_code: string;
-    template_name: string;
-    template_content?: string;
-    status?: string;
-    insp_status?: string;
-    buttons?: unknown;
-    synced_at?: string;
+    template_code: string; // 알리고 템플릿 코드 (예: P000004)
+    template_name: string; // 템플릿 이름
+    template_content?: string; // 템플릿 내용
+    status?: string; // 알리고 상태 (S: 중단, A: 정상, R: 대기)
+    insp_status?: string; // 승인상태 (REG, REQ, APR, REJ)
+    buttons?: AlimtalkButton[]; // 버튼 정보 (JSON)
+    synced_at?: string; // 마지막 알리고 동기화 시간
+    // 추가된 필드 (알리고 API 응답 구조)
+    sender_key?: string; // 발신프로필키
+    template_type?: string; // 템플릿 메시지 유형 (BA: 기본형, EX: 부가 정보형, AD: 광고 추가형, MI: 복합형)
+    template_em_type?: string; // 템플릿 강조유형 (NONE: 선택안함, TEXT: 강조표기형, IMAGE: 이미지형)
+    template_title?: string; // 강조표기 핵심정보
+    template_subtitle?: string; // 강조표기 보조문구
+    template_image_name?: string; // 템플릿 이미지 파일명
+    template_image_url?: string; // 템플릿 이미지 링크
+    cdate?: string; // 템플릿 생성일
+    comments?: string; // 템플릿 코멘트
 }
 
 /**

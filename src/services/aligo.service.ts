@@ -103,13 +103,15 @@ class AligoService {
 
     /**
      * 단일 배치 알림톡 발송 (최대 500건)
+     * 템플릿 정보를 기반으로 알리고 API 요청 파라미터를 구성
      */
     private async sendBatch(
         recipients: Recipient[],
         templateCode: string,
         title: string,
         senderKeyInfo: SenderKeyInfo,
-        batchIndex: number
+        batchIndex: number,
+        template: AlimtalkTemplate | null
     ): Promise<BatchResult> {
         // 알리고 API 파라미터 구성
         const formData = new URLSearchParams({
@@ -131,20 +133,28 @@ class AligoService {
             formData.append(`receiver_${idx}`, phoneNumber);
             formData.append(`subject_${idx}`, title);
 
-            // 강조표기형 서브타이틀 추가 (있는 경우)
-            if (recipient.emtitle) {
-                let emtitle = recipient.emtitle;
+            // 강조표기형 서브타이틀 처리 (템플릿 타입에 따라 자동 적용)
+            // 1. 수신자에 emtitle이 있으면 우선 사용
+            // 2. 템플릿이 강조표기형(TEXT)이고 template_title이 있으면 사용
+            let emtitle: string | undefined = recipient.emtitle;
+            
+            if (!emtitle && template?.template_em_type === 'TEXT') {
+                // 템플릿의 강조표기 핵심정보 사용
+                emtitle = template.template_title || template.template_subtitle;
+            }
+
+            if (emtitle) {
                 // 변수 치환 적용
                 if (recipient.variables) {
                     for (const [key, value] of Object.entries(recipient.variables)) {
-                        emtitle = emtitle.replace(new RegExp(`#{${key}}`, 'g'), value);
+                        emtitle = emtitle!.replace(new RegExp(`#{${key}}`, 'g'), value);
                     }
                 }
                 formData.append(`emtitle_${idx}`, emtitle);
             }
 
-            // 메시지 생성: content가 있으면 content 사용, 없으면 title 사용
-            let message = recipient.content || title;
+            // 메시지 생성: content가 있으면 content 사용, 템플릿 content가 있으면 사용, 없으면 title 사용
+            let message = recipient.content || template?.template_content || title;
 
             // 변수 치환 적용
             if (recipient.variables) {
@@ -154,11 +164,15 @@ class AligoService {
             }
             formData.append(`message_${idx}`, message);
 
-            // 버튼 정보 추가 (있는 경우)
-            if (recipient.buttons && recipient.buttons.length > 0) {
+            // 버튼 정보 추가 (수신자 버튼이 있으면 사용, 없으면 템플릿 버튼 사용)
+            const buttonsToUse = recipient.buttons && recipient.buttons.length > 0 
+                ? recipient.buttons 
+                : template?.buttons;
+
+            if (buttonsToUse && buttonsToUse.length > 0) {
                 // 버튼 링크에도 변수 치환 적용
-                const buttonsWithVars = recipient.buttons.map((btn) => {
-                    let linkMo = btn.linkMo;
+                const buttonsWithVars = buttonsToUse.map((btn) => {
+                    let linkMo = btn.linkMo || '';
                     let linkPc = btn.linkPc || '';
                     if (recipient.variables) {
                         for (const [key, value] of Object.entries(recipient.variables)) {
@@ -260,10 +274,24 @@ class AligoService {
 
     /**
      * 알림톡 발송 (대량 배치 처리 지원)
+     * 템플릿 코드로 DB에서 템플릿 정보를 조회하고, 템플릿 타입/강조유형에 따라 파라미터를 구성
      * 500건씩 분할하여 순차 발송
      */
     async sendAlimtalk(request: SendAlimtalkRequest): Promise<SendResult> {
         const { unionId, templateCode, title, recipients } = request;
+
+        // 템플릿 정보 조회 (DB에서)
+        const template = await supabaseService.getTemplateByCode(templateCode);
+        
+        if (!template) {
+            console.warn(`[알림톡 발송] 템플릿을 찾을 수 없음: ${templateCode}, 기본 발송 진행`);
+        } else {
+            console.log(`[알림톡 발송] 템플릿 정보 조회 완료: ${templateCode}`);
+            console.log(`  - 템플릿 타입: ${template.template_type || 'N/A'}`);
+            console.log(`  - 강조 유형: ${template.template_em_type || 'N/A'}`);
+            console.log(`  - 강조 제목: ${template.template_title || 'N/A'}`);
+            console.log(`  - 버튼 수: ${template.buttons?.length || 0}개`);
+        }
 
         // Sender Key 조회
         const senderKeyInfo = await this.getSenderKey(unionId);
@@ -285,7 +313,7 @@ class AligoService {
             const batch = batches[i];
             console.log(`[배치 ${i + 1}/${totalBatches}] ${batch.length}명 발송 시작`);
 
-            const result = await this.sendBatch(batch, templateCode, title, senderKeyInfo, i);
+            const result = await this.sendBatch(batch, templateCode, title, senderKeyInfo, i, template);
 
             batchResults.push(result);
             totalKakaoSuccess += result.kakaoSuccessCount;
@@ -320,6 +348,7 @@ class AligoService {
 
     /**
      * 템플릿 목록 조회
+     * 알리고 API 응답 구조를 그대로 내부 형식으로 변환하여 반환
      */
     async getTemplateList(): Promise<AlimtalkTemplate[]> {
         const formData = new URLSearchParams({
@@ -343,7 +372,7 @@ class AligoService {
                 return [];
             }
 
-            // 알리고 템플릿을 내부 형식으로 변환
+            // 알리고 템플릿을 내부 형식으로 변환 (알리고 API 응답 구조 그대로 저장)
             return result.list.map((template) => ({
                 template_code: template.templtCode,
                 template_name: template.templtName,
@@ -351,6 +380,16 @@ class AligoService {
                 status: template.status,
                 insp_status: template.inspStatus,
                 buttons: template.buttons,
+                // 추가된 필드 (알리고 API 응답 구조)
+                sender_key: template.senderKey,
+                template_type: template.templateType,
+                template_em_type: template.templateEmType,
+                template_title: template.templtTitle,
+                template_subtitle: template.templtSubtitle,
+                template_image_name: template.templtImageName,
+                template_image_url: template.templtImageUrl,
+                cdate: template.cdate,
+                comments: template.comments,
             }));
         } catch (error) {
             console.error('템플릿 조회 오류:', error);

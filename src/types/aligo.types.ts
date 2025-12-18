@@ -32,22 +32,28 @@ export interface AligoSendDetailResult {
     code: number;
     message: string;
     msgid?: string;
-    type?: 'AT' | 'FT' | 'SM' | 'LM';  // AT: 알림톡, FT: 친구톡, SM: SMS, LM: LMS
+    type?: 'AT' | 'FT' | 'SM' | 'LM'; // AT: 알림톡, FT: 친구톡, SM: SMS, LM: LMS
 }
 
 /**
- * 알리고 템플릿 정보
+ * 알리고 템플릿 정보 (알리고 API 응답 구조와 일치)
  */
 export interface AligoTemplate {
-    templtCode: string;
-    templtName: string;
-    templtContent: string;
-    templateType: string;
-    templateEmphasizeType: string;
-    status: string;       // A: 정상, R: 대기, S: 중단
-    inspStatus: string;   // REG: 등록, REQ: 심사요청, APR: 승인, REJ: 반려
+    senderKey: string; // 발신프로필키
+    templtCode: string; // 템플릿 코드
+    templtName: string; // 템플릿 명
+    templtContent: string; // 등록된 템플릿 콘텐츠
+    templateType: string; // 템플릿 메시지 유형 (BA: 기본형, EX: 부가 정보형, AD: 광고 추가형, MI: 복합형)
+    templateEmType: string; // 템플릿 강조유형 (NONE: 선택안함, TEXT: 강조표기형, IMAGE: 이미지형)
+    templtTitle?: string; // 강조표기 핵심정보
+    templtSubtitle?: string; // 강조표기 보조문구
+    templtImageName?: string; // 템플릿 이미지 파일명
+    templtImageUrl?: string; // 템플릿 이미지 링크
+    status: string; // 상태 (S: 중단, A: 정상, R: 대기)
+    inspStatus: string; // 승인상태 (REG: 등록, REQ: 심사요청, APR: 승인, REJ: 반려)
+    cdate: string; // 템플릿 생성일
+    comments?: string; // 템플릿 코멘트
     buttons?: AligoTemplateButton[];
-    cdate: string;
 }
 
 /**
@@ -99,4 +105,3 @@ export interface SenderKeyInfo {
     channelName: string;
     isDefault: boolean;
 }
-

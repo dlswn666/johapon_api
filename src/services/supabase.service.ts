@@ -123,7 +123,7 @@ class SupabaseService {
     }
 
     /**
-     * 템플릿 UPSERT
+     * 템플릿 UPSERT (알리고 API 응답 구조 그대로 저장)
      */
     async upsertTemplates(templates: AlimtalkTemplate[]): Promise<{ inserted: number; updated: number }> {
         let inserted = 0;
@@ -137,18 +137,31 @@ class SupabaseService {
                 .eq('template_code', template.template_code)
                 .single();
 
+            // 공통 데이터 구성 (알리고 API 응답 구조 그대로 저장)
+            const templateData = {
+                template_name: template.template_name,
+                template_content: template.template_content,
+                status: template.status,
+                insp_status: template.insp_status,
+                buttons: template.buttons,
+                synced_at: new Date().toISOString(),
+                // 추가된 필드 (알리고 API 응답 구조)
+                sender_key: template.sender_key,
+                template_type: template.template_type,
+                template_em_type: template.template_em_type,
+                template_title: template.template_title,
+                template_subtitle: template.template_subtitle,
+                template_image_name: template.template_image_name,
+                template_image_url: template.template_image_url,
+                cdate: template.cdate ? new Date(template.cdate).toISOString() : null,
+                comments: template.comments,
+            };
+
             if (existing) {
                 // UPDATE
                 await this.client
                     .from('alimtalk_templates')
-                    .update({
-                        template_name: template.template_name,
-                        template_content: template.template_content,
-                        status: template.status,
-                        insp_status: template.insp_status,
-                        buttons: template.buttons,
-                        synced_at: new Date().toISOString(),
-                    })
+                    .update(templateData)
                     .eq('template_code', template.template_code);
                 updated++;
             } else {
@@ -157,12 +170,7 @@ class SupabaseService {
                     .from('alimtalk_templates')
                     .insert({
                         template_code: template.template_code,
-                        template_name: template.template_name,
-                        template_content: template.template_content,
-                        status: template.status,
-                        insp_status: template.insp_status,
-                        buttons: template.buttons,
-                        synced_at: new Date().toISOString(),
+                        ...templateData,
                     });
                 inserted++;
             }
@@ -198,6 +206,30 @@ class SupabaseService {
         }
 
         return data?.length || 0;
+    }
+
+    /**
+     * 템플릿 코드로 템플릿 조회
+     * 알림톡 발송 시 DB에서 템플릿 정보를 조회하여 사용
+     */
+    async getTemplateByCode(templateCode: string): Promise<AlimtalkTemplate | null> {
+        try {
+            const { data, error } = await this.client
+                .from('alimtalk_templates')
+                .select('*')
+                .eq('template_code', templateCode)
+                .single();
+
+            if (error || !data) {
+                console.error(`템플릿 조회 실패: ${templateCode}`, error);
+                return null;
+            }
+
+            return data as AlimtalkTemplate;
+        } catch (error) {
+            console.error('템플릿 조회 오류:', error);
+            return null;
+        }
     }
 
     /**
