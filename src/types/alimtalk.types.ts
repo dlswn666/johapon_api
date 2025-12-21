@@ -110,6 +110,7 @@ export interface AlimtalkTemplate {
     template_image_url?: string; // 템플릿 이미지 링크
     cdate?: string; // 템플릿 생성일
     comments?: string; // 템플릿 코멘트
+    use_failover?: boolean; // LMS 대체 발송 사용 여부 (기본: false)
 }
 
 /**

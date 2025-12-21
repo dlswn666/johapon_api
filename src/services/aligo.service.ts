@@ -123,8 +123,12 @@ class AligoService {
             sender: env.ALIGO_SENDER_PHONE,
         });
 
-        // 대체발송 활성화 여부 확인 (수신자 중 하나라도 대체발송 메시지가 있으면 활성화)
-        const hasFailover = recipients.some((r) => r.failoverMessage);
+        // 대체발송 활성화 여부 확인
+        // 1. 템플릿의 use_failover가 true이면 템플릿 기반 대체발송
+        // 2. 수신자 중 하나라도 대체발송 메시지가 있으면 수신자별 대체발송
+        const useTemplateFailover = template?.use_failover === true;
+        const hasRecipientFailover = recipients.some((r) => r.failoverMessage);
+        const hasFailover = useTemplateFailover || hasRecipientFailover;
 
         // 수신자 정보 추가 (최대 500건)
         recipients.forEach((recipient, index) => {
@@ -198,18 +202,32 @@ class AligoService {
             }
 
             // 대체발송 메시지 추가 (LMS)
-            if (hasFailover && recipient.failoverSubject && recipient.failoverMessage) {
-                // 대체발송 제목에도 변수 치환 적용
-                let failoverSubject = recipient.failoverSubject;
-                let failoverMessage = recipient.failoverMessage;
-                if (recipient.variables) {
-                    for (const [key, value] of Object.entries(recipient.variables)) {
-                        failoverSubject = failoverSubject.replace(new RegExp(`#{${key}}`, 'g'), value);
-                        failoverMessage = failoverMessage.replace(new RegExp(`#{${key}}`, 'g'), value);
-                    }
+            if (hasFailover) {
+                let failoverSubject: string | undefined;
+                let failoverMessage: string | undefined;
+
+                // 1. 수신자별 대체발송 메시지가 있으면 우선 사용
+                if (recipient.failoverSubject && recipient.failoverMessage) {
+                    failoverSubject = recipient.failoverSubject;
+                    failoverMessage = recipient.failoverMessage;
                 }
-                formData.append(`fsubject_${idx}`, failoverSubject);
-                formData.append(`fmessage_${idx}`, failoverMessage);
+                // 2. 템플릿 기반 대체발송 (use_failover가 true인 경우)
+                else if (useTemplateFailover && template?.template_content) {
+                    failoverSubject = template.template_title || title;
+                    failoverMessage = template.template_content;
+                }
+
+                // 변수 치환 적용
+                if (failoverSubject && failoverMessage) {
+                    if (recipient.variables) {
+                        for (const [key, value] of Object.entries(recipient.variables)) {
+                            failoverSubject = failoverSubject!.replace(new RegExp(`#{${key}}`, 'g'), value);
+                            failoverMessage = failoverMessage!.replace(new RegExp(`#{${key}}`, 'g'), value);
+                        }
+                    }
+                    formData.append(`fsubject_${idx}`, failoverSubject);
+                    formData.append(`fmessage_${idx}`, failoverMessage);
+                }
             }
         });
 
