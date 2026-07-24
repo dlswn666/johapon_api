@@ -1047,9 +1047,14 @@ export class LocalhostDevelopmentLandAreaSyncClient
 function sortedProposedAreas(
     rows: Array<{ propertyUnitId: string; landArea: string }>
 ): Array<{ propertyUnitId: string; landArea: string }> {
-    return [...rows].sort((a, b) =>
-        a.propertyUnitId.localeCompare(b.propertyUnitId)
-    );
+    return [...rows]
+        .sort((a, b) => a.propertyUnitId.localeCompare(b.propertyUnitId))
+        .map((row) => ({
+            // jsonb와 JSON 파일은 객체 key 순서를 다르게 보존할 수 있으므로
+            // 의미 필드를 고정 순서로 재구성한 뒤 비교한다.
+            propertyUnitId: row.propertyUnitId,
+            landArea: row.landArea,
+        }));
 }
 
 function assertJobEvidenceMatches(
