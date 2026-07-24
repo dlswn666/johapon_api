@@ -299,8 +299,11 @@ jobs:
                 request.on("error", () => process.exit(1));
               '
           )"
-          HEALTH="${health}" EXPECTED_GIT_SHA="${EXPECTED_GIT_SHA}" \
-            EXPECTED_IMAGE_TAG="${EXPECTED_IMAGE_TAG}" node -e '
+          docker exec \
+            -e HEALTH="${health}" \
+            -e EXPECTED_GIT_SHA="${EXPECTED_GIT_SHA}" \
+            -e EXPECTED_IMAGE_TAG="${EXPECTED_IMAGE_TAG}" \
+            "${target_container}" node -e '
               const value = JSON.parse(process.env.HEALTH);
               if (
                 value?.status !== "ok"
