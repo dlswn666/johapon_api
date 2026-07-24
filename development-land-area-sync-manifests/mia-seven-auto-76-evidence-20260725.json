@@ -1,0 +1,4411 @@
+{
+  "version": "land-area-development-evidence-manifest@1",
+  "databaseTarget": "development",
+  "unionId": "00f48b95-e9bc-4c92-a0e5-6b9a57adcfb9",
+  "manifestDigest": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+  "entries": [
+    {
+      "anchorPnu": "1130510100107450050",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107450050"
+      ],
+      "expectedPropertyUnitIds": [
+        "0619f3ae-ea3f-40a3-90f0-6a39ab1325cc"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "0619f3ae-ea3f-40a3-90f0-6a39ab1325cc",
+          "landArea": "106"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107450050",
+            "area": "106"
+          }
+        ],
+        "totalArea": "106"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "0619f3ae-ea3f-40a3-90f0-6a39ab1325cc",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "0619f3ae-ea3f-40a3-90f0-6a39ab1325cc",
+          "landArea": "106",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=1e6db354025d766357f74ae066a7df372e890b74b9db56929a4d79a0832b0a26"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=1e6db354025d766357f74ae066a7df372e890b74b9db56929a4d79a0832b0a26"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "1e6db354025d766357f74ae066a7df372e890b74b9db56929a4d79a0832b0a26",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "1e6db354025d766357f74ae066a7df372e890b74b9db56929a4d79a0832b0a26",
+        "phase0ObservationReferenceSha256": "1e6db354025d766357f74ae066a7df372e890b74b9db56929a4d79a0832b0a26",
+        "developmentObservationReferenceSha256": "1e6db354025d766357f74ae066a7df372e890b74b9db56929a4d79a0832b0a26"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107450051",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107450051"
+      ],
+      "expectedPropertyUnitIds": [
+        "3fed3872-53b8-4ee1-9dd9-5c3ef37e0197"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "3fed3872-53b8-4ee1-9dd9-5c3ef37e0197",
+          "landArea": "106"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107450051",
+            "area": "106"
+          }
+        ],
+        "totalArea": "106"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "3fed3872-53b8-4ee1-9dd9-5c3ef37e0197",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "3fed3872-53b8-4ee1-9dd9-5c3ef37e0197",
+          "landArea": "106",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=6712f6ff8bdb797f77b41d74e5a88e85cffd7c604357a5af35a1aa784d6ddf45"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=6712f6ff8bdb797f77b41d74e5a88e85cffd7c604357a5af35a1aa784d6ddf45"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "6712f6ff8bdb797f77b41d74e5a88e85cffd7c604357a5af35a1aa784d6ddf45",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "6712f6ff8bdb797f77b41d74e5a88e85cffd7c604357a5af35a1aa784d6ddf45",
+        "phase0ObservationReferenceSha256": "6712f6ff8bdb797f77b41d74e5a88e85cffd7c604357a5af35a1aa784d6ddf45",
+        "developmentObservationReferenceSha256": "6712f6ff8bdb797f77b41d74e5a88e85cffd7c604357a5af35a1aa784d6ddf45"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107450062",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107450062"
+      ],
+      "expectedPropertyUnitIds": [
+        "321a1d1a-0c96-4894-8d3d-275881ab6c53"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "321a1d1a-0c96-4894-8d3d-275881ab6c53",
+          "landArea": "109"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107450062",
+            "area": "109"
+          }
+        ],
+        "totalArea": "109"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "321a1d1a-0c96-4894-8d3d-275881ab6c53",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "321a1d1a-0c96-4894-8d3d-275881ab6c53",
+          "landArea": "109",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=868e4f52f7856de4be58470034d143e478450edb33b7e9f021bf7a4fff43e5ed"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=868e4f52f7856de4be58470034d143e478450edb33b7e9f021bf7a4fff43e5ed"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "868e4f52f7856de4be58470034d143e478450edb33b7e9f021bf7a4fff43e5ed",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "868e4f52f7856de4be58470034d143e478450edb33b7e9f021bf7a4fff43e5ed",
+        "phase0ObservationReferenceSha256": "868e4f52f7856de4be58470034d143e478450edb33b7e9f021bf7a4fff43e5ed",
+        "developmentObservationReferenceSha256": "868e4f52f7856de4be58470034d143e478450edb33b7e9f021bf7a4fff43e5ed"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107450073",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107450073"
+      ],
+      "expectedPropertyUnitIds": [
+        "9d2876b5-36e7-4781-8415-1fbc8391c02a"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "9d2876b5-36e7-4781-8415-1fbc8391c02a",
+          "landArea": "202"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107450073",
+            "area": "202"
+          }
+        ],
+        "totalArea": "202"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "9d2876b5-36e7-4781-8415-1fbc8391c02a",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "9d2876b5-36e7-4781-8415-1fbc8391c02a",
+          "landArea": "202",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=873b252adc8df26fc40ef950d57bd8ea600e1d8ac32f0250c676e4857a3dd099"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=873b252adc8df26fc40ef950d57bd8ea600e1d8ac32f0250c676e4857a3dd099"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "873b252adc8df26fc40ef950d57bd8ea600e1d8ac32f0250c676e4857a3dd099",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "873b252adc8df26fc40ef950d57bd8ea600e1d8ac32f0250c676e4857a3dd099",
+        "phase0ObservationReferenceSha256": "873b252adc8df26fc40ef950d57bd8ea600e1d8ac32f0250c676e4857a3dd099",
+        "developmentObservationReferenceSha256": "873b252adc8df26fc40ef950d57bd8ea600e1d8ac32f0250c676e4857a3dd099"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107450131",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107450131"
+      ],
+      "expectedPropertyUnitIds": [
+        "8946c657-979d-4e40-bcab-f3c0c96b200c"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "8946c657-979d-4e40-bcab-f3c0c96b200c",
+          "landArea": "79"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107450131",
+            "area": "79"
+          }
+        ],
+        "totalArea": "79"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "8946c657-979d-4e40-bcab-f3c0c96b200c",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "8946c657-979d-4e40-bcab-f3c0c96b200c",
+          "landArea": "79",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=d699028831113e2e6f57d45d5b97258b731049a3f8b3e86d92e1575cbda278da"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=d699028831113e2e6f57d45d5b97258b731049a3f8b3e86d92e1575cbda278da"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "d699028831113e2e6f57d45d5b97258b731049a3f8b3e86d92e1575cbda278da",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "d699028831113e2e6f57d45d5b97258b731049a3f8b3e86d92e1575cbda278da",
+        "phase0ObservationReferenceSha256": "d699028831113e2e6f57d45d5b97258b731049a3f8b3e86d92e1575cbda278da",
+        "developmentObservationReferenceSha256": "d699028831113e2e6f57d45d5b97258b731049a3f8b3e86d92e1575cbda278da"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912153",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912153"
+      ],
+      "expectedPropertyUnitIds": [
+        "e7510473-61fb-4036-b5b6-94367c42abca"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "e7510473-61fb-4036-b5b6-94367c42abca",
+          "landArea": "119"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912153",
+            "area": "119"
+          }
+        ],
+        "totalArea": "119"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "e7510473-61fb-4036-b5b6-94367c42abca",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "e7510473-61fb-4036-b5b6-94367c42abca",
+          "landArea": "119",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=9e52346e273c425a324e7e933cfcfa903a1e1f33cbf47c84efcea43e3a129bf5"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=9e52346e273c425a324e7e933cfcfa903a1e1f33cbf47c84efcea43e3a129bf5"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "9e52346e273c425a324e7e933cfcfa903a1e1f33cbf47c84efcea43e3a129bf5",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "9e52346e273c425a324e7e933cfcfa903a1e1f33cbf47c84efcea43e3a129bf5",
+        "phase0ObservationReferenceSha256": "9e52346e273c425a324e7e933cfcfa903a1e1f33cbf47c84efcea43e3a129bf5",
+        "developmentObservationReferenceSha256": "9e52346e273c425a324e7e933cfcfa903a1e1f33cbf47c84efcea43e3a129bf5"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912156",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912156"
+      ],
+      "expectedPropertyUnitIds": [
+        "fd5f7554-cf31-426d-9708-21282b5d5062"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "fd5f7554-cf31-426d-9708-21282b5d5062",
+          "landArea": "161"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912156",
+            "area": "161"
+          }
+        ],
+        "totalArea": "161"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "fd5f7554-cf31-426d-9708-21282b5d5062",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "fd5f7554-cf31-426d-9708-21282b5d5062",
+          "landArea": "161",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=106daf4863c608cc8be1269c41a637ef8cd44bf25ba8fe721c5aca10d88cba40"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=106daf4863c608cc8be1269c41a637ef8cd44bf25ba8fe721c5aca10d88cba40"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "106daf4863c608cc8be1269c41a637ef8cd44bf25ba8fe721c5aca10d88cba40",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "106daf4863c608cc8be1269c41a637ef8cd44bf25ba8fe721c5aca10d88cba40",
+        "phase0ObservationReferenceSha256": "106daf4863c608cc8be1269c41a637ef8cd44bf25ba8fe721c5aca10d88cba40",
+        "developmentObservationReferenceSha256": "106daf4863c608cc8be1269c41a637ef8cd44bf25ba8fe721c5aca10d88cba40"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912162",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912162"
+      ],
+      "expectedPropertyUnitIds": [
+        "c3b43dfd-ba25-4a89-8f7c-6f9f50df0c57"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "c3b43dfd-ba25-4a89-8f7c-6f9f50df0c57",
+          "landArea": "103"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912162",
+            "area": "103"
+          }
+        ],
+        "totalArea": "103"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "c3b43dfd-ba25-4a89-8f7c-6f9f50df0c57",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "c3b43dfd-ba25-4a89-8f7c-6f9f50df0c57",
+          "landArea": "103",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=c74840de463a1fe7f56f8d42e0bad86e2f078d4c07d0e9f2b191a590d7c3865f"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=c74840de463a1fe7f56f8d42e0bad86e2f078d4c07d0e9f2b191a590d7c3865f"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "c74840de463a1fe7f56f8d42e0bad86e2f078d4c07d0e9f2b191a590d7c3865f",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "c74840de463a1fe7f56f8d42e0bad86e2f078d4c07d0e9f2b191a590d7c3865f",
+        "phase0ObservationReferenceSha256": "c74840de463a1fe7f56f8d42e0bad86e2f078d4c07d0e9f2b191a590d7c3865f",
+        "developmentObservationReferenceSha256": "c74840de463a1fe7f56f8d42e0bad86e2f078d4c07d0e9f2b191a590d7c3865f"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912163",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912163"
+      ],
+      "expectedPropertyUnitIds": [
+        "f6e00625-9cdd-4a7a-bf70-39ef4970621b"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "f6e00625-9cdd-4a7a-bf70-39ef4970621b",
+          "landArea": "121"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912163",
+            "area": "121"
+          }
+        ],
+        "totalArea": "121"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "f6e00625-9cdd-4a7a-bf70-39ef4970621b",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "f6e00625-9cdd-4a7a-bf70-39ef4970621b",
+          "landArea": "121",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=7ac828977b5c2f74ac3b9f7dffa936ed5ce5330403a7330b2d66b84dd08684f0"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=7ac828977b5c2f74ac3b9f7dffa936ed5ce5330403a7330b2d66b84dd08684f0"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "7ac828977b5c2f74ac3b9f7dffa936ed5ce5330403a7330b2d66b84dd08684f0",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "7ac828977b5c2f74ac3b9f7dffa936ed5ce5330403a7330b2d66b84dd08684f0",
+        "phase0ObservationReferenceSha256": "7ac828977b5c2f74ac3b9f7dffa936ed5ce5330403a7330b2d66b84dd08684f0",
+        "developmentObservationReferenceSha256": "7ac828977b5c2f74ac3b9f7dffa936ed5ce5330403a7330b2d66b84dd08684f0"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912164",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912164"
+      ],
+      "expectedPropertyUnitIds": [
+        "938fadd7-6623-4606-b028-b6bd5bed5771"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "938fadd7-6623-4606-b028-b6bd5bed5771",
+          "landArea": "126"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912164",
+            "area": "126"
+          }
+        ],
+        "totalArea": "126"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "938fadd7-6623-4606-b028-b6bd5bed5771",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "938fadd7-6623-4606-b028-b6bd5bed5771",
+          "landArea": "126",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=7a643af5718b9eea6d22953651514ffd37138cb1cf4a72fbfa08722847c225a9"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=7a643af5718b9eea6d22953651514ffd37138cb1cf4a72fbfa08722847c225a9"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "7a643af5718b9eea6d22953651514ffd37138cb1cf4a72fbfa08722847c225a9",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "7a643af5718b9eea6d22953651514ffd37138cb1cf4a72fbfa08722847c225a9",
+        "phase0ObservationReferenceSha256": "7a643af5718b9eea6d22953651514ffd37138cb1cf4a72fbfa08722847c225a9",
+        "developmentObservationReferenceSha256": "7a643af5718b9eea6d22953651514ffd37138cb1cf4a72fbfa08722847c225a9"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912165",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912165"
+      ],
+      "expectedPropertyUnitIds": [
+        "af3f0147-d34b-47b8-a6dd-077368dae9ea"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "af3f0147-d34b-47b8-a6dd-077368dae9ea",
+          "landArea": "114"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912165",
+            "area": "114"
+          }
+        ],
+        "totalArea": "114"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "af3f0147-d34b-47b8-a6dd-077368dae9ea",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "af3f0147-d34b-47b8-a6dd-077368dae9ea",
+          "landArea": "114",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=8ee1db37082229936f2bb32804993576f8494cdbd81ab8320b609a17022a9de6"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=8ee1db37082229936f2bb32804993576f8494cdbd81ab8320b609a17022a9de6"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "8ee1db37082229936f2bb32804993576f8494cdbd81ab8320b609a17022a9de6",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "8ee1db37082229936f2bb32804993576f8494cdbd81ab8320b609a17022a9de6",
+        "phase0ObservationReferenceSha256": "8ee1db37082229936f2bb32804993576f8494cdbd81ab8320b609a17022a9de6",
+        "developmentObservationReferenceSha256": "8ee1db37082229936f2bb32804993576f8494cdbd81ab8320b609a17022a9de6"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912166",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912166"
+      ],
+      "expectedPropertyUnitIds": [
+        "5a1a4cbb-c8ad-45a3-ae40-b90665dc949c"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "5a1a4cbb-c8ad-45a3-ae40-b90665dc949c",
+          "landArea": "161"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912166",
+            "area": "161"
+          }
+        ],
+        "totalArea": "161"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "5a1a4cbb-c8ad-45a3-ae40-b90665dc949c",
+          "landArea": "161",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=3ebd8aefe1210d13f1f9669aa9fd5fdb886d184ddf868a50602a0f9c555da18c"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=3ebd8aefe1210d13f1f9669aa9fd5fdb886d184ddf868a50602a0f9c555da18c"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "3ebd8aefe1210d13f1f9669aa9fd5fdb886d184ddf868a50602a0f9c555da18c",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "3ebd8aefe1210d13f1f9669aa9fd5fdb886d184ddf868a50602a0f9c555da18c",
+        "phase0ObservationReferenceSha256": "3ebd8aefe1210d13f1f9669aa9fd5fdb886d184ddf868a50602a0f9c555da18c",
+        "developmentObservationReferenceSha256": "3ebd8aefe1210d13f1f9669aa9fd5fdb886d184ddf868a50602a0f9c555da18c"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912190",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912190"
+      ],
+      "expectedPropertyUnitIds": [
+        "f7661711-bce8-4b18-9eb2-37211f35f963"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "f7661711-bce8-4b18-9eb2-37211f35f963",
+          "landArea": "98"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912190",
+            "area": "98"
+          }
+        ],
+        "totalArea": "98"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "f7661711-bce8-4b18-9eb2-37211f35f963",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "f7661711-bce8-4b18-9eb2-37211f35f963",
+          "landArea": "98",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=064ca29494ae73f9ea0fda8339e1197b76a2e7eeb3d6c572bcde56b32c95a6ca"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=064ca29494ae73f9ea0fda8339e1197b76a2e7eeb3d6c572bcde56b32c95a6ca"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "064ca29494ae73f9ea0fda8339e1197b76a2e7eeb3d6c572bcde56b32c95a6ca",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "064ca29494ae73f9ea0fda8339e1197b76a2e7eeb3d6c572bcde56b32c95a6ca",
+        "phase0ObservationReferenceSha256": "064ca29494ae73f9ea0fda8339e1197b76a2e7eeb3d6c572bcde56b32c95a6ca",
+        "developmentObservationReferenceSha256": "064ca29494ae73f9ea0fda8339e1197b76a2e7eeb3d6c572bcde56b32c95a6ca"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912192",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912192"
+      ],
+      "expectedPropertyUnitIds": [
+        "30cf3d01-ee6c-441d-b4d5-6a46cb428f28"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "30cf3d01-ee6c-441d-b4d5-6a46cb428f28",
+          "landArea": "76"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912192",
+            "area": "76"
+          }
+        ],
+        "totalArea": "76"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "30cf3d01-ee6c-441d-b4d5-6a46cb428f28",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "30cf3d01-ee6c-441d-b4d5-6a46cb428f28",
+          "landArea": "76",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=4b84ddc91533ac2f885bdb761d8bb0e5f54716c455f2b0c510848b71d16bfdf1"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=4b84ddc91533ac2f885bdb761d8bb0e5f54716c455f2b0c510848b71d16bfdf1"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "4b84ddc91533ac2f885bdb761d8bb0e5f54716c455f2b0c510848b71d16bfdf1",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "4b84ddc91533ac2f885bdb761d8bb0e5f54716c455f2b0c510848b71d16bfdf1",
+        "phase0ObservationReferenceSha256": "4b84ddc91533ac2f885bdb761d8bb0e5f54716c455f2b0c510848b71d16bfdf1",
+        "developmentObservationReferenceSha256": "4b84ddc91533ac2f885bdb761d8bb0e5f54716c455f2b0c510848b71d16bfdf1"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912193",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912193"
+      ],
+      "expectedPropertyUnitIds": [
+        "f54b924e-55e4-4a3d-b5cd-56096984e636"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "f54b924e-55e4-4a3d-b5cd-56096984e636",
+          "landArea": "102"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912193",
+            "area": "102"
+          }
+        ],
+        "totalArea": "102"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "f54b924e-55e4-4a3d-b5cd-56096984e636",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "f54b924e-55e4-4a3d-b5cd-56096984e636",
+          "landArea": "102",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=cffeded619c0032419f5e9dfed27ff5c2bbfbe47269abc1517477f5de36b0047"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=cffeded619c0032419f5e9dfed27ff5c2bbfbe47269abc1517477f5de36b0047"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "cffeded619c0032419f5e9dfed27ff5c2bbfbe47269abc1517477f5de36b0047",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "cffeded619c0032419f5e9dfed27ff5c2bbfbe47269abc1517477f5de36b0047",
+        "phase0ObservationReferenceSha256": "cffeded619c0032419f5e9dfed27ff5c2bbfbe47269abc1517477f5de36b0047",
+        "developmentObservationReferenceSha256": "cffeded619c0032419f5e9dfed27ff5c2bbfbe47269abc1517477f5de36b0047"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912196",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912196"
+      ],
+      "expectedPropertyUnitIds": [
+        "4b0e19a0-3d5a-4dc1-801c-dac8703344ea"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "4b0e19a0-3d5a-4dc1-801c-dac8703344ea",
+          "landArea": "121"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912196",
+            "area": "121"
+          }
+        ],
+        "totalArea": "121"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "4b0e19a0-3d5a-4dc1-801c-dac8703344ea",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "4b0e19a0-3d5a-4dc1-801c-dac8703344ea",
+          "landArea": "121",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=ee185549bbf384eed2fa86b9d63e2760b8cfb1452840ad2420f724446ec9cae5"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=ee185549bbf384eed2fa86b9d63e2760b8cfb1452840ad2420f724446ec9cae5"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "ee185549bbf384eed2fa86b9d63e2760b8cfb1452840ad2420f724446ec9cae5",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "ee185549bbf384eed2fa86b9d63e2760b8cfb1452840ad2420f724446ec9cae5",
+        "phase0ObservationReferenceSha256": "ee185549bbf384eed2fa86b9d63e2760b8cfb1452840ad2420f724446ec9cae5",
+        "developmentObservationReferenceSha256": "ee185549bbf384eed2fa86b9d63e2760b8cfb1452840ad2420f724446ec9cae5"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912197",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912197"
+      ],
+      "expectedPropertyUnitIds": [
+        "ddb514c7-96fa-4958-a0a0-3af5955eb148"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "ddb514c7-96fa-4958-a0a0-3af5955eb148",
+          "landArea": "125"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912197",
+            "area": "125"
+          }
+        ],
+        "totalArea": "125"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "ddb514c7-96fa-4958-a0a0-3af5955eb148",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "ddb514c7-96fa-4958-a0a0-3af5955eb148",
+          "landArea": "125",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=e8d4f0b936e207b7a562b6f8e6e968e483d604cab4e7e019434baa36ae1682a4"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=e8d4f0b936e207b7a562b6f8e6e968e483d604cab4e7e019434baa36ae1682a4"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "e8d4f0b936e207b7a562b6f8e6e968e483d604cab4e7e019434baa36ae1682a4",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "e8d4f0b936e207b7a562b6f8e6e968e483d604cab4e7e019434baa36ae1682a4",
+        "phase0ObservationReferenceSha256": "e8d4f0b936e207b7a562b6f8e6e968e483d604cab4e7e019434baa36ae1682a4",
+        "developmentObservationReferenceSha256": "e8d4f0b936e207b7a562b6f8e6e968e483d604cab4e7e019434baa36ae1682a4"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912198",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912198"
+      ],
+      "expectedPropertyUnitIds": [
+        "0f2c2408-7e81-4c44-b01f-33d17a3dfa86"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "0f2c2408-7e81-4c44-b01f-33d17a3dfa86",
+          "landArea": "132"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912198",
+            "area": "132"
+          }
+        ],
+        "totalArea": "132"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "0f2c2408-7e81-4c44-b01f-33d17a3dfa86",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "0f2c2408-7e81-4c44-b01f-33d17a3dfa86",
+          "landArea": "132",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=e740c03f82af1c5880d489d99fb7f9fb143574de0b456c7daa2a4724b84797a3"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=e740c03f82af1c5880d489d99fb7f9fb143574de0b456c7daa2a4724b84797a3"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "e740c03f82af1c5880d489d99fb7f9fb143574de0b456c7daa2a4724b84797a3",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "e740c03f82af1c5880d489d99fb7f9fb143574de0b456c7daa2a4724b84797a3",
+        "phase0ObservationReferenceSha256": "e740c03f82af1c5880d489d99fb7f9fb143574de0b456c7daa2a4724b84797a3",
+        "developmentObservationReferenceSha256": "e740c03f82af1c5880d489d99fb7f9fb143574de0b456c7daa2a4724b84797a3"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912202",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912202"
+      ],
+      "expectedPropertyUnitIds": [
+        "bbbb9460-4670-4e4b-b4a4-87e227c17778"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "bbbb9460-4670-4e4b-b4a4-87e227c17778",
+          "landArea": "202"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912202",
+            "area": "202"
+          }
+        ],
+        "totalArea": "202"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "bbbb9460-4670-4e4b-b4a4-87e227c17778",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "bbbb9460-4670-4e4b-b4a4-87e227c17778",
+          "landArea": "202",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=ca88c037852e1c580613fe055b331f646c0ffa76c64b64e029643d7192b9357b"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=ca88c037852e1c580613fe055b331f646c0ffa76c64b64e029643d7192b9357b"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "ca88c037852e1c580613fe055b331f646c0ffa76c64b64e029643d7192b9357b",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "ca88c037852e1c580613fe055b331f646c0ffa76c64b64e029643d7192b9357b",
+        "phase0ObservationReferenceSha256": "ca88c037852e1c580613fe055b331f646c0ffa76c64b64e029643d7192b9357b",
+        "developmentObservationReferenceSha256": "ca88c037852e1c580613fe055b331f646c0ffa76c64b64e029643d7192b9357b"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912203",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912203"
+      ],
+      "expectedPropertyUnitIds": [
+        "157c5c1c-1110-41bb-baad-74b6e8cf9e06"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "157c5c1c-1110-41bb-baad-74b6e8cf9e06",
+          "landArea": "125"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912203",
+            "area": "125"
+          }
+        ],
+        "totalArea": "125"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "157c5c1c-1110-41bb-baad-74b6e8cf9e06",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "157c5c1c-1110-41bb-baad-74b6e8cf9e06",
+          "landArea": "125",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=cb490a55868f474c8cb4c556b37706fbff7c24770b19ba6970528576aa3f383c"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=cb490a55868f474c8cb4c556b37706fbff7c24770b19ba6970528576aa3f383c"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "cb490a55868f474c8cb4c556b37706fbff7c24770b19ba6970528576aa3f383c",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "cb490a55868f474c8cb4c556b37706fbff7c24770b19ba6970528576aa3f383c",
+        "phase0ObservationReferenceSha256": "cb490a55868f474c8cb4c556b37706fbff7c24770b19ba6970528576aa3f383c",
+        "developmentObservationReferenceSha256": "cb490a55868f474c8cb4c556b37706fbff7c24770b19ba6970528576aa3f383c"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912204",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912204"
+      ],
+      "expectedPropertyUnitIds": [
+        "ca63ae65-c1ae-45d6-86a6-5e8693455f9b"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "ca63ae65-c1ae-45d6-86a6-5e8693455f9b",
+          "landArea": "116"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912204",
+            "area": "116"
+          }
+        ],
+        "totalArea": "116"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "ca63ae65-c1ae-45d6-86a6-5e8693455f9b",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "ca63ae65-c1ae-45d6-86a6-5e8693455f9b",
+          "landArea": "116",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=ed1475d2f1a959344e6cdc4de971cee89d576494b46f998621717b636a0a6c7a"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=ed1475d2f1a959344e6cdc4de971cee89d576494b46f998621717b636a0a6c7a"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "ed1475d2f1a959344e6cdc4de971cee89d576494b46f998621717b636a0a6c7a",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "ed1475d2f1a959344e6cdc4de971cee89d576494b46f998621717b636a0a6c7a",
+        "phase0ObservationReferenceSha256": "ed1475d2f1a959344e6cdc4de971cee89d576494b46f998621717b636a0a6c7a",
+        "developmentObservationReferenceSha256": "ed1475d2f1a959344e6cdc4de971cee89d576494b46f998621717b636a0a6c7a"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912205",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912205"
+      ],
+      "expectedPropertyUnitIds": [
+        "de96b049-c353-4c60-b341-09e64ce7b2fb"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "de96b049-c353-4c60-b341-09e64ce7b2fb",
+          "landArea": "111"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912205",
+            "area": "111"
+          }
+        ],
+        "totalArea": "111"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "de96b049-c353-4c60-b341-09e64ce7b2fb",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "de96b049-c353-4c60-b341-09e64ce7b2fb",
+          "landArea": "111",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=e6df35dad02f1d531aa70e9606f539a0d33f9726c621e9c9f4d3f5fa19011d0b"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=e6df35dad02f1d531aa70e9606f539a0d33f9726c621e9c9f4d3f5fa19011d0b"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "e6df35dad02f1d531aa70e9606f539a0d33f9726c621e9c9f4d3f5fa19011d0b",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "e6df35dad02f1d531aa70e9606f539a0d33f9726c621e9c9f4d3f5fa19011d0b",
+        "phase0ObservationReferenceSha256": "e6df35dad02f1d531aa70e9606f539a0d33f9726c621e9c9f4d3f5fa19011d0b",
+        "developmentObservationReferenceSha256": "e6df35dad02f1d531aa70e9606f539a0d33f9726c621e9c9f4d3f5fa19011d0b"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912206",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912206"
+      ],
+      "expectedPropertyUnitIds": [
+        "44fed504-b360-463d-96b0-b08541a37e23"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "44fed504-b360-463d-96b0-b08541a37e23",
+          "landArea": "93"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912206",
+            "area": "93"
+          }
+        ],
+        "totalArea": "93"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "44fed504-b360-463d-96b0-b08541a37e23",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "44fed504-b360-463d-96b0-b08541a37e23",
+          "landArea": "93",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=57e69fa6ac1fdaf135082849f3d2dc755c6c05932b3cfe2e7a6ed7f17241ce72"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=57e69fa6ac1fdaf135082849f3d2dc755c6c05932b3cfe2e7a6ed7f17241ce72"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "57e69fa6ac1fdaf135082849f3d2dc755c6c05932b3cfe2e7a6ed7f17241ce72",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "57e69fa6ac1fdaf135082849f3d2dc755c6c05932b3cfe2e7a6ed7f17241ce72",
+        "phase0ObservationReferenceSha256": "57e69fa6ac1fdaf135082849f3d2dc755c6c05932b3cfe2e7a6ed7f17241ce72",
+        "developmentObservationReferenceSha256": "57e69fa6ac1fdaf135082849f3d2dc755c6c05932b3cfe2e7a6ed7f17241ce72"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912207",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912207"
+      ],
+      "expectedPropertyUnitIds": [
+        "9632f829-ea23-4dc5-8973-bd195b7d16fe"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "9632f829-ea23-4dc5-8973-bd195b7d16fe",
+          "landArea": "64"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912207",
+            "area": "64"
+          }
+        ],
+        "totalArea": "64"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "9632f829-ea23-4dc5-8973-bd195b7d16fe",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "9632f829-ea23-4dc5-8973-bd195b7d16fe",
+          "landArea": "64",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=2a48a916c6ea5f20f064e63813e58c1389ac4f4f267b18f3b986550cc4fa24f4"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=2a48a916c6ea5f20f064e63813e58c1389ac4f4f267b18f3b986550cc4fa24f4"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "2a48a916c6ea5f20f064e63813e58c1389ac4f4f267b18f3b986550cc4fa24f4",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "2a48a916c6ea5f20f064e63813e58c1389ac4f4f267b18f3b986550cc4fa24f4",
+        "phase0ObservationReferenceSha256": "2a48a916c6ea5f20f064e63813e58c1389ac4f4f267b18f3b986550cc4fa24f4",
+        "developmentObservationReferenceSha256": "2a48a916c6ea5f20f064e63813e58c1389ac4f4f267b18f3b986550cc4fa24f4"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912208",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912208"
+      ],
+      "expectedPropertyUnitIds": [
+        "078fcd6e-02ea-4543-8935-63204f1e6440"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "078fcd6e-02ea-4543-8935-63204f1e6440",
+          "landArea": "69"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912208",
+            "area": "69"
+          }
+        ],
+        "totalArea": "69"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "078fcd6e-02ea-4543-8935-63204f1e6440",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "078fcd6e-02ea-4543-8935-63204f1e6440",
+          "landArea": "69",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=220e116d346ad7ec43e6ea50f4887bdab8eb4840f8eadd2bed46162a842526ca"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=220e116d346ad7ec43e6ea50f4887bdab8eb4840f8eadd2bed46162a842526ca"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "220e116d346ad7ec43e6ea50f4887bdab8eb4840f8eadd2bed46162a842526ca",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "220e116d346ad7ec43e6ea50f4887bdab8eb4840f8eadd2bed46162a842526ca",
+        "phase0ObservationReferenceSha256": "220e116d346ad7ec43e6ea50f4887bdab8eb4840f8eadd2bed46162a842526ca",
+        "developmentObservationReferenceSha256": "220e116d346ad7ec43e6ea50f4887bdab8eb4840f8eadd2bed46162a842526ca"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912210",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912210"
+      ],
+      "expectedPropertyUnitIds": [
+        "0bcf3a3d-a9cb-4596-8301-8e8280251e95"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "0bcf3a3d-a9cb-4596-8301-8e8280251e95",
+          "landArea": "110"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912210",
+            "area": "110"
+          }
+        ],
+        "totalArea": "110"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "0bcf3a3d-a9cb-4596-8301-8e8280251e95",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "0bcf3a3d-a9cb-4596-8301-8e8280251e95",
+          "landArea": "110",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=038eae9e8af232678cc54aeeb15ac12dd617ca095387e9e739dcc220a4209b6f"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=038eae9e8af232678cc54aeeb15ac12dd617ca095387e9e739dcc220a4209b6f"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "038eae9e8af232678cc54aeeb15ac12dd617ca095387e9e739dcc220a4209b6f",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "038eae9e8af232678cc54aeeb15ac12dd617ca095387e9e739dcc220a4209b6f",
+        "phase0ObservationReferenceSha256": "038eae9e8af232678cc54aeeb15ac12dd617ca095387e9e739dcc220a4209b6f",
+        "developmentObservationReferenceSha256": "038eae9e8af232678cc54aeeb15ac12dd617ca095387e9e739dcc220a4209b6f"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912215",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912215"
+      ],
+      "expectedPropertyUnitIds": [
+        "a6e1a804-7b83-413d-b605-718f06db149e"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "a6e1a804-7b83-413d-b605-718f06db149e",
+          "landArea": "98"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912215",
+            "area": "98"
+          }
+        ],
+        "totalArea": "98"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "a6e1a804-7b83-413d-b605-718f06db149e",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "a6e1a804-7b83-413d-b605-718f06db149e",
+          "landArea": "98",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=76b6038eb87e8a79482461da494fbc92be07b55de94c59c2e47bd27628a3bac7"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=76b6038eb87e8a79482461da494fbc92be07b55de94c59c2e47bd27628a3bac7"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "76b6038eb87e8a79482461da494fbc92be07b55de94c59c2e47bd27628a3bac7",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "76b6038eb87e8a79482461da494fbc92be07b55de94c59c2e47bd27628a3bac7",
+        "phase0ObservationReferenceSha256": "76b6038eb87e8a79482461da494fbc92be07b55de94c59c2e47bd27628a3bac7",
+        "developmentObservationReferenceSha256": "76b6038eb87e8a79482461da494fbc92be07b55de94c59c2e47bd27628a3bac7"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912217",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912217"
+      ],
+      "expectedPropertyUnitIds": [
+        "7b01944d-1260-425d-a22f-4d94d9a70cb9"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "7b01944d-1260-425d-a22f-4d94d9a70cb9",
+          "landArea": "98"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912217",
+            "area": "98"
+          }
+        ],
+        "totalArea": "98"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "7b01944d-1260-425d-a22f-4d94d9a70cb9",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "7b01944d-1260-425d-a22f-4d94d9a70cb9",
+          "landArea": "98",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=0af8815b7c29949aeaa3e6a8d49b1642750db07a6b8baf63bbe7adee554e6f59"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=0af8815b7c29949aeaa3e6a8d49b1642750db07a6b8baf63bbe7adee554e6f59"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "0af8815b7c29949aeaa3e6a8d49b1642750db07a6b8baf63bbe7adee554e6f59",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "0af8815b7c29949aeaa3e6a8d49b1642750db07a6b8baf63bbe7adee554e6f59",
+        "phase0ObservationReferenceSha256": "0af8815b7c29949aeaa3e6a8d49b1642750db07a6b8baf63bbe7adee554e6f59",
+        "developmentObservationReferenceSha256": "0af8815b7c29949aeaa3e6a8d49b1642750db07a6b8baf63bbe7adee554e6f59"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912219",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912219"
+      ],
+      "expectedPropertyUnitIds": [
+        "89b05cbe-d025-4a69-88a7-986245ce2ab7"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "89b05cbe-d025-4a69-88a7-986245ce2ab7",
+          "landArea": "69"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912219",
+            "area": "69"
+          }
+        ],
+        "totalArea": "69"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "89b05cbe-d025-4a69-88a7-986245ce2ab7",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "89b05cbe-d025-4a69-88a7-986245ce2ab7",
+          "landArea": "69",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=4be54953a9819651ff6a662ea5a9f18e8f53ddfc747c8a95652e7d9f41b34e74"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=4be54953a9819651ff6a662ea5a9f18e8f53ddfc747c8a95652e7d9f41b34e74"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "4be54953a9819651ff6a662ea5a9f18e8f53ddfc747c8a95652e7d9f41b34e74",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "4be54953a9819651ff6a662ea5a9f18e8f53ddfc747c8a95652e7d9f41b34e74",
+        "phase0ObservationReferenceSha256": "4be54953a9819651ff6a662ea5a9f18e8f53ddfc747c8a95652e7d9f41b34e74",
+        "developmentObservationReferenceSha256": "4be54953a9819651ff6a662ea5a9f18e8f53ddfc747c8a95652e7d9f41b34e74"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912223",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912223"
+      ],
+      "expectedPropertyUnitIds": [
+        "c6108c01-b6ab-42fe-9733-2bd905df5c31"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "c6108c01-b6ab-42fe-9733-2bd905df5c31",
+          "landArea": "86"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912223",
+            "area": "86"
+          }
+        ],
+        "totalArea": "86"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "c6108c01-b6ab-42fe-9733-2bd905df5c31",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "c6108c01-b6ab-42fe-9733-2bd905df5c31",
+          "landArea": "86",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=56a31485e6f4321676ec888d5e16d30504f88791fd151e2377003ebf24383d50"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=56a31485e6f4321676ec888d5e16d30504f88791fd151e2377003ebf24383d50"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "56a31485e6f4321676ec888d5e16d30504f88791fd151e2377003ebf24383d50",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "56a31485e6f4321676ec888d5e16d30504f88791fd151e2377003ebf24383d50",
+        "phase0ObservationReferenceSha256": "56a31485e6f4321676ec888d5e16d30504f88791fd151e2377003ebf24383d50",
+        "developmentObservationReferenceSha256": "56a31485e6f4321676ec888d5e16d30504f88791fd151e2377003ebf24383d50"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912226",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912226"
+      ],
+      "expectedPropertyUnitIds": [
+        "2b8c716a-4deb-450b-aa01-2f1290fb0b32"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "2b8c716a-4deb-450b-aa01-2f1290fb0b32",
+          "landArea": "99"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912226",
+            "area": "99"
+          }
+        ],
+        "totalArea": "99"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "2b8c716a-4deb-450b-aa01-2f1290fb0b32",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "2b8c716a-4deb-450b-aa01-2f1290fb0b32",
+          "landArea": "99",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=a0bd27c656a4cc2d8e8eefc4a359a54d5a0f15f0c67942b4dae4dbfa2a531d67"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=a0bd27c656a4cc2d8e8eefc4a359a54d5a0f15f0c67942b4dae4dbfa2a531d67"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "a0bd27c656a4cc2d8e8eefc4a359a54d5a0f15f0c67942b4dae4dbfa2a531d67",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "a0bd27c656a4cc2d8e8eefc4a359a54d5a0f15f0c67942b4dae4dbfa2a531d67",
+        "phase0ObservationReferenceSha256": "a0bd27c656a4cc2d8e8eefc4a359a54d5a0f15f0c67942b4dae4dbfa2a531d67",
+        "developmentObservationReferenceSha256": "a0bd27c656a4cc2d8e8eefc4a359a54d5a0f15f0c67942b4dae4dbfa2a531d67"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912228",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912228"
+      ],
+      "expectedPropertyUnitIds": [
+        "defcddfe-299d-45e8-8f3a-e2a945497840"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "defcddfe-299d-45e8-8f3a-e2a945497840",
+          "landArea": "66"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912228",
+            "area": "66"
+          }
+        ],
+        "totalArea": "66"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "defcddfe-299d-45e8-8f3a-e2a945497840",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "defcddfe-299d-45e8-8f3a-e2a945497840",
+          "landArea": "66",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=1deb26a6f67a05c287b23675af2e14f1f50731bd9305b57dc289501dbf8aea00"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=1deb26a6f67a05c287b23675af2e14f1f50731bd9305b57dc289501dbf8aea00"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "1deb26a6f67a05c287b23675af2e14f1f50731bd9305b57dc289501dbf8aea00",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "1deb26a6f67a05c287b23675af2e14f1f50731bd9305b57dc289501dbf8aea00",
+        "phase0ObservationReferenceSha256": "1deb26a6f67a05c287b23675af2e14f1f50731bd9305b57dc289501dbf8aea00",
+        "developmentObservationReferenceSha256": "1deb26a6f67a05c287b23675af2e14f1f50731bd9305b57dc289501dbf8aea00"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912230",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912230"
+      ],
+      "expectedPropertyUnitIds": [
+        "48e6ad2b-2f54-4185-a269-c8653f163111"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "48e6ad2b-2f54-4185-a269-c8653f163111",
+          "landArea": "96"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912230",
+            "area": "96"
+          }
+        ],
+        "totalArea": "96"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "48e6ad2b-2f54-4185-a269-c8653f163111",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "48e6ad2b-2f54-4185-a269-c8653f163111",
+          "landArea": "96",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=44a9fce809dbffa2fa4f0baf62e1d511c1f71713c31f7126042dc8c4ca364c84"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=44a9fce809dbffa2fa4f0baf62e1d511c1f71713c31f7126042dc8c4ca364c84"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "44a9fce809dbffa2fa4f0baf62e1d511c1f71713c31f7126042dc8c4ca364c84",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "44a9fce809dbffa2fa4f0baf62e1d511c1f71713c31f7126042dc8c4ca364c84",
+        "phase0ObservationReferenceSha256": "44a9fce809dbffa2fa4f0baf62e1d511c1f71713c31f7126042dc8c4ca364c84",
+        "developmentObservationReferenceSha256": "44a9fce809dbffa2fa4f0baf62e1d511c1f71713c31f7126042dc8c4ca364c84"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912231",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912231"
+      ],
+      "expectedPropertyUnitIds": [
+        "ae304c64-2336-4102-ab0f-08f589bba3f9"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "ae304c64-2336-4102-ab0f-08f589bba3f9",
+          "landArea": "136"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912231",
+            "area": "136"
+          }
+        ],
+        "totalArea": "136"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "ae304c64-2336-4102-ab0f-08f589bba3f9",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "ae304c64-2336-4102-ab0f-08f589bba3f9",
+          "landArea": "136",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=f116d7ee1ae63798c5aab0b9c5c917eb863e7f8ec37d0a7e2589f2167d0eb45b"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=f116d7ee1ae63798c5aab0b9c5c917eb863e7f8ec37d0a7e2589f2167d0eb45b"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "f116d7ee1ae63798c5aab0b9c5c917eb863e7f8ec37d0a7e2589f2167d0eb45b",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "f116d7ee1ae63798c5aab0b9c5c917eb863e7f8ec37d0a7e2589f2167d0eb45b",
+        "phase0ObservationReferenceSha256": "f116d7ee1ae63798c5aab0b9c5c917eb863e7f8ec37d0a7e2589f2167d0eb45b",
+        "developmentObservationReferenceSha256": "f116d7ee1ae63798c5aab0b9c5c917eb863e7f8ec37d0a7e2589f2167d0eb45b"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912236",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912236"
+      ],
+      "expectedPropertyUnitIds": [
+        "dc43599c-05ba-4c27-8469-3a616bf39d4d"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "dc43599c-05ba-4c27-8469-3a616bf39d4d",
+          "landArea": "149"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912236",
+            "area": "149"
+          }
+        ],
+        "totalArea": "149"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "dc43599c-05ba-4c27-8469-3a616bf39d4d",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "dc43599c-05ba-4c27-8469-3a616bf39d4d",
+          "landArea": "149",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=caf382b50a3dc0d4ea52208d1c8a46976f643fcedf46499511d75ce20c9980c3"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=caf382b50a3dc0d4ea52208d1c8a46976f643fcedf46499511d75ce20c9980c3"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "caf382b50a3dc0d4ea52208d1c8a46976f643fcedf46499511d75ce20c9980c3",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "caf382b50a3dc0d4ea52208d1c8a46976f643fcedf46499511d75ce20c9980c3",
+        "phase0ObservationReferenceSha256": "caf382b50a3dc0d4ea52208d1c8a46976f643fcedf46499511d75ce20c9980c3",
+        "developmentObservationReferenceSha256": "caf382b50a3dc0d4ea52208d1c8a46976f643fcedf46499511d75ce20c9980c3"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912252",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912252"
+      ],
+      "expectedPropertyUnitIds": [
+        "bc57ad84-7ff3-40ed-851b-35ad6743d47f"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "bc57ad84-7ff3-40ed-851b-35ad6743d47f",
+          "landArea": "145"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912252",
+            "area": "145"
+          }
+        ],
+        "totalArea": "145"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "bc57ad84-7ff3-40ed-851b-35ad6743d47f",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "bc57ad84-7ff3-40ed-851b-35ad6743d47f",
+          "landArea": "145",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=bc32c1a4240b88e80cd9e66e3a700802b815dc78511a25ec622b03480fc0e5ab"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=bc32c1a4240b88e80cd9e66e3a700802b815dc78511a25ec622b03480fc0e5ab"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "bc32c1a4240b88e80cd9e66e3a700802b815dc78511a25ec622b03480fc0e5ab",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "bc32c1a4240b88e80cd9e66e3a700802b815dc78511a25ec622b03480fc0e5ab",
+        "phase0ObservationReferenceSha256": "bc32c1a4240b88e80cd9e66e3a700802b815dc78511a25ec622b03480fc0e5ab",
+        "developmentObservationReferenceSha256": "bc32c1a4240b88e80cd9e66e3a700802b815dc78511a25ec622b03480fc0e5ab"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912254",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912254"
+      ],
+      "expectedPropertyUnitIds": [
+        "b711dc1c-56c1-4409-8d50-9c3bd8be1b57"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "b711dc1c-56c1-4409-8d50-9c3bd8be1b57",
+          "landArea": "59"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912254",
+            "area": "59"
+          }
+        ],
+        "totalArea": "59"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "b711dc1c-56c1-4409-8d50-9c3bd8be1b57",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "b711dc1c-56c1-4409-8d50-9c3bd8be1b57",
+          "landArea": "59",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=c804371dad082b9596a46dacfb8e67d26f3a78ddbcd5fe962bca5425bb50487f"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=c804371dad082b9596a46dacfb8e67d26f3a78ddbcd5fe962bca5425bb50487f"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "c804371dad082b9596a46dacfb8e67d26f3a78ddbcd5fe962bca5425bb50487f",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "c804371dad082b9596a46dacfb8e67d26f3a78ddbcd5fe962bca5425bb50487f",
+        "phase0ObservationReferenceSha256": "c804371dad082b9596a46dacfb8e67d26f3a78ddbcd5fe962bca5425bb50487f",
+        "developmentObservationReferenceSha256": "c804371dad082b9596a46dacfb8e67d26f3a78ddbcd5fe962bca5425bb50487f"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912259",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912259"
+      ],
+      "expectedPropertyUnitIds": [
+        "60b2b6ad-4482-4a31-b5ef-f30a3df8abd4"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "60b2b6ad-4482-4a31-b5ef-f30a3df8abd4",
+          "landArea": "108"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912259",
+            "area": "108"
+          }
+        ],
+        "totalArea": "108"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "60b2b6ad-4482-4a31-b5ef-f30a3df8abd4",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "60b2b6ad-4482-4a31-b5ef-f30a3df8abd4",
+          "landArea": "108",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=966355dee830fad4e668e483b43534d36802b528075be02c476b262dad56e8d6"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=966355dee830fad4e668e483b43534d36802b528075be02c476b262dad56e8d6"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "966355dee830fad4e668e483b43534d36802b528075be02c476b262dad56e8d6",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "966355dee830fad4e668e483b43534d36802b528075be02c476b262dad56e8d6",
+        "phase0ObservationReferenceSha256": "966355dee830fad4e668e483b43534d36802b528075be02c476b262dad56e8d6",
+        "developmentObservationReferenceSha256": "966355dee830fad4e668e483b43534d36802b528075be02c476b262dad56e8d6"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912260",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912260"
+      ],
+      "expectedPropertyUnitIds": [
+        "7e731d81-8fb3-43d6-9400-a17fb92827f5"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "7e731d81-8fb3-43d6-9400-a17fb92827f5",
+          "landArea": "89"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912260",
+            "area": "89"
+          }
+        ],
+        "totalArea": "89"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "7e731d81-8fb3-43d6-9400-a17fb92827f5",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "7e731d81-8fb3-43d6-9400-a17fb92827f5",
+          "landArea": "89",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=cd7777eca51ab602d355b46f850fa8f909dab7ff144a09f471d22ee37492eaf3"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=cd7777eca51ab602d355b46f850fa8f909dab7ff144a09f471d22ee37492eaf3"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "cd7777eca51ab602d355b46f850fa8f909dab7ff144a09f471d22ee37492eaf3",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "cd7777eca51ab602d355b46f850fa8f909dab7ff144a09f471d22ee37492eaf3",
+        "phase0ObservationReferenceSha256": "cd7777eca51ab602d355b46f850fa8f909dab7ff144a09f471d22ee37492eaf3",
+        "developmentObservationReferenceSha256": "cd7777eca51ab602d355b46f850fa8f909dab7ff144a09f471d22ee37492eaf3"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912263",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912263"
+      ],
+      "expectedPropertyUnitIds": [
+        "29052ee4-41f3-4c97-9b38-5e5fee5c2e23"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "29052ee4-41f3-4c97-9b38-5e5fee5c2e23",
+          "landArea": "159"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912263",
+            "area": "159"
+          }
+        ],
+        "totalArea": "159"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "29052ee4-41f3-4c97-9b38-5e5fee5c2e23",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "29052ee4-41f3-4c97-9b38-5e5fee5c2e23",
+          "landArea": "159",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=0a85be74a7b18272b256a11bb569e89774d46afc3b2765f18af700bc06cf03b9"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=0a85be74a7b18272b256a11bb569e89774d46afc3b2765f18af700bc06cf03b9"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "0a85be74a7b18272b256a11bb569e89774d46afc3b2765f18af700bc06cf03b9",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "0a85be74a7b18272b256a11bb569e89774d46afc3b2765f18af700bc06cf03b9",
+        "phase0ObservationReferenceSha256": "0a85be74a7b18272b256a11bb569e89774d46afc3b2765f18af700bc06cf03b9",
+        "developmentObservationReferenceSha256": "0a85be74a7b18272b256a11bb569e89774d46afc3b2765f18af700bc06cf03b9"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912265",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912265"
+      ],
+      "expectedPropertyUnitIds": [
+        "f8b6a098-986c-468f-8d65-03ab5f2ebfc6"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "f8b6a098-986c-468f-8d65-03ab5f2ebfc6",
+          "landArea": "69"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912265",
+            "area": "69"
+          }
+        ],
+        "totalArea": "69"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "f8b6a098-986c-468f-8d65-03ab5f2ebfc6",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "f8b6a098-986c-468f-8d65-03ab5f2ebfc6",
+          "landArea": "69",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=fe4c8696f8e79b5151845b24b829b900eaa9b1336d7a434b284b6e7e6a83961a"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=fe4c8696f8e79b5151845b24b829b900eaa9b1336d7a434b284b6e7e6a83961a"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "fe4c8696f8e79b5151845b24b829b900eaa9b1336d7a434b284b6e7e6a83961a",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "fe4c8696f8e79b5151845b24b829b900eaa9b1336d7a434b284b6e7e6a83961a",
+        "phase0ObservationReferenceSha256": "fe4c8696f8e79b5151845b24b829b900eaa9b1336d7a434b284b6e7e6a83961a",
+        "developmentObservationReferenceSha256": "fe4c8696f8e79b5151845b24b829b900eaa9b1336d7a434b284b6e7e6a83961a"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912277",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912277"
+      ],
+      "expectedPropertyUnitIds": [
+        "8d57dc90-e252-4190-ad06-d8320486cada"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "8d57dc90-e252-4190-ad06-d8320486cada",
+          "landArea": "50"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912277",
+            "area": "50"
+          }
+        ],
+        "totalArea": "50"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "8d57dc90-e252-4190-ad06-d8320486cada",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "8d57dc90-e252-4190-ad06-d8320486cada",
+          "landArea": "50",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=9af513924d00b895e81195f906805c882b8287c783b0ae86966577ea6c4dbbeb"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=9af513924d00b895e81195f906805c882b8287c783b0ae86966577ea6c4dbbeb"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "9af513924d00b895e81195f906805c882b8287c783b0ae86966577ea6c4dbbeb",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "9af513924d00b895e81195f906805c882b8287c783b0ae86966577ea6c4dbbeb",
+        "phase0ObservationReferenceSha256": "9af513924d00b895e81195f906805c882b8287c783b0ae86966577ea6c4dbbeb",
+        "developmentObservationReferenceSha256": "9af513924d00b895e81195f906805c882b8287c783b0ae86966577ea6c4dbbeb"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912296",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912296"
+      ],
+      "expectedPropertyUnitIds": [
+        "9dba4867-f95c-47e4-8c77-1cb5320b02cd"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "9dba4867-f95c-47e4-8c77-1cb5320b02cd",
+          "landArea": "123"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912296",
+            "area": "123"
+          }
+        ],
+        "totalArea": "123"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "9dba4867-f95c-47e4-8c77-1cb5320b02cd",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "9dba4867-f95c-47e4-8c77-1cb5320b02cd",
+          "landArea": "123",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=ae3e4a0a784a70b16ef81270832df732d6457d6d73fe182044b864fd70f00396"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=ae3e4a0a784a70b16ef81270832df732d6457d6d73fe182044b864fd70f00396"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "ae3e4a0a784a70b16ef81270832df732d6457d6d73fe182044b864fd70f00396",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "ae3e4a0a784a70b16ef81270832df732d6457d6d73fe182044b864fd70f00396",
+        "phase0ObservationReferenceSha256": "ae3e4a0a784a70b16ef81270832df732d6457d6d73fe182044b864fd70f00396",
+        "developmentObservationReferenceSha256": "ae3e4a0a784a70b16ef81270832df732d6457d6d73fe182044b864fd70f00396"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912298",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912298"
+      ],
+      "expectedPropertyUnitIds": [
+        "d3117283-b802-4a8a-8640-9db83f3ed31b"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "d3117283-b802-4a8a-8640-9db83f3ed31b",
+          "landArea": "69"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912298",
+            "area": "69"
+          }
+        ],
+        "totalArea": "69"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "d3117283-b802-4a8a-8640-9db83f3ed31b",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "d3117283-b802-4a8a-8640-9db83f3ed31b",
+          "landArea": "69",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=e15ec623fb362a0c06ca773f6546bd65c7bab3ee19563c239bb0e191ace41b7f"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=e15ec623fb362a0c06ca773f6546bd65c7bab3ee19563c239bb0e191ace41b7f"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "e15ec623fb362a0c06ca773f6546bd65c7bab3ee19563c239bb0e191ace41b7f",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "e15ec623fb362a0c06ca773f6546bd65c7bab3ee19563c239bb0e191ace41b7f",
+        "phase0ObservationReferenceSha256": "e15ec623fb362a0c06ca773f6546bd65c7bab3ee19563c239bb0e191ace41b7f",
+        "developmentObservationReferenceSha256": "e15ec623fb362a0c06ca773f6546bd65c7bab3ee19563c239bb0e191ace41b7f"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912299",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912299"
+      ],
+      "expectedPropertyUnitIds": [
+        "91e6138a-3194-4ae7-b903-3fb249bb1b05"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "91e6138a-3194-4ae7-b903-3fb249bb1b05",
+          "landArea": "106"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912299",
+            "area": "106"
+          }
+        ],
+        "totalArea": "106"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "91e6138a-3194-4ae7-b903-3fb249bb1b05",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "91e6138a-3194-4ae7-b903-3fb249bb1b05",
+          "landArea": "106",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=13435977425a1d994580e9b04c2352a0a5bfb96b585904b2c4f5bcab7ab47ad5"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=13435977425a1d994580e9b04c2352a0a5bfb96b585904b2c4f5bcab7ab47ad5"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "13435977425a1d994580e9b04c2352a0a5bfb96b585904b2c4f5bcab7ab47ad5",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "13435977425a1d994580e9b04c2352a0a5bfb96b585904b2c4f5bcab7ab47ad5",
+        "phase0ObservationReferenceSha256": "13435977425a1d994580e9b04c2352a0a5bfb96b585904b2c4f5bcab7ab47ad5",
+        "developmentObservationReferenceSha256": "13435977425a1d994580e9b04c2352a0a5bfb96b585904b2c4f5bcab7ab47ad5"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912300",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912300"
+      ],
+      "expectedPropertyUnitIds": [
+        "cf347a54-cc77-4ea0-8538-03b62babc490"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "cf347a54-cc77-4ea0-8538-03b62babc490",
+          "landArea": "102"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912300",
+            "area": "102"
+          }
+        ],
+        "totalArea": "102"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "cf347a54-cc77-4ea0-8538-03b62babc490",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "cf347a54-cc77-4ea0-8538-03b62babc490",
+          "landArea": "102",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=3d566fcc9da2cff0c0ff4c810b6424143c136f793464a214465169704e8ea5f3"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=3d566fcc9da2cff0c0ff4c810b6424143c136f793464a214465169704e8ea5f3"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "3d566fcc9da2cff0c0ff4c810b6424143c136f793464a214465169704e8ea5f3",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "3d566fcc9da2cff0c0ff4c810b6424143c136f793464a214465169704e8ea5f3",
+        "phase0ObservationReferenceSha256": "3d566fcc9da2cff0c0ff4c810b6424143c136f793464a214465169704e8ea5f3",
+        "developmentObservationReferenceSha256": "3d566fcc9da2cff0c0ff4c810b6424143c136f793464a214465169704e8ea5f3"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912303",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912303"
+      ],
+      "expectedPropertyUnitIds": [
+        "c1b3e649-a8ad-4c5c-bb76-65c51f953936"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "c1b3e649-a8ad-4c5c-bb76-65c51f953936",
+          "landArea": "175"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912303",
+            "area": "175"
+          }
+        ],
+        "totalArea": "175"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "c1b3e649-a8ad-4c5c-bb76-65c51f953936",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "c1b3e649-a8ad-4c5c-bb76-65c51f953936",
+          "landArea": "175",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=e97adef0cafa672aec4a6440f6ac4d7cd17a19d4d5cd1be4248973ad79554110"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=e97adef0cafa672aec4a6440f6ac4d7cd17a19d4d5cd1be4248973ad79554110"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "e97adef0cafa672aec4a6440f6ac4d7cd17a19d4d5cd1be4248973ad79554110",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "e97adef0cafa672aec4a6440f6ac4d7cd17a19d4d5cd1be4248973ad79554110",
+        "phase0ObservationReferenceSha256": "e97adef0cafa672aec4a6440f6ac4d7cd17a19d4d5cd1be4248973ad79554110",
+        "developmentObservationReferenceSha256": "e97adef0cafa672aec4a6440f6ac4d7cd17a19d4d5cd1be4248973ad79554110"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912304",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912304"
+      ],
+      "expectedPropertyUnitIds": [
+        "e4021cbc-5af0-4fba-b39f-f1ace0b14a5e"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "e4021cbc-5af0-4fba-b39f-f1ace0b14a5e",
+          "landArea": "132"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912304",
+            "area": "132"
+          }
+        ],
+        "totalArea": "132"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "e4021cbc-5af0-4fba-b39f-f1ace0b14a5e",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "e4021cbc-5af0-4fba-b39f-f1ace0b14a5e",
+          "landArea": "132",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=a1aaaf47b1975900098238ac861ce213912c1297a438e5ebdaf3ed8c8971c345"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=a1aaaf47b1975900098238ac861ce213912c1297a438e5ebdaf3ed8c8971c345"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "a1aaaf47b1975900098238ac861ce213912c1297a438e5ebdaf3ed8c8971c345",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "a1aaaf47b1975900098238ac861ce213912c1297a438e5ebdaf3ed8c8971c345",
+        "phase0ObservationReferenceSha256": "a1aaaf47b1975900098238ac861ce213912c1297a438e5ebdaf3ed8c8971c345",
+        "developmentObservationReferenceSha256": "a1aaaf47b1975900098238ac861ce213912c1297a438e5ebdaf3ed8c8971c345"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912305",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912305"
+      ],
+      "expectedPropertyUnitIds": [
+        "b6502579-2ec3-4ee8-8df4-7a911e5b3e38"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "b6502579-2ec3-4ee8-8df4-7a911e5b3e38",
+          "landArea": "165"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912305",
+            "area": "165"
+          }
+        ],
+        "totalArea": "165"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "b6502579-2ec3-4ee8-8df4-7a911e5b3e38",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "b6502579-2ec3-4ee8-8df4-7a911e5b3e38",
+          "landArea": "165",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=ab2de505224f46731542181ee67cf49a3707bee6bb6eb29799cebf5bba6b9264"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=ab2de505224f46731542181ee67cf49a3707bee6bb6eb29799cebf5bba6b9264"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "ab2de505224f46731542181ee67cf49a3707bee6bb6eb29799cebf5bba6b9264",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "ab2de505224f46731542181ee67cf49a3707bee6bb6eb29799cebf5bba6b9264",
+        "phase0ObservationReferenceSha256": "ab2de505224f46731542181ee67cf49a3707bee6bb6eb29799cebf5bba6b9264",
+        "developmentObservationReferenceSha256": "ab2de505224f46731542181ee67cf49a3707bee6bb6eb29799cebf5bba6b9264"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912307",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912307"
+      ],
+      "expectedPropertyUnitIds": [
+        "3d61bd88-4765-459e-acbf-756db451bf6f"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "3d61bd88-4765-459e-acbf-756db451bf6f",
+          "landArea": "185"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912307",
+            "area": "185"
+          }
+        ],
+        "totalArea": "185"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "3d61bd88-4765-459e-acbf-756db451bf6f",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "3d61bd88-4765-459e-acbf-756db451bf6f",
+          "landArea": "185",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=aa0921485c9831b0ea308026e3b165cea6288e4951d95dfd27e7a34d222da04e"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=aa0921485c9831b0ea308026e3b165cea6288e4951d95dfd27e7a34d222da04e"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "aa0921485c9831b0ea308026e3b165cea6288e4951d95dfd27e7a34d222da04e",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "aa0921485c9831b0ea308026e3b165cea6288e4951d95dfd27e7a34d222da04e",
+        "phase0ObservationReferenceSha256": "aa0921485c9831b0ea308026e3b165cea6288e4951d95dfd27e7a34d222da04e",
+        "developmentObservationReferenceSha256": "aa0921485c9831b0ea308026e3b165cea6288e4951d95dfd27e7a34d222da04e"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912308",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912308"
+      ],
+      "expectedPropertyUnitIds": [
+        "491939e4-77d4-47d9-b965-0f92491f46c3"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "491939e4-77d4-47d9-b965-0f92491f46c3",
+          "landArea": "86"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912308",
+            "area": "86"
+          }
+        ],
+        "totalArea": "86"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "491939e4-77d4-47d9-b965-0f92491f46c3",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "491939e4-77d4-47d9-b965-0f92491f46c3",
+          "landArea": "86",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=9a43e94700fbc1258c82d0a7a4e06d6be632d7b98948b6ea5094fcf6315fcb7c"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=9a43e94700fbc1258c82d0a7a4e06d6be632d7b98948b6ea5094fcf6315fcb7c"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "9a43e94700fbc1258c82d0a7a4e06d6be632d7b98948b6ea5094fcf6315fcb7c",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "9a43e94700fbc1258c82d0a7a4e06d6be632d7b98948b6ea5094fcf6315fcb7c",
+        "phase0ObservationReferenceSha256": "9a43e94700fbc1258c82d0a7a4e06d6be632d7b98948b6ea5094fcf6315fcb7c",
+        "developmentObservationReferenceSha256": "9a43e94700fbc1258c82d0a7a4e06d6be632d7b98948b6ea5094fcf6315fcb7c"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912309",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912309"
+      ],
+      "expectedPropertyUnitIds": [
+        "2295bf77-f0b1-4a4c-ac83-fca24f7b8c9c"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "2295bf77-f0b1-4a4c-ac83-fca24f7b8c9c",
+          "landArea": "91"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912309",
+            "area": "91"
+          }
+        ],
+        "totalArea": "91"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "2295bf77-f0b1-4a4c-ac83-fca24f7b8c9c",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "2295bf77-f0b1-4a4c-ac83-fca24f7b8c9c",
+          "landArea": "91",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=c283c36fe4fe0ae07ebbf89f4056a1d90368944d63bf35d0e952325d8a87d7a3"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=c283c36fe4fe0ae07ebbf89f4056a1d90368944d63bf35d0e952325d8a87d7a3"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "c283c36fe4fe0ae07ebbf89f4056a1d90368944d63bf35d0e952325d8a87d7a3",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "c283c36fe4fe0ae07ebbf89f4056a1d90368944d63bf35d0e952325d8a87d7a3",
+        "phase0ObservationReferenceSha256": "c283c36fe4fe0ae07ebbf89f4056a1d90368944d63bf35d0e952325d8a87d7a3",
+        "developmentObservationReferenceSha256": "c283c36fe4fe0ae07ebbf89f4056a1d90368944d63bf35d0e952325d8a87d7a3"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912310",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912310"
+      ],
+      "expectedPropertyUnitIds": [
+        "5a702f65-96aa-4901-8a7b-427fc2a8a8f5"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "5a702f65-96aa-4901-8a7b-427fc2a8a8f5",
+          "landArea": "86"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912310",
+            "area": "86"
+          }
+        ],
+        "totalArea": "86"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "5a702f65-96aa-4901-8a7b-427fc2a8a8f5",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "5a702f65-96aa-4901-8a7b-427fc2a8a8f5",
+          "landArea": "86",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=0ba930e2fd42d6ae9714627b1b231810d86cade7becd24bf786359837b3ee604"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=0ba930e2fd42d6ae9714627b1b231810d86cade7becd24bf786359837b3ee604"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "0ba930e2fd42d6ae9714627b1b231810d86cade7becd24bf786359837b3ee604",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "0ba930e2fd42d6ae9714627b1b231810d86cade7becd24bf786359837b3ee604",
+        "phase0ObservationReferenceSha256": "0ba930e2fd42d6ae9714627b1b231810d86cade7becd24bf786359837b3ee604",
+        "developmentObservationReferenceSha256": "0ba930e2fd42d6ae9714627b1b231810d86cade7becd24bf786359837b3ee604"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912311",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912311"
+      ],
+      "expectedPropertyUnitIds": [
+        "37907479-32c0-4dfe-946f-886f01b4100d"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "37907479-32c0-4dfe-946f-886f01b4100d",
+          "landArea": "162"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912311",
+            "area": "162"
+          }
+        ],
+        "totalArea": "162"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "37907479-32c0-4dfe-946f-886f01b4100d",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "37907479-32c0-4dfe-946f-886f01b4100d",
+          "landArea": "162",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=b2ca1846de59866bf4c8a2174b2cebb2f603dbcb47b36bd97b08298d5c696f57"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=b2ca1846de59866bf4c8a2174b2cebb2f603dbcb47b36bd97b08298d5c696f57"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "b2ca1846de59866bf4c8a2174b2cebb2f603dbcb47b36bd97b08298d5c696f57",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "b2ca1846de59866bf4c8a2174b2cebb2f603dbcb47b36bd97b08298d5c696f57",
+        "phase0ObservationReferenceSha256": "b2ca1846de59866bf4c8a2174b2cebb2f603dbcb47b36bd97b08298d5c696f57",
+        "developmentObservationReferenceSha256": "b2ca1846de59866bf4c8a2174b2cebb2f603dbcb47b36bd97b08298d5c696f57"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912316",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912316"
+      ],
+      "expectedPropertyUnitIds": [
+        "6ffd015f-8f25-4146-acd5-685a23cfea54"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "6ffd015f-8f25-4146-acd5-685a23cfea54",
+          "landArea": "154"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912316",
+            "area": "154"
+          }
+        ],
+        "totalArea": "154"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "6ffd015f-8f25-4146-acd5-685a23cfea54",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "6ffd015f-8f25-4146-acd5-685a23cfea54",
+          "landArea": "154",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=300a3dcd71e3da61c0762d8273df096bcd32ff734269085843c7fd5dbdaed1da"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=300a3dcd71e3da61c0762d8273df096bcd32ff734269085843c7fd5dbdaed1da"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "300a3dcd71e3da61c0762d8273df096bcd32ff734269085843c7fd5dbdaed1da",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "300a3dcd71e3da61c0762d8273df096bcd32ff734269085843c7fd5dbdaed1da",
+        "phase0ObservationReferenceSha256": "300a3dcd71e3da61c0762d8273df096bcd32ff734269085843c7fd5dbdaed1da",
+        "developmentObservationReferenceSha256": "300a3dcd71e3da61c0762d8273df096bcd32ff734269085843c7fd5dbdaed1da"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912318",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912318"
+      ],
+      "expectedPropertyUnitIds": [
+        "b674ef6f-3f95-4e4d-83d4-5077cb3b099a"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "b674ef6f-3f95-4e4d-83d4-5077cb3b099a",
+          "landArea": "130"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912318",
+            "area": "130"
+          }
+        ],
+        "totalArea": "130"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "b674ef6f-3f95-4e4d-83d4-5077cb3b099a",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "b674ef6f-3f95-4e4d-83d4-5077cb3b099a",
+          "landArea": "130",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=9c49a419ee4101a57226492c8e4456dd487e0293706db476dc7190e797853a35"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=9c49a419ee4101a57226492c8e4456dd487e0293706db476dc7190e797853a35"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "9c49a419ee4101a57226492c8e4456dd487e0293706db476dc7190e797853a35",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "9c49a419ee4101a57226492c8e4456dd487e0293706db476dc7190e797853a35",
+        "phase0ObservationReferenceSha256": "9c49a419ee4101a57226492c8e4456dd487e0293706db476dc7190e797853a35",
+        "developmentObservationReferenceSha256": "9c49a419ee4101a57226492c8e4456dd487e0293706db476dc7190e797853a35"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912321",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912321"
+      ],
+      "expectedPropertyUnitIds": [
+        "32dad7c2-8a7e-4c6a-99ef-33545fde08f5"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "32dad7c2-8a7e-4c6a-99ef-33545fde08f5",
+          "landArea": "105"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912321",
+            "area": "105"
+          }
+        ],
+        "totalArea": "105"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "32dad7c2-8a7e-4c6a-99ef-33545fde08f5",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "32dad7c2-8a7e-4c6a-99ef-33545fde08f5",
+          "landArea": "105",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=ea2ea2608eba916aa4d042ec0034c865957a79aebdf067dc0f5fec7db6749fbe"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=ea2ea2608eba916aa4d042ec0034c865957a79aebdf067dc0f5fec7db6749fbe"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "ea2ea2608eba916aa4d042ec0034c865957a79aebdf067dc0f5fec7db6749fbe",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "ea2ea2608eba916aa4d042ec0034c865957a79aebdf067dc0f5fec7db6749fbe",
+        "phase0ObservationReferenceSha256": "ea2ea2608eba916aa4d042ec0034c865957a79aebdf067dc0f5fec7db6749fbe",
+        "developmentObservationReferenceSha256": "ea2ea2608eba916aa4d042ec0034c865957a79aebdf067dc0f5fec7db6749fbe"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912322",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912322"
+      ],
+      "expectedPropertyUnitIds": [
+        "7d3b3381-7fc0-45a7-8d18-0ea1d905752e"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "7d3b3381-7fc0-45a7-8d18-0ea1d905752e",
+          "landArea": "177"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912322",
+            "area": "177"
+          }
+        ],
+        "totalArea": "177"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "7d3b3381-7fc0-45a7-8d18-0ea1d905752e",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "7d3b3381-7fc0-45a7-8d18-0ea1d905752e",
+          "landArea": "177",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=4f89c35943d4ed081d7aaa52a498c44690bdb7b6c25e8f3df956d95f341c48fd"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=4f89c35943d4ed081d7aaa52a498c44690bdb7b6c25e8f3df956d95f341c48fd"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "4f89c35943d4ed081d7aaa52a498c44690bdb7b6c25e8f3df956d95f341c48fd",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "4f89c35943d4ed081d7aaa52a498c44690bdb7b6c25e8f3df956d95f341c48fd",
+        "phase0ObservationReferenceSha256": "4f89c35943d4ed081d7aaa52a498c44690bdb7b6c25e8f3df956d95f341c48fd",
+        "developmentObservationReferenceSha256": "4f89c35943d4ed081d7aaa52a498c44690bdb7b6c25e8f3df956d95f341c48fd"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912324",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912324"
+      ],
+      "expectedPropertyUnitIds": [
+        "8ed2d656-01a6-49bc-8b6b-635b39bd3c44"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "8ed2d656-01a6-49bc-8b6b-635b39bd3c44",
+          "landArea": "84"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912324",
+            "area": "84"
+          }
+        ],
+        "totalArea": "84"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "8ed2d656-01a6-49bc-8b6b-635b39bd3c44",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "8ed2d656-01a6-49bc-8b6b-635b39bd3c44",
+          "landArea": "84",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=c28236284bd0e38ddbc815b1c5e5c3ee9014794e894955b49e47e73cc539fc2a"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=c28236284bd0e38ddbc815b1c5e5c3ee9014794e894955b49e47e73cc539fc2a"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "c28236284bd0e38ddbc815b1c5e5c3ee9014794e894955b49e47e73cc539fc2a",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "c28236284bd0e38ddbc815b1c5e5c3ee9014794e894955b49e47e73cc539fc2a",
+        "phase0ObservationReferenceSha256": "c28236284bd0e38ddbc815b1c5e5c3ee9014794e894955b49e47e73cc539fc2a",
+        "developmentObservationReferenceSha256": "c28236284bd0e38ddbc815b1c5e5c3ee9014794e894955b49e47e73cc539fc2a"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912325",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912325"
+      ],
+      "expectedPropertyUnitIds": [
+        "45a49e42-3628-410b-898a-6150e0b0521f"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "45a49e42-3628-410b-898a-6150e0b0521f",
+          "landArea": "75"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912325",
+            "area": "75"
+          }
+        ],
+        "totalArea": "75"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "45a49e42-3628-410b-898a-6150e0b0521f",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "45a49e42-3628-410b-898a-6150e0b0521f",
+          "landArea": "75",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=96e5bf087e1ddd0b35a5ca1c9de5c30b3d9b2824973b70ecf3bb266e692ae307"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=96e5bf087e1ddd0b35a5ca1c9de5c30b3d9b2824973b70ecf3bb266e692ae307"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "96e5bf087e1ddd0b35a5ca1c9de5c30b3d9b2824973b70ecf3bb266e692ae307",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "96e5bf087e1ddd0b35a5ca1c9de5c30b3d9b2824973b70ecf3bb266e692ae307",
+        "phase0ObservationReferenceSha256": "96e5bf087e1ddd0b35a5ca1c9de5c30b3d9b2824973b70ecf3bb266e692ae307",
+        "developmentObservationReferenceSha256": "96e5bf087e1ddd0b35a5ca1c9de5c30b3d9b2824973b70ecf3bb266e692ae307"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912326",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912326"
+      ],
+      "expectedPropertyUnitIds": [
+        "b140f52f-b3e0-4e35-97ee-ab6d8d0887ce"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "b140f52f-b3e0-4e35-97ee-ab6d8d0887ce",
+          "landArea": "128"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912326",
+            "area": "128"
+          }
+        ],
+        "totalArea": "128"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "b140f52f-b3e0-4e35-97ee-ab6d8d0887ce",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "b140f52f-b3e0-4e35-97ee-ab6d8d0887ce",
+          "landArea": "128",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=186dc9e684f49129a9a7c6656316f5eebcab20ee10312e076d06ae041e81af45"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=186dc9e684f49129a9a7c6656316f5eebcab20ee10312e076d06ae041e81af45"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "186dc9e684f49129a9a7c6656316f5eebcab20ee10312e076d06ae041e81af45",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "186dc9e684f49129a9a7c6656316f5eebcab20ee10312e076d06ae041e81af45",
+        "phase0ObservationReferenceSha256": "186dc9e684f49129a9a7c6656316f5eebcab20ee10312e076d06ae041e81af45",
+        "developmentObservationReferenceSha256": "186dc9e684f49129a9a7c6656316f5eebcab20ee10312e076d06ae041e81af45"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912328",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912328"
+      ],
+      "expectedPropertyUnitIds": [
+        "e4073811-ed2a-4edb-897b-7e979ae51468"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "e4073811-ed2a-4edb-897b-7e979ae51468",
+          "landArea": "139"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912328",
+            "area": "139"
+          }
+        ],
+        "totalArea": "139"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "e4073811-ed2a-4edb-897b-7e979ae51468",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "e4073811-ed2a-4edb-897b-7e979ae51468",
+          "landArea": "139",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=127e4664ef069d72967d0c9c44c79c1a3b49d8c41baa6642afa2f482212361e7"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=127e4664ef069d72967d0c9c44c79c1a3b49d8c41baa6642afa2f482212361e7"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "127e4664ef069d72967d0c9c44c79c1a3b49d8c41baa6642afa2f482212361e7",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "127e4664ef069d72967d0c9c44c79c1a3b49d8c41baa6642afa2f482212361e7",
+        "phase0ObservationReferenceSha256": "127e4664ef069d72967d0c9c44c79c1a3b49d8c41baa6642afa2f482212361e7",
+        "developmentObservationReferenceSha256": "127e4664ef069d72967d0c9c44c79c1a3b49d8c41baa6642afa2f482212361e7"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912329",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912329"
+      ],
+      "expectedPropertyUnitIds": [
+        "d015a504-1750-499e-9c02-0286a8d60193"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "d015a504-1750-499e-9c02-0286a8d60193",
+          "landArea": "75"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912329",
+            "area": "75"
+          }
+        ],
+        "totalArea": "75"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "d015a504-1750-499e-9c02-0286a8d60193",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "d015a504-1750-499e-9c02-0286a8d60193",
+          "landArea": "75",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=ccc8db65ed29cf28667ec22347883f203ee419e597f41969832d0e737d712c6d"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=ccc8db65ed29cf28667ec22347883f203ee419e597f41969832d0e737d712c6d"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "ccc8db65ed29cf28667ec22347883f203ee419e597f41969832d0e737d712c6d",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "ccc8db65ed29cf28667ec22347883f203ee419e597f41969832d0e737d712c6d",
+        "phase0ObservationReferenceSha256": "ccc8db65ed29cf28667ec22347883f203ee419e597f41969832d0e737d712c6d",
+        "developmentObservationReferenceSha256": "ccc8db65ed29cf28667ec22347883f203ee419e597f41969832d0e737d712c6d"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912332",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912332"
+      ],
+      "expectedPropertyUnitIds": [
+        "f77e82cf-6fe9-43ca-96a8-454e82a8a7bb"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "f77e82cf-6fe9-43ca-96a8-454e82a8a7bb",
+          "landArea": "46"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912332",
+            "area": "46"
+          }
+        ],
+        "totalArea": "46"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "f77e82cf-6fe9-43ca-96a8-454e82a8a7bb",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "f77e82cf-6fe9-43ca-96a8-454e82a8a7bb",
+          "landArea": "46",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=070feaee631dd21d92e1b36ad34c0ac4c13aa980f8dd6486454367c68b459596"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=070feaee631dd21d92e1b36ad34c0ac4c13aa980f8dd6486454367c68b459596"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "070feaee631dd21d92e1b36ad34c0ac4c13aa980f8dd6486454367c68b459596",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "070feaee631dd21d92e1b36ad34c0ac4c13aa980f8dd6486454367c68b459596",
+        "phase0ObservationReferenceSha256": "070feaee631dd21d92e1b36ad34c0ac4c13aa980f8dd6486454367c68b459596",
+        "developmentObservationReferenceSha256": "070feaee631dd21d92e1b36ad34c0ac4c13aa980f8dd6486454367c68b459596"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912333",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912333"
+      ],
+      "expectedPropertyUnitIds": [
+        "9824f46a-76ac-4755-b908-b5ad0f7a40bb"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "9824f46a-76ac-4755-b908-b5ad0f7a40bb",
+          "landArea": "132"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912333",
+            "area": "132"
+          }
+        ],
+        "totalArea": "132"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "9824f46a-76ac-4755-b908-b5ad0f7a40bb",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "9824f46a-76ac-4755-b908-b5ad0f7a40bb",
+          "landArea": "132",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=4e7f9451bee9a1bbd23f622743720572d11335cd9554e891f4bb4bdaa5923543"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=4e7f9451bee9a1bbd23f622743720572d11335cd9554e891f4bb4bdaa5923543"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "4e7f9451bee9a1bbd23f622743720572d11335cd9554e891f4bb4bdaa5923543",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "4e7f9451bee9a1bbd23f622743720572d11335cd9554e891f4bb4bdaa5923543",
+        "phase0ObservationReferenceSha256": "4e7f9451bee9a1bbd23f622743720572d11335cd9554e891f4bb4bdaa5923543",
+        "developmentObservationReferenceSha256": "4e7f9451bee9a1bbd23f622743720572d11335cd9554e891f4bb4bdaa5923543"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912341",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912341"
+      ],
+      "expectedPropertyUnitIds": [
+        "2d373564-0b55-4976-a416-388daf765202"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "2d373564-0b55-4976-a416-388daf765202",
+          "landArea": "83"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912341",
+            "area": "83"
+          }
+        ],
+        "totalArea": "83"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "2d373564-0b55-4976-a416-388daf765202",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "2d373564-0b55-4976-a416-388daf765202",
+          "landArea": "83",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=9d14da8fa499477f2945dc1680c52d031e4260c42edb896860e1c0caefe4b28e"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=9d14da8fa499477f2945dc1680c52d031e4260c42edb896860e1c0caefe4b28e"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "9d14da8fa499477f2945dc1680c52d031e4260c42edb896860e1c0caefe4b28e",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "9d14da8fa499477f2945dc1680c52d031e4260c42edb896860e1c0caefe4b28e",
+        "phase0ObservationReferenceSha256": "9d14da8fa499477f2945dc1680c52d031e4260c42edb896860e1c0caefe4b28e",
+        "developmentObservationReferenceSha256": "9d14da8fa499477f2945dc1680c52d031e4260c42edb896860e1c0caefe4b28e"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912471",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912471"
+      ],
+      "expectedPropertyUnitIds": [
+        "1539337f-610b-44bd-ade5-a115391a64ce"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "1539337f-610b-44bd-ade5-a115391a64ce",
+          "landArea": "122"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912471",
+            "area": "122"
+          }
+        ],
+        "totalArea": "122"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "1539337f-610b-44bd-ade5-a115391a64ce",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "1539337f-610b-44bd-ade5-a115391a64ce",
+          "landArea": "122",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=7aff6b93480ca389536624a8d1aec9b478d23f44e9ced6b3e17d3235aab5d303"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=7aff6b93480ca389536624a8d1aec9b478d23f44e9ced6b3e17d3235aab5d303"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "7aff6b93480ca389536624a8d1aec9b478d23f44e9ced6b3e17d3235aab5d303",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "7aff6b93480ca389536624a8d1aec9b478d23f44e9ced6b3e17d3235aab5d303",
+        "phase0ObservationReferenceSha256": "7aff6b93480ca389536624a8d1aec9b478d23f44e9ced6b3e17d3235aab5d303",
+        "developmentObservationReferenceSha256": "7aff6b93480ca389536624a8d1aec9b478d23f44e9ced6b3e17d3235aab5d303"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912475",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912475"
+      ],
+      "expectedPropertyUnitIds": [
+        "e4558149-cb1c-47e5-ab8e-b8810d56e11b"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "e4558149-cb1c-47e5-ab8e-b8810d56e11b",
+          "landArea": "153"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912475",
+            "area": "153"
+          }
+        ],
+        "totalArea": "153"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "e4558149-cb1c-47e5-ab8e-b8810d56e11b",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "e4558149-cb1c-47e5-ab8e-b8810d56e11b",
+          "landArea": "153",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=6263b139f59b061fefc920334fe30c905248b0052a3670a8300c3b0de41f565e"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=6263b139f59b061fefc920334fe30c905248b0052a3670a8300c3b0de41f565e"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "6263b139f59b061fefc920334fe30c905248b0052a3670a8300c3b0de41f565e",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "6263b139f59b061fefc920334fe30c905248b0052a3670a8300c3b0de41f565e",
+        "phase0ObservationReferenceSha256": "6263b139f59b061fefc920334fe30c905248b0052a3670a8300c3b0de41f565e",
+        "developmentObservationReferenceSha256": "6263b139f59b061fefc920334fe30c905248b0052a3670a8300c3b0de41f565e"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912767",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912767"
+      ],
+      "expectedPropertyUnitIds": [
+        "3103aba3-fc39-4ce5-9fe2-7e92ff6751f1"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "3103aba3-fc39-4ce5-9fe2-7e92ff6751f1",
+          "landArea": "83"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912767",
+            "area": "83"
+          }
+        ],
+        "totalArea": "83"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "3103aba3-fc39-4ce5-9fe2-7e92ff6751f1",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "3103aba3-fc39-4ce5-9fe2-7e92ff6751f1",
+          "landArea": "83",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=805338a4b92ca02e0a63f936dd194d5f76d0b7513031b6fdd7cfda73c97d5608"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=805338a4b92ca02e0a63f936dd194d5f76d0b7513031b6fdd7cfda73c97d5608"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "805338a4b92ca02e0a63f936dd194d5f76d0b7513031b6fdd7cfda73c97d5608",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "805338a4b92ca02e0a63f936dd194d5f76d0b7513031b6fdd7cfda73c97d5608",
+        "phase0ObservationReferenceSha256": "805338a4b92ca02e0a63f936dd194d5f76d0b7513031b6fdd7cfda73c97d5608",
+        "developmentObservationReferenceSha256": "805338a4b92ca02e0a63f936dd194d5f76d0b7513031b6fdd7cfda73c97d5608"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107912859",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107912859"
+      ],
+      "expectedPropertyUnitIds": [
+        "c6dd9178-bb69-428e-b8da-142c96bca1fd"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "c6dd9178-bb69-428e-b8da-142c96bca1fd",
+          "landArea": "66"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107912859",
+            "area": "66"
+          }
+        ],
+        "totalArea": "66"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "c6dd9178-bb69-428e-b8da-142c96bca1fd",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "c6dd9178-bb69-428e-b8da-142c96bca1fd",
+          "landArea": "66",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=076c501f4405135533777edd19adc985f312fc09f936d3d40af6bbca2e129bcc"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=076c501f4405135533777edd19adc985f312fc09f936d3d40af6bbca2e129bcc"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "076c501f4405135533777edd19adc985f312fc09f936d3d40af6bbca2e129bcc",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "076c501f4405135533777edd19adc985f312fc09f936d3d40af6bbca2e129bcc",
+        "phase0ObservationReferenceSha256": "076c501f4405135533777edd19adc985f312fc09f936d3d40af6bbca2e129bcc",
+        "developmentObservationReferenceSha256": "076c501f4405135533777edd19adc985f312fc09f936d3d40af6bbca2e129bcc"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107913043",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107913043"
+      ],
+      "expectedPropertyUnitIds": [
+        "56b1ec90-ddc9-487e-8c8b-85bfe36e56d0"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "56b1ec90-ddc9-487e-8c8b-85bfe36e56d0",
+          "landArea": "93"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107913043",
+            "area": "93"
+          }
+        ],
+        "totalArea": "93"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "56b1ec90-ddc9-487e-8c8b-85bfe36e56d0",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "56b1ec90-ddc9-487e-8c8b-85bfe36e56d0",
+          "landArea": "93",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=30123c07a387710b33ccfd7952b4e60c1658998d85120cd4c3b774209d6f7911"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=30123c07a387710b33ccfd7952b4e60c1658998d85120cd4c3b774209d6f7911"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "30123c07a387710b33ccfd7952b4e60c1658998d85120cd4c3b774209d6f7911",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "30123c07a387710b33ccfd7952b4e60c1658998d85120cd4c3b774209d6f7911",
+        "phase0ObservationReferenceSha256": "30123c07a387710b33ccfd7952b4e60c1658998d85120cd4c3b774209d6f7911",
+        "developmentObservationReferenceSha256": "30123c07a387710b33ccfd7952b4e60c1658998d85120cd4c3b774209d6f7911"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107913051",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107913051"
+      ],
+      "expectedPropertyUnitIds": [
+        "ec64f13e-44de-4ddc-8cbb-0ae62f0f4a6c"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "ec64f13e-44de-4ddc-8cbb-0ae62f0f4a6c",
+          "landArea": "86"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107913051",
+            "area": "86"
+          }
+        ],
+        "totalArea": "86"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "ec64f13e-44de-4ddc-8cbb-0ae62f0f4a6c",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "ec64f13e-44de-4ddc-8cbb-0ae62f0f4a6c",
+          "landArea": "86",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=24a8a4aa8cf0a995c5a44700c77c446a8bfee350bc4585863cbf22ec0ffd12cf"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=24a8a4aa8cf0a995c5a44700c77c446a8bfee350bc4585863cbf22ec0ffd12cf"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "24a8a4aa8cf0a995c5a44700c77c446a8bfee350bc4585863cbf22ec0ffd12cf",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "24a8a4aa8cf0a995c5a44700c77c446a8bfee350bc4585863cbf22ec0ffd12cf",
+        "phase0ObservationReferenceSha256": "24a8a4aa8cf0a995c5a44700c77c446a8bfee350bc4585863cbf22ec0ffd12cf",
+        "developmentObservationReferenceSha256": "24a8a4aa8cf0a995c5a44700c77c446a8bfee350bc4585863cbf22ec0ffd12cf"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107913053",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107913053"
+      ],
+      "expectedPropertyUnitIds": [
+        "06fcba49-dc3e-468e-98d4-34ac3ac2fc2a"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "06fcba49-dc3e-468e-98d4-34ac3ac2fc2a",
+          "landArea": "122"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107913053",
+            "area": "122"
+          }
+        ],
+        "totalArea": "122"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "06fcba49-dc3e-468e-98d4-34ac3ac2fc2a",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "06fcba49-dc3e-468e-98d4-34ac3ac2fc2a",
+          "landArea": "122",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=5958fcead786a3996895e172848b0f253a0d804c416667da92663a627305f5ab"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=5958fcead786a3996895e172848b0f253a0d804c416667da92663a627305f5ab"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "5958fcead786a3996895e172848b0f253a0d804c416667da92663a627305f5ab",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "5958fcead786a3996895e172848b0f253a0d804c416667da92663a627305f5ab",
+        "phase0ObservationReferenceSha256": "5958fcead786a3996895e172848b0f253a0d804c416667da92663a627305f5ab",
+        "developmentObservationReferenceSha256": "5958fcead786a3996895e172848b0f253a0d804c416667da92663a627305f5ab"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107913223",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107913223"
+      ],
+      "expectedPropertyUnitIds": [
+        "76124f19-9359-47fe-be22-636ec636e211"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "76124f19-9359-47fe-be22-636ec636e211",
+          "landArea": "60"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107913223",
+            "area": "60"
+          }
+        ],
+        "totalArea": "60"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "76124f19-9359-47fe-be22-636ec636e211",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "76124f19-9359-47fe-be22-636ec636e211",
+          "landArea": "60",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=5fb6756675dac11b8dc4cec91a9a8b9f749b197b8aa6dcf1e014e34c876ac2e7"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=5fb6756675dac11b8dc4cec91a9a8b9f749b197b8aa6dcf1e014e34c876ac2e7"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "5fb6756675dac11b8dc4cec91a9a8b9f749b197b8aa6dcf1e014e34c876ac2e7",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "5fb6756675dac11b8dc4cec91a9a8b9f749b197b8aa6dcf1e014e34c876ac2e7",
+        "phase0ObservationReferenceSha256": "5fb6756675dac11b8dc4cec91a9a8b9f749b197b8aa6dcf1e014e34c876ac2e7",
+        "developmentObservationReferenceSha256": "5fb6756675dac11b8dc4cec91a9a8b9f749b197b8aa6dcf1e014e34c876ac2e7"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107913511",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107913511"
+      ],
+      "expectedPropertyUnitIds": [
+        "6cf781eb-114f-4cd0-b1f3-4adddabf1b97"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "6cf781eb-114f-4cd0-b1f3-4adddabf1b97",
+          "landArea": "122"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107913511",
+            "area": "122"
+          }
+        ],
+        "totalArea": "122"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "6cf781eb-114f-4cd0-b1f3-4adddabf1b97",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "6cf781eb-114f-4cd0-b1f3-4adddabf1b97",
+          "landArea": "122",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=34902ab836bf8451793b5aadabbfd1e92aef1131bcbc5878942ecca9e331d4c3"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=34902ab836bf8451793b5aadabbfd1e92aef1131bcbc5878942ecca9e331d4c3"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "34902ab836bf8451793b5aadabbfd1e92aef1131bcbc5878942ecca9e331d4c3",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "34902ab836bf8451793b5aadabbfd1e92aef1131bcbc5878942ecca9e331d4c3",
+        "phase0ObservationReferenceSha256": "34902ab836bf8451793b5aadabbfd1e92aef1131bcbc5878942ecca9e331d4c3",
+        "developmentObservationReferenceSha256": "34902ab836bf8451793b5aadabbfd1e92aef1131bcbc5878942ecca9e331d4c3"
+      }
+    },
+    {
+      "anchorPnu": "1130510100107913517",
+      "expectedStrategy": "LADFRL",
+      "expectedScannedPnus": [
+        "1130510100107913517"
+      ],
+      "expectedPropertyUnitIds": [
+        "5a1cc3b3-0fb0-4e60-84a5-6c60e211821f"
+      ],
+      "expectedProposedLandAreas": [
+        {
+          "propertyUnitId": "5a1cc3b3-0fb0-4e60-84a5-6c60e211821f",
+          "landArea": "165"
+        }
+      ],
+      "expectedLadfrlAreaEvidence": {
+        "parcels": [
+          {
+            "pnu": "1130510100107913517",
+            "area": "165"
+          }
+        ],
+        "totalArea": "165"
+      },
+      "allowedPrestates": [
+        {
+          "propertyUnitId": "5a1cc3b3-0fb0-4e60-84a5-6c60e211821f",
+          "landArea": null,
+          "landAreaSource": "LEGACY_UNKNOWN"
+        },
+        {
+          "propertyUnitId": "5a1cc3b3-0fb0-4e60-84a5-6c60e211821f",
+          "landArea": "165",
+          "landAreaSource": "LADFRL"
+        }
+      ],
+      "parcelScopeEvidence": {
+        "kind": "API_RELATION_CROSS_CHECK",
+        "ref": "captureRun=30120598126;snapshot=0e5efbdf9878d80c90b40670f03db3bbdcee239abd26203636520629e14aece7"
+      },
+      "landOwnershipEvidence": {
+        "kind": "OTHER",
+        "ref": "captureRun=30120598126;snapshot=0e5efbdf9878d80c90b40670f03db3bbdcee239abd26203636520629e14aece7"
+      },
+      "allowManualOverwrite": false,
+      "sourceReferences": {
+        "workbookFileReferenceSha256": "1f8a924943690353a35d0effc1b20c532458436291233eb70661e61ab8377c9a",
+        "sheet": "LIVE_CAPTURE",
+        "cells": [
+          "A1"
+        ],
+        "selectedCellsReferenceSha256": "0e5efbdf9878d80c90b40670f03db3bbdcee239abd26203636520629e14aece7",
+        "phase0RunId": "30120598126",
+        "phase0ArtifactReferenceSha256": "0e5efbdf9878d80c90b40670f03db3bbdcee239abd26203636520629e14aece7",
+        "phase0ObservationReferenceSha256": "0e5efbdf9878d80c90b40670f03db3bbdcee239abd26203636520629e14aece7",
+        "developmentObservationReferenceSha256": "0e5efbdf9878d80c90b40670f03db3bbdcee239abd26203636520629e14aece7"
+      }
+    }
+  ]
+}

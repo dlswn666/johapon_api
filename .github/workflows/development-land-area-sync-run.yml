@@ -10,6 +10,7 @@ on:
         default: mia-seven-representative-20260725
         options:
           - mia-seven-representative-20260725
+          - mia-seven-auto-76-20260725
 
 permissions:
   contents: read
@@ -74,6 +75,11 @@ jobs:
               target_path="development-land-area-sync-manifests/mia-seven-representative-target-20260725.json"
               db_approval_path="development-land-area-sync-manifests/mia-seven-representative-db-approval-20260725.json"
               evidence_path="development-land-area-sync-manifests/mia-seven-representative-evidence-20260725.json"
+              ;;
+            mia-seven-auto-76-20260725)
+              target_path="development-land-area-sync-manifests/mia-seven-auto-76-target-20260725.json"
+              db_approval_path="development-land-area-sync-manifests/mia-seven-auto-76-db-approval-20260725.json"
+              evidence_path="development-land-area-sync-manifests/mia-seven-auto-76-evidence-20260725.json"
               ;;
             *)
               echo "::error::Manifest bundle is not repository-approved."
