@@ -1754,6 +1754,15 @@ export async function runDevelopmentLandAreaSync(input: {
                 input.target.unionId,
                 pnu
             );
+            // terminal FAILED job은 재개할 수 없다. 직전 apply가 DB guard 등으로
+            // 실패한 뒤 같은 manifest를 재실행하면 새 discovery로 현재 scope/evidence를
+            // 다시 고정해야 하며, 실패 job을 poll해 즉시 중단해서는 안 된다.
+            if (
+                latest?.status === 'FAILED' ||
+                latest?.landAreaSync?.scopeState === 'FAILED'
+            ) {
+                latest = null;
+            }
             let discoveryJobId: string | null = null;
             let applyJobId: string | null = null;
             if (!latest) {

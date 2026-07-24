@@ -746,6 +746,72 @@ test('직렬 runner는 discovery terminal을 증거와 exact 대조한 뒤 1회 
     );
 });
 
+test('latest FAILED terminal은 재사용하지 않고 새 discovery로 재시도한다', async () => {
+    const targetManifest = target();
+    const evidenceManifest = evidence(targetManifest);
+    const failedJobId = '44444444-4444-4444-8444-444444444444';
+    const calls: string[] = [];
+    const client: LandAreaSyncApiClient = {
+        async getLatest() {
+            calls.push('latest');
+            return job(failedJobId, {
+                status: 'FAILED',
+                scopeState: 'FAILED',
+                outcome: null,
+                sourceDiscoveryJobId: DISCOVERY_JOB_ID,
+            });
+        },
+        async admitDiscovery() {
+            calls.push('admit-discovery');
+            return DISCOVERY_JOB_ID;
+        },
+        async getJob(_unionId, jobId) {
+            calls.push(`get:${jobId}`);
+            return job(jobId, {
+                status: 'COMPLETED',
+                scopeState:
+                    jobId === DISCOVERY_JOB_ID
+                        ? 'SINGLE_SCOPE_CONFIRMATION_REQUIRED'
+                        : 'SINGLE_PNU_CONFIRMED',
+                outcome:
+                    jobId === DISCOVERY_JOB_ID
+                        ? 'REVIEW_REQUIRED'
+                        : 'APPLIED',
+                sourceDiscoveryJobId:
+                    jobId === DISCOVERY_JOB_ID
+                        ? null
+                        : DISCOVERY_JOB_ID,
+            });
+        },
+        async confirmDiscovery() {
+            calls.push('confirm');
+            return APPLY_JOB_ID;
+        },
+    };
+    const admissionKeys = [DISCOVERY_JOB_ID, APPLY_JOB_ID];
+    const artifact = await runDevelopmentLandAreaSync({
+        target: targetManifest,
+        dbApproval: approval(targetManifest),
+        evidence: evidenceManifest,
+        client,
+        preflightReader: preflightReader(evidenceManifest.entries),
+        sleep: async () => undefined,
+        createAdmissionKey: () => admissionKeys.shift()!,
+    });
+
+    assert.equal(artifact.gate.status, 'PASS');
+    assert.equal(artifact.results[0].admission, 'NEW_DISCOVERY');
+    assert.equal(artifact.results[0].discoveryJobId, DISCOVERY_JOB_ID);
+    assert.equal(artifact.results[0].applyJobId, APPLY_JOB_ID);
+    assert.deepEqual(calls, [
+        'latest',
+        'admit-discovery',
+        `get:${DISCOVERY_JOB_ID}`,
+        'confirm',
+        `get:${APPLY_JOB_ID}`,
+    ]);
+});
+
 test('discovery 증거 불일치는 raw 값을 노출하지 않는 필드별 코드로 쓰기 전 중단한다', async () => {
     const targetManifest = target();
     const evidenceManifest = evidence(targetManifest);
