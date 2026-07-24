@@ -1,0 +1,494 @@
+name: Development Land Area Read-Only Evidence Capture
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest:
+        description: Repository-approved development target
+        required: true
+        type: choice
+        default: mia-seven-auto-286-20260725
+        options:
+          - mia-seven-auto-286-20260725
+
+permissions:
+  contents: read
+
+concurrency:
+  group: development-land-area-readonly-evidence
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    name: Capture development evidence without DB writes
+    runs-on: ubuntu-latest
+    environment: land-area-sync-development-backfill
+    timeout-minutes: 90
+    steps:
+      - name: Require approved main revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Development evidence capture must run from refs/heads/main."
+            exit 1
+          fi
+
+      - name: Checkout exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Test and compile capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+          npm run build
+
+      - name: Resolve repository-approved target
+        id: manifest
+        shell: bash
+        env:
+          MANIFEST_NAME: ${{ inputs.manifest }}
+        run: |
+          set -euo pipefail
+          case "${MANIFEST_NAME}" in
+            mia-seven-auto-286-20260725)
+              target_path="development-land-area-sync-manifests/mia-seven-auto-286-target-20260725.json"
+              ;;
+            *)
+              echo "::error::Target manifest is not repository-approved."
+              exit 1
+              ;;
+          esac
+          if [[ ! -f "${target_path}" || -L "${target_path}" ]]; then
+            echo "::error::Approved target must be a regular file."
+            exit 1
+          fi
+          target_size="$(stat -c '%s' "${target_path}")"
+          if [[ "${target_size}" -lt 2 || "${target_size}" -gt 1048576 ]]; then
+            echo "::error::Approved target size is invalid."
+            exit 1
+          fi
+          node - "${target_path}" <<'NODE'
+          const fs = require("node:fs");
+          const {
+            parseDevelopmentTargetManifest,
+          } = require("./dist/operations/development-land-area-sync-runner.js");
+          const target = parseDevelopmentTargetManifest(
+            JSON.parse(fs.readFileSync(process.argv[2], "utf8"))
+          );
+          if (target.targetCount !== 286 || target.expectedPropertyUnitCount !== 328) {
+            process.exit(1);
+          }
+          NODE
+          echo "target_path=${target_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Configure pinned EC2 SSH identity
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_FINGERPRINT: ${{ secrets.EC2_SSH_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          for variable_name in \
+            EC2_HOST \
+            EC2_USERNAME \
+            EC2_SSH_KEY \
+            EC2_SSH_FINGERPRINT
+          do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "::error::Missing required EC2 connection secret."
+              exit 1
+            fi
+          done
+          if [[ ! "${EC2_USERNAME}" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+            echo "::error::EC2 username format is invalid."
+            exit 1
+          fi
+          if [[
+            ${#EC2_HOST} -gt 253
+            || ! "${EC2_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$
+          ]]; then
+            echo "::error::EC2 host format is invalid."
+            exit 1
+          fi
+          install -d -m 700 "${HOME}/.ssh"
+          install -m 600 /dev/null "${HOME}/.ssh/id_ed25519"
+          printf '%s\n' "${EC2_SSH_KEY}" > "${HOME}/.ssh/id_ed25519"
+          host_keys="$(ssh-keyscan -T 10 -t ed25519,ecdsa,rsa "${EC2_HOST}" 2>/dev/null)"
+          if [[ -z "${host_keys}" ]]; then
+            echo "::error::EC2 host key scan returned no keys."
+            exit 1
+          fi
+          matched_host_key=""
+          while IFS= read -r host_key; do
+            fingerprint="$(
+              printf '%s\n' "${host_key}" \
+                | ssh-keygen -lf - -E sha256 \
+                | awk '{print $2}'
+            )"
+            if [[ "${fingerprint}" == "${EC2_SSH_FINGERPRINT}" ]]; then
+              matched_host_key="${host_key}"
+              break
+            fi
+          done <<< "${host_keys}"
+          if [[ -z "${matched_host_key}" ]]; then
+            echo "::error::EC2 SSH fingerprint mismatch."
+            exit 1
+          fi
+          printf '%s\n' "${matched_host_key}" > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/known_hosts"
+
+      - name: Run read-only capture in exact deployed container
+        id: remote
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          TARGET_PATH: ${{ steps.manifest.outputs.target_path }}
+          RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+          CAPTURE_RUN_ID: ${{ github.run_id }}
+          EXPECTED_GIT_SHA: ${{ github.sha }}
+          EXPECTED_IMAGE_TAG: ghcr.io/dlswn666/alimtalk-proxy:${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          if [[
+            ! "${RUN_KEY}" =~ ^[0-9]+-[0-9]+$
+            || ! "${CAPTURE_RUN_ID}" =~ ^[1-9][0-9]*$
+            || ! "${EXPECTED_GIT_SHA}" =~ ^[0-9a-f]{40}$
+            || "${EXPECTED_IMAGE_TAG}" != "ghcr.io/dlswn666/alimtalk-proxy:${EXPECTED_GIT_SHA}"
+          ]]; then
+            echo "::error::Capture run identity is invalid."
+            exit 1
+          fi
+          ssh_options=(
+            -i "${HOME}/.ssh/id_ed25519"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o "UserKnownHostsFile=${HOME}/.ssh/known_hosts"
+          )
+          remote_root="alimtalk-proxy/.development-land-area-evidence-workflow/${RUN_KEY}"
+          local_root="development-land-area-evidence-output"
+          mkdir -m 700 -- "${local_root}"
+          cleanup_remote() {
+            ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+              "RUN_KEY='${RUN_KEY}' bash -s" <<'REMOTE_CLEANUP'
+          set -euo pipefail
+          run_root="${HOME}/alimtalk-proxy/.development-land-area-evidence-workflow/${RUN_KEY}"
+          if [[ -d "${run_root}" && ! -L "${run_root}" ]]; then
+            rm -f -- \
+              "${run_root}/target.json" \
+              "${run_root}/evidence.json" \
+              "${run_root}/audit.json" \
+              "${run_root}/status"
+            rmdir -- "${run_root}"
+          fi
+          test ! -e "${run_root}"
+          test ! -L "${run_root}"
+          REMOTE_CLEANUP
+          }
+          finish_step() {
+            local prior_status="$?"
+            trap - EXIT
+            if ! cleanup_remote; then
+              echo "::error::Remote capture cleanup failed."
+              exit 1
+            fi
+            exit "${prior_status}"
+          }
+
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "RUN_KEY='${RUN_KEY}' bash -s" <<'REMOTE_PREPARE'
+          set -euo pipefail
+          application_root="${HOME}/alimtalk-proxy"
+          parent="${application_root}/.development-land-area-evidence-workflow"
+          run_root="${parent}/${RUN_KEY}"
+          test -d "${application_root}"
+          test ! -L "${application_root}"
+          if [[ -e "${parent}" || -L "${parent}" ]]; then
+            test -d "${parent}"
+            test ! -L "${parent}"
+          else
+            mkdir -m 700 -- "${parent}"
+          fi
+          chmod 700 "${parent}"
+          (umask 077; mkdir -m 700 -- "${run_root}")
+          REMOTE_PREPARE
+          trap finish_step EXIT
+          scp "${ssh_options[@]}" "${TARGET_PATH}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/target.json"
+
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "RUN_KEY='${RUN_KEY}' CAPTURE_RUN_ID='${CAPTURE_RUN_ID}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' EXPECTED_IMAGE_TAG='${EXPECTED_IMAGE_TAG}' bash -s" <<'REMOTE_CAPTURE'
+          set -Eeuo pipefail
+          umask 077
+          application_root="${HOME}/alimtalk-proxy"
+          run_root="${application_root}/.development-land-area-evidence-workflow/${RUN_KEY}"
+          operation_lock_path="${application_root}/.land-area-sync-operation.lock"
+          container_name="alimtalk-proxy"
+          container_root="/app/.development-land-area-evidence-capture"
+          container_target="${container_root}/target-${RUN_KEY}.json"
+          container_evidence="${container_root}/evidence-${RUN_KEY}.json"
+          container_audit="${container_root}/audit-${RUN_KEY}.json"
+          host_target="${run_root}/target.json"
+          host_evidence="${run_root}/evidence.json"
+          host_audit="${run_root}/audit.json"
+          host_status="${run_root}/status"
+          target_container=""
+
+          cleanup_container() {
+            if [[ -n "${target_container}" ]]; then
+              docker exec "${target_container}" rm -f -- \
+                "${container_target}" \
+                "${container_evidence}" \
+                "${container_audit}" || true
+            fi
+          }
+          finish_remote() {
+            local prior_status="$?"
+            trap - EXIT
+            cleanup_container
+            exit "${prior_status}"
+          }
+          trap finish_remote EXIT
+
+          test -f "${operation_lock_path}"
+          test ! -L "${operation_lock_path}"
+          exec 9>>"${operation_lock_path}"
+          flock -w 900 9
+          test -f "${host_target}"
+          test ! -L "${host_target}"
+          chmod 600 "${host_target}"
+
+          target_container="$(docker inspect --format '{{.Id}}' "${container_name}")"
+          target_image_id="$(docker inspect --format '{{.Image}}' "${container_name}")"
+          target_revision="$(
+            docker image inspect \
+              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+              "${target_image_id}"
+          )"
+          if [[
+            ! "${target_container}" =~ ^[0-9a-f]{64}$
+            || ! "${target_image_id}" =~ ^sha256:[0-9a-f]{64}$
+            || "${target_revision}" != "${EXPECTED_GIT_SHA}"
+          ]]; then
+            exit 67
+          fi
+
+          health="$(
+            docker exec "${target_container}" \
+              node -e '
+                const http = require("node:http");
+                const request = http.get("http://127.0.0.1:3100/health", { timeout: 5000 }, (response) => {
+                  let body = "";
+                  response.setEncoding("utf8");
+                  response.on("data", (chunk) => body += chunk);
+                  response.on("end", () => process.stdout.write(body));
+                });
+                request.on("timeout", () => request.destroy());
+                request.on("error", () => process.exit(1));
+              '
+          )"
+          HEALTH="${health}" EXPECTED_GIT_SHA="${EXPECTED_GIT_SHA}" \
+            EXPECTED_IMAGE_TAG="${EXPECTED_IMAGE_TAG}" node -e '
+              const value = JSON.parse(process.env.HEALTH);
+              if (
+                value?.status !== "ok"
+                || value?.gitSha !== process.env.EXPECTED_GIT_SHA
+                || value?.imageTag !== process.env.EXPECTED_IMAGE_TAG
+                || value?.features?.landAreaSyncEnabled !== false
+                || value?.features?.landAreaSyncAllowedTargetCount !== 0
+              ) process.exit(1);
+            '
+
+          docker exec "${target_container}" \
+            install -d -m 700 "${container_root}"
+          docker exec -i \
+            -e PRIVATE_INPUT_PATH="${container_target}" \
+            "${target_container}" \
+            node -e '
+              const fs = require("node:fs");
+              const target = process.env.PRIVATE_INPUT_PATH;
+              if (!/^\/app\/\.development-land-area-evidence-capture\/target-[0-9]+-[0-9]+\.json$/.test(target)) process.exit(1);
+              const chunks = [];
+              let size = 0;
+              process.stdin.on("data", (chunk) => {
+                size += chunk.length;
+                if (size > 1048576) process.exit(1);
+                chunks.push(chunk);
+              });
+              process.stdin.on("end", () => {
+                fs.writeFileSync(target, Buffer.concat(chunks), { flag: "wx", mode: 0o600 });
+              });
+            ' < "${host_target}"
+
+          set +e
+          docker exec -w /app "${target_container}" \
+            node dist/cli/development-land-area-evidence-capture.js \
+            --target ".development-land-area-evidence-capture/target-${RUN_KEY}.json" \
+            --capture-run-id "${CAPTURE_RUN_ID}" \
+            --evidence-out ".development-land-area-evidence-capture/evidence-${RUN_KEY}.json" \
+            --audit-out ".development-land-area-evidence-capture/audit-${RUN_KEY}.json"
+          capture_status="$?"
+          set -e
+          if docker exec "${target_container}" test -f "${container_audit}"; then
+            docker cp "${target_container}:${container_audit}" "${host_audit}"
+            chmod 600 "${host_audit}"
+          fi
+          if docker exec "${target_container}" test -f "${container_evidence}"; then
+            docker cp "${target_container}:${container_evidence}" "${host_evidence}"
+            chmod 600 "${host_evidence}"
+          fi
+          printf '%s\n' "${capture_status}" > "${host_status}"
+          chmod 600 "${host_status}"
+          cleanup_container
+          trap - EXIT
+          exit 0
+          REMOTE_CAPTURE
+
+          scp "${ssh_options[@]}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/status" \
+            "${local_root}/status"
+          if ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "test -f '${remote_root}/audit.json'"
+          then
+            scp "${ssh_options[@]}" \
+              "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/audit.json" \
+              "${local_root}/audit.json"
+          fi
+          if ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "test -f '${remote_root}/evidence.json'"
+          then
+            scp "${ssh_options[@]}" \
+              "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/evidence.json" \
+              "${local_root}/evidence.json"
+          fi
+          cleanup_remote
+          trap - EXIT
+
+      - name: Validate captured evidence
+        id: validate
+        shell: bash
+        env:
+          TARGET_PATH: ${{ steps.manifest.outputs.target_path }}
+          CAPTURE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          root="development-land-area-evidence-output"
+          for candidate in \
+            "${root}/status" \
+            "${root}/audit.json"
+          do
+            if [[ ! -f "${candidate}" || -L "${candidate}" ]]; then
+              echo "::error::Required capture output is missing."
+              exit 1
+            fi
+          done
+          status="$(tr -d '[:space:]' < "${root}/status")"
+          if [[ "${status}" != "0" ]]; then
+            echo "::error::Read-only capture did not pass."
+            exit 1
+          fi
+          if [[ ! -f "${root}/evidence.json" || -L "${root}/evidence.json" ]]; then
+            echo "::error::Captured evidence is missing."
+            exit 1
+          fi
+          node - \
+            "${TARGET_PATH}" \
+            "${root}/evidence.json" \
+            "${root}/audit.json" \
+            "${CAPTURE_RUN_ID}" <<'NODE'
+          const fs = require("node:fs");
+          const crypto = require("node:crypto");
+          const {
+            parseDevelopmentTargetManifest,
+            parseDevelopmentEvidenceManifest,
+            validateDevelopmentRunnerManifests,
+          } = require("./dist/operations/development-land-area-sync-runner.js");
+          const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+          const target = parseDevelopmentTargetManifest(read(process.argv[2]));
+          const evidence = parseDevelopmentEvidenceManifest(read(process.argv[3]));
+          const audit = read(process.argv[4]);
+          const evidenceText = fs.readFileSync(process.argv[3], "utf8");
+          const evidenceSha = crypto.createHash("sha256").update(evidenceText).digest("hex");
+          if (
+            evidence.unionId !== target.unionId
+            || evidence.manifestDigest !== target.manifestDigest
+            || evidence.entries.length !== target.targetCount
+            || new Set(evidence.entries.flatMap((entry) => entry.expectedPropertyUnitIds)).size
+              !== target.expectedPropertyUnitCount
+            || audit?.version !== "land-area-development-evidence-capture-audit@1"
+            || audit?.captureRunId !== process.argv[5]
+            || audit?.gate?.status !== "PASS"
+            || audit?.readOnlyGuards?.durableSyncJobWrites !== 0
+            || audit?.readOnlyGuards?.propertyUnitWriteRpcCalls !== 0
+            || audit?.evidenceManifestSha256 !== evidenceSha
+          ) process.exit(1);
+          validateDevelopmentRunnerManifests(
+            target,
+            {
+              version: "land-area-development-db-approval-manifest@1",
+              databaseTarget: "development",
+              unionId: target.unionId,
+              pnus: target.pnus,
+              targetCount: target.targetCount,
+              manifestDigest: target.manifestDigest,
+              enabled: true,
+            },
+            evidence
+          );
+          NODE
+          sha256sum \
+            "${root}/evidence.json" \
+            "${root}/audit.json" \
+            > "${root}/sha256sums.txt"
+
+      - name: Upload read-only capture artifact
+        if: always() && hashFiles('development-land-area-evidence-output/audit.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: development-land-area-evidence-${{ inputs.manifest }}-${{ github.run_id }}
+          path: development-land-area-evidence-output/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce capture gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="development-land-area-evidence-output"
+          if [[
+            ! -f "${root}/status"
+            || ! -f "${root}/audit.json"
+            || ! -f "${root}/evidence.json"
+            || ! -f "${root}/sha256sums.txt"
+          ]]; then
+            echo "::error::Validated evidence capture output is incomplete."
+            exit 1
+          fi
+          if [[ "$(tr -d '[:space:]' < "${root}/status")" != "0" ]]; then
+            echo "::error::Development evidence capture gate did not pass."
+            exit 1
+          fi
+          gate="$(
+            node -e '
+              const fs = require("node:fs");
+              const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              process.stdout.write(String(value?.gate?.status ?? ""));
+            ' "${root}/audit.json"
+          )"
+          if [[ "${gate}" != "PASS" ]]; then
+            echo "::error::Development evidence audit gate did not pass."
+            exit 1
+          fi
