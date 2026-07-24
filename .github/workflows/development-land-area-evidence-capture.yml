@@ -11,6 +11,7 @@ on:
         options:
           - mia-seven-auto-286-20260725
           - mia-seven-auto-76-20260725
+          - mia-seven-parcel-singleton-202-20260725
           - mia-seven-review-210-20260725
 
 permissions:
@@ -70,6 +71,11 @@ jobs:
               target_path="development-land-area-sync-manifests/mia-seven-auto-76-target-20260725.json"
               target_count="76"
               property_unit_count="76"
+              ;;
+            mia-seven-parcel-singleton-202-20260725)
+              target_path="development-land-area-sync-manifests/mia-seven-parcel-singleton-202-target-20260725.json"
+              target_count="202"
+              property_unit_count="202"
               ;;
             mia-seven-review-210-20260725)
               target_path="development-land-area-sync-manifests/mia-seven-review-210-target-20260725.json"
@@ -195,6 +201,8 @@ jobs:
             -o BatchMode=yes
             -o IdentitiesOnly=yes
             -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=40
             -o "UserKnownHostsFile=${HOME}/.ssh/known_hosts"
           )
           remote_root="alimtalk-proxy/.development-land-area-evidence-workflow/${RUN_KEY}"

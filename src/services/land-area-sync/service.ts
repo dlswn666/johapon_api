@@ -29,6 +29,7 @@ import {
     isOptionalRegistryManagementPkValid,
     normalizeRegistryManagementPk,
 } from './registry-pk';
+import { resolveParcelSingletonLadfrlCandidate } from './parcel-singleton';
 import { readLandAreaSync, type LandAreaSyncJobRow } from './repository';
 import type {
     BrTitleRow,
@@ -272,7 +273,36 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         });
         return;
     }
-    if (gate.state === 'REVIEW_REQUIRED') {
+    let parcelSingletonBasis:
+        | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+        | null = null;
+    if (
+        gate.state === 'REVIEW_REQUIRED' &&
+        gate.issues.length === 1 &&
+        gate.issues[0] === 'BUILDING_CLASSIFICATION_CONFLICT' &&
+        gate.scannedPnus.length === 1
+    ) {
+        const [propertyUnits, buildingUnits] = await Promise.all([
+            deps.db.readPropertyUnits(unionId, gate.scannedPnus),
+            deps.db.readBuildingUnits(unionId, gate.scannedPnus),
+        ]);
+        if (aborted(signal)) return;
+        const decision = resolveParcelSingletonLadfrlCandidate({
+            unionId,
+            targetPnu: gate.scannedPnus[0],
+            scannedPnus: gate.scannedPnus,
+            membership: dbScope.propertyMembership,
+            propertyUnits,
+            buildingUnits,
+        });
+        if (decision.kind === 'ELIGIBLE') {
+            parcelSingletonBasis = decision.basis;
+        }
+    }
+    if (
+        gate.state === 'REVIEW_REQUIRED' &&
+        parcelSingletonBasis === null
+    ) {
         await finalizeDiscoveryTerminal(deps, jobId, unionId, {
             status: 'COMPLETED',
             scopeState: 'REVIEW_REQUIRED',
@@ -284,7 +314,11 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
     }
 
     const strategy: LandAreaSyncStrategy | null =
-        gate.classification.kind === 'CLASSIFIED' ? gate.classification.family : null;
+        parcelSingletonBasis !== null
+            ? 'LADFRL'
+            : gate.classification.kind === 'CLASSIFIED'
+              ? gate.classification.family
+              : null;
     if (!strategy) {
         await finalizeDiscoveryTerminal(deps, jobId, unionId, {
             status: 'COMPLETED',
@@ -320,6 +354,7 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         // resolver 호출 입력(anchor title 계열 root) — snapshot.resolverRootPks 로 고정한다(C1 계약).
         resolverRootPks: rootPks,
         baseScans,
+        parcelSingletonBasis,
     };
 
     if (strategy === 'LADFRL') {
@@ -354,6 +389,10 @@ interface BranchContext {
     /** resolver 호출에 실제 쓴 root 식별자(anchor title 계열, 정렬·dedup). snapshot 고정 대상(C1). */
     resolverRootPks: string[];
     baseScans: BasePnuScan[];
+    /** 분류 불확정이어도 unit identity가 전혀 없는 DB parcel singleton임을 입증한 좁은 경로. */
+    parcelSingletonBasis:
+        | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+        | null;
 }
 
 // ── LADFRL 분기 ───────────────────────────────────────────────────
@@ -442,7 +481,13 @@ async function runLadfrlBranch(ctx: BranchContext): Promise<void> {
             totalArea: ladfrlScope.totalArea,
         },
         replicationEvidence: null,
-        componentMatchDigest: [{ targetPnu, ladfrlArea }],
+        componentMatchDigest: [
+            {
+                targetPnu,
+                ladfrlArea,
+                parcelSingletonBasis: ctx.parcelSingletonBasis,
+            },
+        ],
         projectionItems: items,
     });
 
