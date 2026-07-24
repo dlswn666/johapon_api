@@ -197,7 +197,9 @@ function snapshot(
         candidatePropertyUnitIds: [propertyUnitId],
         propertyMembershipHash: '4'.repeat(64),
         currentLandTuples: [],
-        proposedLandAreas: [{ propertyUnitId, landArea: '161' }],
+        // PostgreSQL jsonb가 반환하는 key 순서와 같게 의도적으로 반대로 둔다.
+        // runner 비교는 객체 key 순서가 아니라 필드 값만 canonical하게 비교해야 한다.
+        proposedLandAreas: [{ landArea: '161', propertyUnitId }],
         ladfrlAreaEvidence: {
             version: 'land-area-sync.ladfrl-scope.v1',
             parcels: [{ pnu, area: '161' }],
