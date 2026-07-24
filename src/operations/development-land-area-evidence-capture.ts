@@ -51,6 +51,11 @@ export interface DevelopmentEvidenceCaptureAuditEntry {
     snapshotReferenceSha256: string | null;
     applyRpcBlocked: boolean;
     failureCode: string | null;
+    terminalScopeState: LandAreaSyncTerminalInput['scopeState'] | null;
+    terminalOutcome: LandAreaSyncTerminalInput['outcome'] | null;
+    terminalIssueCodes: string[];
+    terminalIssuesTotal: number;
+    terminalIssuesTruncated: boolean;
 }
 
 export interface DevelopmentEvidenceCaptureAudit {
@@ -71,6 +76,9 @@ export interface DevelopmentEvidenceCaptureAudit {
         interceptedFailureWrites: number;
     };
     entries: DevelopmentEvidenceCaptureAuditEntry[];
+    capturedEvidence: DevelopmentEvidenceManifest | null;
+    capturedEvidencePropertyUnitCount: number;
+    capturedEvidenceManifestSha256: string | null;
     evidenceManifestSha256: string | null;
     gate: {
         status: 'PASS' | 'FAIL';
@@ -500,6 +508,17 @@ async function captureOne(input: {
             snapshotReferenceSha256,
             applyRpcBlocked: state.applyRpcBlocked,
             failureCode,
+            terminalScopeState:
+                state.terminal?.scopeState ?? null,
+            terminalOutcome: state.terminal?.outcome ?? null,
+            terminalIssueCodes: sortedUnique(
+                state.terminal?.issues.map((issue) => issue.code) ??
+                    []
+            ),
+            terminalIssuesTotal:
+                state.terminal?.issuesTotal ?? 0,
+            terminalIssuesTruncated:
+                state.terminal?.issuesTruncated ?? false,
         },
     };
 }
@@ -575,15 +594,19 @@ export async function captureDevelopmentLandAreaEvidence(input: {
         );
     }
 
+    const capturedEvidence: DevelopmentEvidenceManifest = {
+        version: DEVELOPMENT_EVIDENCE_MANIFEST_VERSION,
+        databaseTarget: 'development',
+        unionId: input.target.unionId,
+        manifestDigest: input.target.manifestDigest,
+        entries,
+    };
+    const capturedEvidenceManifestSha256 = sha256(
+        `${JSON.stringify(capturedEvidence, null, 2)}\n`
+    );
     const evidence: DevelopmentEvidenceManifest | null =
         failureCodes.length === 0
-            ? {
-                  version: DEVELOPMENT_EVIDENCE_MANIFEST_VERSION,
-                  databaseTarget: 'development',
-                  unionId: input.target.unionId,
-                  manifestDigest: input.target.manifestDigest,
-                  entries,
-              }
+            ? capturedEvidence
             : null;
     const evidenceManifestSha256 = evidence
         ? sha256(`${JSON.stringify(evidence, null, 2)}\n`)
@@ -624,6 +647,10 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 ),
             },
             entries: results.map((result) => result.audit),
+            capturedEvidence,
+            capturedEvidencePropertyUnitCount:
+                uniquePropertyUnitIds.size,
+            capturedEvidenceManifestSha256,
             evidenceManifestSha256,
             gate: {
                 status:

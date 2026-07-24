@@ -198,6 +198,9 @@ function failureAudit(
             interceptedFailureWrites: 0,
         },
         entries: [],
+        capturedEvidence: null,
+        capturedEvidencePropertyUnitCount: 0,
+        capturedEvidenceManifestSha256: null,
         evidenceManifestSha256: null,
         gate: {
             status: 'FAIL',
