@@ -10,6 +10,8 @@ on:
         default: mia-seven-auto-286-20260725
         options:
           - mia-seven-auto-286-20260725
+          - mia-seven-auto-76-20260725
+          - mia-seven-review-210-20260725
 
 permissions:
   contents: read
@@ -61,6 +63,18 @@ jobs:
           case "${MANIFEST_NAME}" in
             mia-seven-auto-286-20260725)
               target_path="development-land-area-sync-manifests/mia-seven-auto-286-target-20260725.json"
+              target_count="286"
+              property_unit_count="328"
+              ;;
+            mia-seven-auto-76-20260725)
+              target_path="development-land-area-sync-manifests/mia-seven-auto-76-target-20260725.json"
+              target_count="76"
+              property_unit_count="76"
+              ;;
+            mia-seven-review-210-20260725)
+              target_path="development-land-area-sync-manifests/mia-seven-review-210-target-20260725.json"
+              target_count="210"
+              property_unit_count="252"
               ;;
             *)
               echo "::error::Target manifest is not repository-approved."
@@ -76,7 +90,9 @@ jobs:
             echo "::error::Approved target size is invalid."
             exit 1
           fi
-          node - "${target_path}" <<'NODE'
+          EXPECTED_TARGET_COUNT="${target_count}" \
+            EXPECTED_PROPERTY_UNIT_COUNT="${property_unit_count}" \
+            node - "${target_path}" <<'NODE'
           const fs = require("node:fs");
           const {
             parseDevelopmentTargetManifest,
@@ -84,7 +100,11 @@ jobs:
           const target = parseDevelopmentTargetManifest(
             JSON.parse(fs.readFileSync(process.argv[2], "utf8"))
           );
-          if (target.targetCount !== 286 || target.expectedPropertyUnitCount !== 328) {
+          if (
+            target.targetCount !== Number(process.env.EXPECTED_TARGET_COUNT)
+            || target.expectedPropertyUnitCount !==
+              Number(process.env.EXPECTED_PROPERTY_UNIT_COUNT)
+          ) {
             process.exit(1);
           }
           NODE
