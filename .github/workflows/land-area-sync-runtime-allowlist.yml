@@ -345,6 +345,8 @@ jobs:
             -o BatchMode=yes
             -o IdentitiesOnly=yes
             -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=40
             -o "UserKnownHostsFile=${HOME}/.ssh/known_hosts"
           )
           remote_root="alimtalk-proxy/.land-area-sync-runtime/${RUN_KEY}"

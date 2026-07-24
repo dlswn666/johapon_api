@@ -72,6 +72,7 @@ function makeDeps(opts: {
     applyResult?: { data: unknown; error: { message: string; code?: string } | null };
     membership?: unknown;
     propertyUnits?: unknown[];
+    buildingUnits?: unknown[];
     onReadProperty?: () => void;
     /** getScopedJob 이 돌려줄 preview_data 오버라이드(apply job 시나리오용). */
     jobPreviewData?: Record<string, unknown>;
@@ -126,7 +127,8 @@ function makeDeps(opts: {
                 return opts.writeDiscoveryTerminalResult ?? true;
             },
             markScopedFailed: async (_j, _u, m) => { spy.failedCalls.push(m); return true; },
-            readBuildingUnits: async () => [],
+            readBuildingUnits: async () =>
+                (opts.buildingUnits ?? []) as never,
             readPropertyUnits: async () => {
                 opts.onReadProperty?.();
                 return (opts.propertyUnits ?? []) as never;
@@ -219,6 +221,123 @@ test('LADFRL discovery(no-cache single)는 snapshot 을 CAS 고정하고 확인 
     assert.equal(spy.terminalCalls.length, 1);
     assert.equal(spy.terminalCalls[0].scopeState, 'SINGLE_SCOPE_CONFIRMATION_REQUIRED');
     assert.equal(spy.terminalCalls[0].outcome, 'REVIEW_REQUIRED');
+});
+
+test('분류 conflict라도 DB parcel singleton이고 unit identity가 없으면 LADFRL 확인 후보로 진행한다', async () => {
+    const spy = emptySpy();
+    let ladfrlCalls = 0;
+    const deps = makeDeps({
+        resolver: noEvidence(MEMBER),
+        scans: {
+            scanTitle: async () => ({
+                state: 'COMPLETE',
+                rows: [
+                    {
+                        mgmBldrgstPk: PK,
+                        bylotCnt: '0',
+                        regstrGbCd: '1',
+                        mainPurpsCd: '03000',
+                        mainPurpsCdNm: '제1종근린생활시설',
+                    },
+                ],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+            scanLadfrl: async () => {
+                ladfrlCalls += 1;
+                return ladfrlComplete();
+            },
+        },
+        propertyUnits: [
+            {
+                id: PROP_ID,
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: null,
+                ho: null,
+            },
+        ],
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps,
+    });
+
+    assert.equal(ladfrlCalls, 1);
+    assert.equal(spy.freezeCalls, 1);
+    assert.equal(spy.applyCalls, 0);
+    assert.deepEqual(spy.terminalCalls, [
+        {
+            status: 'COMPLETED',
+            scopeState: 'SINGLE_SCOPE_CONFIRMATION_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
+        },
+    ]);
+});
+
+test('분류 conflict property_unit에 호 identity가 있으면 기존 REVIEW_REQUIRED를 유지한다', async () => {
+    const spy = emptySpy();
+    let ladfrlCalls = 0;
+    const deps = makeDeps({
+        resolver: noEvidence(MEMBER),
+        scans: {
+            scanTitle: async () => ({
+                state: 'COMPLETE',
+                rows: [
+                    {
+                        mgmBldrgstPk: PK,
+                        bylotCnt: '0',
+                        regstrGbCd: '1',
+                        mainPurpsCd: '03000',
+                        mainPurpsCdNm: '제1종근린생활시설',
+                    },
+                ],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+            scanLadfrl: async () => {
+                ladfrlCalls += 1;
+                return ladfrlComplete();
+            },
+        },
+        propertyUnits: [
+            {
+                id: PROP_ID,
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: null,
+                ho: '201',
+            },
+        ],
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps,
+    });
+
+    assert.equal(ladfrlCalls, 0);
+    assert.equal(spy.freezeCalls, 0);
+    assert.equal(spy.applyCalls, 0);
+    assert.deepEqual(spy.terminalCalls, [
+        {
+            status: 'COMPLETED',
+            scopeState: 'REVIEW_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
+        },
+    ]);
+    assert.deepEqual(spy.terminalIssues[0], [
+        { code: 'BUILDING_CLASSIFICATION_CONFLICT' },
+    ]);
 });
 
 test('LDAREG LINKED discovery 는 snapshot 을 1회 고정하고 apply RPC 를 정확히 1회 호출한다', async () => {
