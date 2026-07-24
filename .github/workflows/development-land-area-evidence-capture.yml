@@ -236,7 +236,7 @@ jobs:
           run_root="${application_root}/.development-land-area-evidence-workflow/${RUN_KEY}"
           operation_lock_path="${application_root}/.land-area-sync-operation.lock"
           container_name="alimtalk-proxy"
-          container_root="/app/.development-land-area-evidence-capture"
+          container_root="/tmp/.development-land-area-evidence-capture"
           container_target="${container_root}/target-${RUN_KEY}.json"
           container_evidence="${container_root}/evidence-${RUN_KEY}.json"
           container_audit="${container_root}/audit-${RUN_KEY}.json"
@@ -322,7 +322,7 @@ jobs:
             node -e '
               const fs = require("node:fs");
               const target = process.env.PRIVATE_INPUT_PATH;
-              if (!/^\/app\/\.development-land-area-evidence-capture\/target-[0-9]+-[0-9]+\.json$/.test(target)) process.exit(1);
+              if (!/^\/tmp\/\.development-land-area-evidence-capture\/target-[0-9]+-[0-9]+\.json$/.test(target)) process.exit(1);
               const chunks = [];
               let size = 0;
               process.stdin.on("data", (chunk) => {
@@ -336,8 +336,8 @@ jobs:
             ' < "${host_target}"
 
           set +e
-          docker exec -w /app "${target_container}" \
-            node dist/cli/development-land-area-evidence-capture.js \
+          docker exec -w /tmp "${target_container}" \
+            node /app/dist/cli/development-land-area-evidence-capture.js \
             --target ".development-land-area-evidence-capture/target-${RUN_KEY}.json" \
             --capture-run-id "${CAPTURE_RUN_ID}" \
             --evidence-out ".development-land-area-evidence-capture/evidence-${RUN_KEY}.json" \
