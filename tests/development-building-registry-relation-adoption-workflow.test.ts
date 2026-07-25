@@ -131,7 +131,15 @@ test('개발 DB와 deployed image 경계, land-area disabled health attestation�
     );
     assert.match(
         guardian,
-        /health\?\.landAreaSyncEnabled !== false/
+        /health\?\.features\?\.landAreaSyncEnabled !== false/
+    );
+    assert.match(
+        guardian,
+        /health\?\.features\?\.landAreaSyncAllowedTargetCount !== 0/
+    );
+    assert.match(
+        guardian,
+        /health\?\.features\?\.landAreaSyncAllowedTargetsDigest !== ""/
     );
     assert.match(
         guardian,
