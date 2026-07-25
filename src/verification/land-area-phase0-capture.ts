@@ -39,6 +39,13 @@ import {
 } from '../services/land-area-sync/normalizer';
 import { normalizeFloorLabel } from '../services/land-area-sync/preview';
 import {
+    hasPhase0GenericLdaregTitleEvidence,
+    isPhase0FloorAsUnitShape,
+    PHASE0_FLOOR_AS_UNIT_ABOVE_SHAPE,
+    PHASE0_FLOOR_AS_UNIT_BASEMENT_SHAPE,
+    type Phase0FloorAsUnitShape,
+} from './land-area-phase0-evidence';
+import {
     assembleAttachedPnus,
     buildingHubRowPnu,
     buildingHubRowsMatchPnu,
@@ -872,12 +879,14 @@ function bylotFieldInventory(
 
 function unitIdentity(
     kind: 'EXPOS_UNIT' | 'LDAREG_UNIT',
-    row: Record<string, unknown>
+    row: Record<string, unknown>,
+    evidenceOptions: { allowPhase0V2LdaregEvidence?: boolean } = {}
 ): {
     shape: 'DONG_FLOOR_HO' | 'FLOOR_HO' | 'INCOMPLETE';
     hash?: string;
     floorHoHash?: string;
     dongHash?: string;
+    floorAsUnitShape?: Phase0FloorAsUnitShape;
 } {
     const exactScalarAlias = (
         aliases: readonly string[],
@@ -910,7 +919,9 @@ function unitIdentity(
                     .map((value) => {
                         const scalar = String(value);
                         return options.floor
-                            ? normalizeFloorLabel(scalar)
+                            ? evidenceOptions.allowPhase0V2LdaregEvidence
+                                ? normalizePhase0FloorLabel(scalar)
+                                : normalizeFloorLabel(scalar)
                             : normalizeUnitSegment(scalar);
                     })
                     .map((value) =>
@@ -945,12 +956,17 @@ function unitIdentity(
     if (!tuple.floor || !tuple.ho) {
         return { shape: 'INCOMPLETE' };
     }
-    const floorHoHash = sha256(
-        `FLOOR_HO_TUPLE_JSON\u0000${stableStringify([
-            tuple.floor,
-            tuple.ho,
-        ])}`
-    );
+    const floorAsUnit = evidenceOptions.allowPhase0V2LdaregEvidence
+        ? phase0FloorAsUnitWitness(kind, row, tuple)
+        : null;
+    const floorHoHash =
+        floorAsUnit?.hash ??
+        sha256(
+            `FLOOR_HO_TUPLE_JSON\u0000${stableStringify([
+                tuple.floor,
+                tuple.ho,
+            ])}`
+        );
     return {
         shape: tuple.dong ? 'DONG_FLOOR_HO' : 'FLOOR_HO',
         hash: sha256(
@@ -961,6 +977,9 @@ function unitIdentity(
             ])}`
         ),
         floorHoHash,
+        ...(floorAsUnit
+            ? { floorAsUnitShape: floorAsUnit.shape }
+            : {}),
         ...(tuple.dong
             ? {
                   dongHash: sha256(
@@ -969,6 +988,117 @@ function unitIdentity(
               }
             : {}),
     };
+}
+
+/**
+ * Building HUB 숫자 층과 V-World의 exact `지상#층` 표기를 Phase 0 안에서만
+ * 같은 양의 정수 층으로 접는다. 일반 sync normalizer의 의미는 변경하지 않는다.
+ */
+function normalizePhase0FloorLabel(
+    raw: string | number | null | undefined
+): string {
+    if (raw == null) return '';
+    const compact = String(raw)
+        .normalize('NFKC')
+        .replace(/\s+/g, '');
+    const above = /^지상([1-9]\d*)층?$/u.exec(compact);
+    return above
+        ? normalizeUnitSegment(above[1])
+        : normalizeFloorLabel(compact);
+}
+
+function exactAliasScalar(
+    row: Record<string, unknown>,
+    aliases: readonly string[]
+): string | null {
+    const present = aliases
+        .filter((alias) => Object.prototype.hasOwnProperty.call(row, alias))
+        .map((alias) => row[alias]);
+    if (
+        present.length === 0 ||
+        present.some(
+            (value) =>
+                typeof value !== 'string' &&
+                !(typeof value === 'number' && Number.isSafeInteger(value))
+        )
+    ) {
+        return null;
+    }
+    const normalized = [
+        ...new Set(
+            present.map((value) =>
+                String(value)
+                    .normalize('NFKC')
+                    .replace(/\s+/g, '')
+            )
+        ),
+    ];
+    return normalized.length === 1 ? normalized[0] : null;
+}
+
+function positiveAboveFloorToken(value: string): string | null {
+    const match = /^([1-9]\d*)층?$/u.exec(value);
+    if (!match) return null;
+    return `ABOVE:${normalizeUnitSegment(match[1])}`;
+}
+
+/**
+ * `LDAREG ho=0000`과 `EXPOS ho=동일 층 라벨`을 연결하는 제한적 witness.
+ *
+ * - 지상층: EXPOS의 실제 층 번호와 `#층` 호 라벨이 exact 일치해야 한다.
+ * - 지층: EXPOS floor type 10 + exact `지층`, LDAREG exact `지층`만 허용한다.
+ * - 일반 호실, 0층, 다중 alias 충돌, 임의 문자열은 witness를 만들지 않는다.
+ */
+function phase0FloorAsUnitWitness(
+    kind: 'EXPOS_UNIT' | 'LDAREG_UNIT',
+    row: Record<string, unknown>,
+    tuple: ReturnType<typeof normalizeUnitTuple>
+): { hash: string; shape: Phase0FloorAsUnitShape } | null {
+    let token: string | null = null;
+    let shape: Phase0FloorAsUnitShape | null = null;
+
+    if (kind === 'LDAREG_UNIT') {
+        const rawHo = exactAliasScalar(row, ['buldHoNm', 'hoNm']);
+        if (rawHo === null || !/^0+$/u.test(rawHo)) return null;
+        const rawFloor = exactAliasScalar(row, [
+            'buldFloorNm',
+            'flrNoNm',
+        ]);
+        if (rawFloor === null) return null;
+        const above = positiveAboveFloorToken(rawFloor);
+        if (above) {
+            token = above;
+            shape = PHASE0_FLOOR_AS_UNIT_ABOVE_SHAPE;
+        } else if (rawFloor === '지층') {
+            token = 'BASEMENT:GENERIC';
+            shape = PHASE0_FLOOR_AS_UNIT_BASEMENT_SHAPE;
+        }
+    } else {
+        const rawHo = exactAliasScalar(row, ['hoNm', 'buldHoNm']);
+        if (rawHo === null) return null;
+        const above = /^([1-9]\d*)층$/u.exec(rawHo);
+        if (
+            above &&
+            tuple.floor === normalizeUnitSegment(above[1]) &&
+            exactAliasScalar(row, ['flrGbCd']) === '20'
+        ) {
+            token = `ABOVE:${normalizeUnitSegment(above[1])}`;
+            shape = PHASE0_FLOOR_AS_UNIT_ABOVE_SHAPE;
+        } else if (
+            rawHo === '지층' &&
+            exactAliasScalar(row, ['flrGbCd']) === '10'
+        ) {
+            token = 'BASEMENT:GENERIC';
+            shape = PHASE0_FLOOR_AS_UNIT_BASEMENT_SHAPE;
+        }
+    }
+
+    return token && shape
+        ? {
+              hash: sha256(`PHASE0_FLOOR_AS_UNIT\u0000${token}`),
+              shape,
+          }
+        : null;
 }
 
 /**
@@ -1083,7 +1213,8 @@ function buildScopeBasisEvidence(
  */
 function buildScopeExposEvidence(
     scopeExpos: Array<{ pnu: string; scan: StrictScan<BrExposRow> }>,
-    basisRootIndex: BasisRootIndex | null
+    basisRootIndex: BasisRootIndex | null,
+    allowPhase0V2LdaregEvidence: boolean
 ): ScopeExposEvidence {
     const queries: ScopeExposEvidence['queries'] = [];
     const records: ScopeExposEvidence['records'] = [];
@@ -1132,7 +1263,9 @@ function buildScopeExposEvidence(
                 basisRootIndex === null
                     ? { ok: false as const }
                     : resolveExposRootIdentity(typedRow, basisRootIndex);
-            const unit = unitIdentity('EXPOS_UNIT', row);
+            const unit = unitIdentity('EXPOS_UNIT', row, {
+                allowPhase0V2LdaregEvidence,
+            });
             if (
                 rowPnu !== pnu ||
                 selfIdentity === null ||
@@ -1315,6 +1448,7 @@ function hasExactUniqueSetMatch(
  */
 function hasLdaregExposUnitCorrelation(
     exposRecords: ScopeExposEvidence['records'] | null,
+    exposInventoryRecords: ExposInventory['records'],
     validLdaregRecords: LdaregInventory['records'],
     missingLdaregRecords: LdaregInventory['records']
 ): boolean {
@@ -1365,6 +1499,117 @@ function hasLdaregExposUnitCorrelation(
     ) {
         return false;
     }
+
+    const singleLdaregBuildingIdentity = (): boolean => {
+        const aggregateHashes = correlatedLdaregRecords
+            .map((record) => record.aggregateBuildingSerialHash)
+            .filter((hash): hash is string => typeof hash === 'string');
+        const buildingNameHashes = correlatedLdaregRecords
+            .map((record) => record.buildingNameHash)
+            .filter((hash): hash is string => typeof hash === 'string');
+        return (
+            aggregateHashes.length === correlatedLdaregRecords.length &&
+            new Set(aggregateHashes).size === 1 &&
+            buildingNameHashes.length ===
+                correlatedLdaregRecords.length &&
+            new Set(buildingNameHashes).size === 1
+        );
+    };
+
+    /**
+     * 호가 없는 층 단위 구분소유의 실응답 표현만 허용한다.
+     * producer가 exact 원문 조건으로 만든 domain-separated hash와 sanitized
+     * shape를 endpoint inventory와 scope evidence 양쪽에서 다시 결속한다.
+     */
+    const scopeFloorUnitHashes = exposRecords.map(
+        (record) => record.floorHoIdentityHash!
+    );
+    const inventoryFloorUnitHashes = exposInventoryRecords.map(
+        (record) => record.floorHoIdentityHash
+    );
+    const validFloorUnitHashes = validLdaregRecords.map(
+        (record) => record.floorHoIdentityHash!
+    );
+    const missingFloorUnitHashes = missingLdaregRecords.map(
+        (record) => record.floorHoIdentityHash!
+    );
+    const exposFloorUnitShapeByHash = new Map(
+        exposInventoryRecords
+            .filter(
+                (
+                    record
+                ): record is typeof record & {
+                    floorHoIdentityHash: string;
+                    floorShape: Phase0FloorAsUnitShape;
+                } =>
+                    typeof record.floorHoIdentityHash === 'string' &&
+                    isPhase0FloorAsUnitShape(record.floorShape)
+            )
+            .map((record) => [
+                record.floorHoIdentityHash,
+                record.floorShape,
+            ])
+    );
+    const ldaregFloorUnitShapeByHash = new Map(
+        validLdaregRecords
+            .filter(
+                (
+                    record
+                ): record is typeof record & {
+                    floorHoIdentityHash: string;
+                    floorShape: Phase0FloorAsUnitShape;
+                } =>
+                    typeof record.floorHoIdentityHash === 'string' &&
+                    isPhase0FloorAsUnitShape(record.floorShape)
+            )
+            .map((record) => [
+                record.floorHoIdentityHash,
+                record.floorShape,
+            ])
+    );
+    const exactFloorAsUnitCorrelation =
+        exposRecords.every(
+            (record) => record.unitIdentityShape === 'FLOOR_HO'
+        ) &&
+        exposInventoryRecords.length === exposRecords.length &&
+        exposInventoryRecords.every(
+            (record) =>
+                record.unitIdentityShape === 'FLOOR_HO' &&
+                typeof record.floorHoIdentityHash === 'string' &&
+                isPhase0FloorAsUnitShape(record.floorShape)
+        ) &&
+        validLdaregRecords.length === exposRecords.length &&
+        validLdaregRecords.every(
+            (record) =>
+                record.unitIdentityShape === 'FLOOR_HO' &&
+                typeof record.floorHoIdentityHash === 'string' &&
+                isPhase0FloorAsUnitShape(record.floorShape)
+        ) &&
+        missingLdaregRecords.every(
+            (record) => !isPhase0FloorAsUnitShape(record.floorShape)
+        ) &&
+        hasExactUniqueSetMatch(
+            scopeFloorUnitHashes,
+            inventoryFloorUnitHashes.filter(
+                (hash): hash is string => typeof hash === 'string'
+            )
+        ) &&
+        hasExactUniqueSetMatch(
+            scopeFloorUnitHashes,
+            validFloorUnitHashes
+        ) &&
+        new Set(missingFloorUnitHashes).size ===
+            missingFloorUnitHashes.length &&
+        missingFloorUnitHashes.every(
+            (hash) => !new Set(scopeFloorUnitHashes).has(hash)
+        ) &&
+        scopeFloorUnitHashes.every(
+            (hash) =>
+                exposFloorUnitShapeByHash.get(hash) ===
+                ldaregFloorUnitShapeByHash.get(hash)
+        ) &&
+        singleLdaregBuildingIdentity();
+    if (exactFloorAsUnitCorrelation) return true;
 
     const exposFloorHoHashes = exposRecords.map(
         (record) => record.floorHoIdentityHash!
@@ -1423,18 +1668,7 @@ function hasLdaregExposUnitCorrelation(
         return false;
     }
 
-    const aggregateHashes = correlatedLdaregRecords
-        .map((record) => record.aggregateBuildingSerialHash)
-        .filter((hash): hash is string => typeof hash === 'string');
-    const buildingNameHashes = correlatedLdaregRecords
-        .map((record) => record.buildingNameHash)
-        .filter((hash): hash is string => typeof hash === 'string');
-    return (
-        aggregateHashes.length === correlatedLdaregRecords.length &&
-        new Set(aggregateHashes).size === 1 &&
-        buildingNameHashes.length === correlatedLdaregRecords.length &&
-        new Set(buildingNameHashes).size === 1
-    );
+    return singleLdaregBuildingIdentity();
 }
 
 function sanitizedIssue(issue: ProviderIssue): SanitizedIssue {
@@ -1640,7 +1874,8 @@ function attachedInventory(rows: BrAtchJibunRow[]): AttachedInventory {
 
 function exposInventory(
     rows: BrExposRow[],
-    isSensitive: SensitiveValueGuard
+    isSensitive: SensitiveValueGuard,
+    allowPhase0V2LdaregEvidence: boolean
 ): ExposInventory {
     const records = rows.map((typedRow) => {
         const row = typedRow as Record<string, unknown>;
@@ -1652,7 +1887,9 @@ function exposInventory(
             'MGM_UP_BLDRGST_PK',
             row.mgmUpBldrgstPk
         );
-        const unit = unitIdentity('EXPOS_UNIT', row);
+        const unit = unitIdentity('EXPOS_UNIT', row, {
+            allowPhase0V2LdaregEvidence,
+        });
         const mainAttachedTypeCode = safePublicCode(
             row.mainAtchGbCd,
             MAIN_ATTACHED_TYPE_CODE_PATTERN,
@@ -1680,8 +1917,12 @@ function exposInventory(
                 : {}),
             ...(mainAttachedTypeCode ? { mainAttachedTypeCode } : {}),
             ...(floorTypeCode ? { floorTypeCode } : {}),
-            ...(sanitizedFloorShape
-                ? { floorShape: sanitizedFloorShape }
+            ...(unit.floorAsUnitShape || sanitizedFloorShape
+                ? {
+                      floorShape:
+                          unit.floorAsUnitShape ??
+                          sanitizedFloorShape,
+                  }
                 : {}),
             ...(area ? { area } : {}),
         };
@@ -1713,7 +1954,8 @@ function ladfrlInventory(
 
 function ldaregInventory(
     rows: LdaregRow[],
-    isSensitive: SensitiveValueGuard
+    isSensitive: SensitiveValueGuard,
+    allowPhase0V2LdaregEvidence: boolean
 ): LdaregInventory {
     const records = rows.map((typedRow) => {
         const row = typedRow as Record<string, unknown>;
@@ -1723,7 +1965,9 @@ function ldaregInventory(
             row.agbldgSn
         );
         const buildingNameHash = identityHash('BUILDING_NAME', row.buldNm);
-        const unit = unitIdentity('LDAREG_UNIT', row);
+        const unit = unitIdentity('LDAREG_UNIT', row, {
+            allowPhase0V2LdaregEvidence,
+        });
         const quotaRatio = safeRatio(row.ldaQotaRate, isSensitive);
         const quotaRatioState: LdaregInventory['records'][number]['quotaRatioState'] =
             row.ldaQotaRate === undefined ||
@@ -1785,8 +2029,12 @@ function ldaregInventory(
             ...(quotaRatio ? { quotaRatio } : {}),
             ...(classificationCode ? { classificationCode } : {}),
             ...(classificationLabel ? { classificationLabel } : {}),
-            ...(sanitizedFloorShape
-                ? { floorShape: sanitizedFloorShape }
+            ...(unit.floorAsUnitShape || sanitizedFloorShape
+                ? {
+                      floorShape:
+                          unit.floorAsUnitShape ??
+                          sanitizedFloorShape,
+                  }
                 : {}),
         };
     });
@@ -1914,10 +2162,64 @@ function resolveCaptureLdaregReplication(raw: SampleRawCapture) {
     );
 }
 
+function phase0HousingFamilyFromTitleRows(
+    titleRows: BrTitleRow[],
+    rootIdentities: string[],
+    sample: LandAreaPhase0CaptureSample
+): LandAreaPhase0ExpectedFamily | null {
+    const classification = classifyHousingType({
+        titleRows: titleRows.map((row) => ({
+            regstrGbCd: row.regstrGbCd,
+            mainPurpsCd: row.mainPurpsCd,
+            mainPurpsCdNm: row.mainPurpsCdNm,
+            etcPurps:
+                typeof row.etcPurps === 'string'
+                    ? row.etcPurps
+                    : undefined,
+        })),
+        rootIdentities,
+    });
+    if (classification.kind === 'CLASSIFIED') {
+        return classification.family;
+    }
+    if (sample.expectedFamily !== 'LDAREG') {
+        return null;
+    }
+
+    return hasPhase0GenericLdaregTitleEvidence(
+        titleRows.map((row) => ({
+            registryTypeCode:
+                typeof row.regstrGbCd === 'string'
+                    ? row.regstrGbCd.trim()
+                    : undefined,
+            mainPurposeCode:
+                typeof row.mainPurpsCd === 'string'
+                    ? row.mainPurpsCd.trim()
+                    : undefined,
+            mainPurposeLabel:
+                typeof row.mainPurpsCdNm === 'string'
+                    ? row.mainPurpsCdNm.trim()
+                    : undefined,
+            otherPurposeSignals: housingOtherPurposeSignals(
+                row.etcPurps
+            ),
+        })),
+        new Set(
+            rootIdentities
+                .map((identity) => identity.trim())
+                .filter(Boolean)
+        ).size
+    )
+        ? 'LDAREG'
+        : null;
+}
+
 function buildSampleArtifact(
     raw: SampleRawCapture,
     isSensitive: SensitiveValueGuard
 ): LandAreaPhase0SampleArtifact {
+    const allowPhase0V2LdaregEvidence =
+        raw.sample.expectedFamily === 'LDAREG';
     const titleRows = rowsOf(raw.title);
     const baseBasisRows = rowsOf(raw.basis);
     const attachedRows = rowsOf(raw.attached);
@@ -2019,7 +2321,8 @@ function buildSampleArtifact(
         scopeBasisEvidence.status === 'PASS';
     const scopeExposEvidence = buildScopeExposEvidence(
         scopeExpos,
-        basisRootIndex
+        basisRootIndex,
+        allowPhase0V2LdaregEvidence
     );
     const resolvedScopeExposRecords =
         resolvedScopeExposEvidenceRecords(scopeExposEvidence);
@@ -2209,21 +2512,12 @@ function buildSampleArtifact(
     const titleBasisPassed = policyCandidate !== null;
     const boundedMatchedPks = boundRecords(matchedPks);
 
-    const classification = classifyHousingType({
-        titleRows: titleRows.map((row) => ({
-            regstrGbCd: row.regstrGbCd,
-            mainPurpsCd: row.mainPurpsCd,
-            mainPurpsCdNm: row.mainPurpsCdNm,
-            etcPurps:
-                typeof row.etcPurps === 'string'
-                    ? row.etcPurps
-                    : undefined,
-        })),
-        rootIdentities: titlePks,
-    });
-    const ldaregRequired =
-        classification.kind === 'CLASSIFIED' &&
-        classification.family === 'LDAREG';
+    const phase0HousingFamily = phase0HousingFamilyFromTitleRows(
+        titleRows,
+        titlePks,
+        raw.sample
+    );
+    const ldaregRequired = phase0HousingFamily === 'LDAREG';
     const failureCodes = new Set<string>(
         scanFailureCodes([
             raw.title,
@@ -2276,9 +2570,8 @@ function buildSampleArtifact(
     // 분리한다. v1은 이미 보존된 최초 관찰 artifact의 하위 호환을 위해
     // 기존 ZERO→LADFRL, POSITIVE→LDAREG 의미를 유지한다.
     if (
-        classification.kind !== 'CLASSIFIED' ||
-        classification.family !==
-            expectedLandAreaPhase0Family(raw.sample)
+        phase0HousingFamily !==
+        expectedLandAreaPhase0Family(raw.sample)
     ) {
         failureCodes.add('HOUSING_CLASSIFICATION_ALLOWLIST_MISMATCH');
     }
@@ -2326,9 +2619,17 @@ function buildSampleArtifact(
     const titleResult = titleInventory(titleRows, isSensitive);
     const basisResult = basisInventory(baseBasisRows);
     const attachedResult = attachedInventory(attachedRows);
-    const exposResult = exposInventory(exposRows, isSensitive);
+    const exposResult = exposInventory(
+        exposRows,
+        isSensitive,
+        allowPhase0V2LdaregEvidence
+    );
     const ladfrlResult = ladfrlInventory(ladfrlRows, isSensitive);
-    const ldaregResult = ldaregInventory(ldaregRows, isSensitive);
+    const ldaregResult = ldaregInventory(
+        ldaregRows,
+        isSensitive,
+        allowPhase0V2LdaregEvidence
+    );
     const endpoints: LandAreaPhase0EndpointArtifact[] = [
         endpointArtifact(
             'getBrTitleInfo',
@@ -2510,6 +2811,7 @@ function buildSampleArtifact(
         if (
             !hasLdaregExposUnitCorrelation(
                 resolvedScopeExposRecords,
+                exposResult.records,
                 validLdaregRecords,
                 missingLdaregRecords
             )
@@ -2644,21 +2946,11 @@ function captureHousingFamily(
                 .filter((value): value is string => value !== null)
         ),
     ];
-    const classification = classifyHousingType({
-        titleRows: titleRows.map((row) => ({
-            regstrGbCd: row.regstrGbCd,
-            mainPurpsCd: row.mainPurpsCd,
-            mainPurpsCdNm: row.mainPurpsCdNm,
-            etcPurps:
-                typeof row.etcPurps === 'string'
-                    ? row.etcPurps
-                    : undefined,
-        })),
+    return phase0HousingFamilyFromTitleRows(
+        titleRows,
         rootIdentities,
-    });
-    return classification.kind === 'CLASSIFIED'
-        ? classification.family
-        : null;
+        raw.sample
+    );
 }
 
 async function safeScan<T>(

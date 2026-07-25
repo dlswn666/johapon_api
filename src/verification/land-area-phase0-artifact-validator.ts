@@ -17,6 +17,10 @@ import {
     type LandAreaPhase0CaptureManifest,
     type LandAreaPhase0ExpectedFamily,
 } from './land-area-phase0-capture';
+import {
+    hasPhase0GenericLdaregTitleEvidence,
+    isPhase0FloorAsUnitShape,
+} from './land-area-phase0-evidence';
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
@@ -1352,6 +1356,7 @@ function hasExactUniqueSetMatch(
 
 function hasLdaregExposUnitCorrelation(
     exposRecords: JsonRecord[] | null,
+    exposInventoryRecords: JsonRecord[],
     validLdaregRecords: JsonRecord[],
     missingLdaregRecords: JsonRecord[]
 ): boolean {
@@ -1403,6 +1408,101 @@ function hasLdaregExposUnitCorrelation(
     ) {
         return false;
     }
+
+    const singleLdaregBuildingIdentity = (): boolean => {
+        const aggregateHashes = correlatedLdaregRecords
+            .map((record) => record.aggregateBuildingSerialHash)
+            .filter((hash): hash is string => typeof hash === 'string');
+        const buildingNameHashes = correlatedLdaregRecords
+            .map((record) => record.buildingNameHash)
+            .filter((hash): hash is string => typeof hash === 'string');
+        return (
+            aggregateHashes.length === correlatedLdaregRecords.length &&
+            new Set(aggregateHashes).size === 1 &&
+            buildingNameHashes.length ===
+                correlatedLdaregRecords.length &&
+            new Set(buildingNameHashes).size === 1
+        );
+    };
+
+    const scopeFloorUnitHashes = exposRecords.map(
+        (record) => record.floorHoIdentityHash as string
+    );
+    const inventoryFloorUnitHashes = exposInventoryRecords
+        .map((record) => record.floorHoIdentityHash)
+        .filter((hash): hash is string => typeof hash === 'string');
+    const validFloorUnitHashes = validLdaregRecords.map(
+        (record) => record.floorHoIdentityHash as string
+    );
+    const missingFloorUnitHashes = missingLdaregRecords.map(
+        (record) => record.floorHoIdentityHash as string
+    );
+    const exposFloorUnitShapeByHash = new Map(
+        exposInventoryRecords
+            .filter(
+                (record) =>
+                    typeof record.floorHoIdentityHash === 'string' &&
+                    isPhase0FloorAsUnitShape(record.floorShape)
+            )
+            .map((record) => [
+                record.floorHoIdentityHash as string,
+                record.floorShape,
+            ])
+    );
+    const ldaregFloorUnitShapeByHash = new Map(
+        validLdaregRecords
+            .filter(
+                (record) =>
+                    typeof record.floorHoIdentityHash === 'string' &&
+                    isPhase0FloorAsUnitShape(record.floorShape)
+            )
+            .map((record) => [
+                record.floorHoIdentityHash as string,
+                record.floorShape,
+            ])
+    );
+    const exactFloorAsUnitCorrelation =
+        exposRecords.every(
+            (record) => record.unitIdentityShape === 'FLOOR_HO'
+        ) &&
+        exposInventoryRecords.length === exposRecords.length &&
+        exposInventoryRecords.every(
+            (record) =>
+                record.unitIdentityShape === 'FLOOR_HO' &&
+                typeof record.floorHoIdentityHash === 'string' &&
+                isPhase0FloorAsUnitShape(record.floorShape)
+        ) &&
+        validLdaregRecords.length === exposRecords.length &&
+        validLdaregRecords.every(
+            (record) =>
+                record.unitIdentityShape === 'FLOOR_HO' &&
+                typeof record.floorHoIdentityHash === 'string' &&
+                isPhase0FloorAsUnitShape(record.floorShape)
+        ) &&
+        missingLdaregRecords.every(
+            (record) => !isPhase0FloorAsUnitShape(record.floorShape)
+        ) &&
+        hasExactUniqueSetMatch(
+            scopeFloorUnitHashes,
+            inventoryFloorUnitHashes
+        ) &&
+        hasExactUniqueSetMatch(
+            scopeFloorUnitHashes,
+            validFloorUnitHashes
+        ) &&
+        new Set(missingFloorUnitHashes).size ===
+            missingFloorUnitHashes.length &&
+        missingFloorUnitHashes.every(
+            (hash) => !new Set(scopeFloorUnitHashes).has(hash)
+        ) &&
+        scopeFloorUnitHashes.every(
+            (hash) =>
+                exposFloorUnitShapeByHash.get(hash) ===
+                ldaregFloorUnitShapeByHash.get(hash)
+        ) &&
+        singleLdaregBuildingIdentity();
+    if (exactFloorAsUnitCorrelation) return true;
+
     const exposFloorHoHashes = exposRecords.map(
         (record) => record.floorHoIdentityHash as string
     );
@@ -1460,18 +1560,7 @@ function hasLdaregExposUnitCorrelation(
         return false;
     }
 
-    const aggregateHashes = correlatedLdaregRecords
-        .map((record) => record.aggregateBuildingSerialHash)
-        .filter((hash): hash is string => typeof hash === 'string');
-    const buildingNameHashes = correlatedLdaregRecords
-        .map((record) => record.buildingNameHash)
-        .filter((hash): hash is string => typeof hash === 'string');
-    return (
-        aggregateHashes.length === correlatedLdaregRecords.length &&
-        new Set(aggregateHashes).size === 1 &&
-        buildingNameHashes.length === correlatedLdaregRecords.length &&
-        new Set(buildingNameHashes).size === 1
-    );
+    return singleLdaregBuildingIdentity();
 }
 
 function validateEvidence(value: unknown, path: string): void {
@@ -1621,7 +1710,8 @@ function validateChecks(value: unknown, path: string): void {
 }
 
 function exactHousingFamily(
-    titleRecords: JsonRecord[]
+    titleRecords: JsonRecord[],
+    allowPhase0V2LdaregEvidence: boolean
 ): 'LADFRL' | 'LDAREG' | null {
     if (titleRecords.length === 0) return null;
     const sameExactPair = (
@@ -1679,12 +1769,22 @@ function exactHousingFamily(
     ) {
         return 'LDAREG';
     }
+    if (
+        allowPhase0V2LdaregEvidence &&
+        hasPhase0GenericLdaregTitleEvidence(
+            titleRecords,
+            1
+        )
+    ) {
+        return 'LDAREG';
+    }
     return null;
 }
 
 function requireExpectedHousingFamily(
     sample: JsonRecord,
     expectedFamily: LandAreaPhase0ExpectedFamily,
+    allowPhase0V2LdaregEvidence: boolean,
     path: string
 ): void {
     const endpoints = sample.endpoints as JsonRecord[];
@@ -1700,7 +1800,10 @@ function requireExpectedHousingFamily(
     );
     const actualFamily =
         titleRootHashes.size === 1
-            ? exactHousingFamily(titleRecords)
+            ? exactHousingFamily(
+                  titleRecords,
+                  allowPhase0V2LdaregEvidence
+              )
             : null;
     const hasMismatchCode = (
         sample.failureCodes as string[]
@@ -1901,7 +2004,11 @@ function validateBaseBasisScopeBinding(
     }
 }
 
-function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
+function requireSemanticFailureCodes(
+    sample: JsonRecord,
+    path: string,
+    allowPhase0V2LdaregEvidence: boolean
+): void {
     const required = new Set<string>();
     const requiredReview = new Set<string>();
     const endpoints = sample.endpoints as JsonRecord[];
@@ -1917,7 +2024,10 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     );
     const ldaregApplicable =
         titleRootHashes.size === 1 &&
-        exactHousingFamily(titleInventoryRecords) === 'LDAREG';
+        exactHousingFamily(
+            titleInventoryRecords,
+            allowPhase0V2LdaregEvidence
+        ) === 'LDAREG';
     for (const endpoint of endpoints) {
         const isNonApplicableLdareg =
             !ldaregApplicable &&
@@ -2108,7 +2218,10 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
 
     if (
         titleRootHashes.size !== 1 ||
-        exactHousingFamily(titleInventoryRecords) === null
+        exactHousingFamily(
+            titleInventoryRecords,
+            allowPhase0V2LdaregEvidence
+        ) === null
     ) {
         required.add('HOUSING_CLASSIFICATION_ALLOWLIST_MISMATCH');
     }
@@ -2155,6 +2268,10 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
         if (
             !hasLdaregExposUnitCorrelation(
                 resolvedScopeExposRecords(scopeExpos),
+                (
+                    endpointByName('getBrExposInfo')
+                        .inventory as JsonRecord
+                ).records as JsonRecord[],
                 validLdaregRecords,
                 missingLdaregRecords
             )
@@ -2322,7 +2439,11 @@ function validQuotaRatio(
  * FAIL artifact는 최초 관찰 근거로 보존해야 하므로 이 검증은 root gate가
  * PASS인 경우에만 호출한다.
  */
-function requirePassWitnesses(sample: JsonRecord, path: string): void {
+function requirePassWitnesses(
+    sample: JsonRecord,
+    path: string,
+    allowPhase0V2LdaregEvidence: boolean
+): void {
     const endpoints = sample.endpoints as JsonRecord[];
     if (endpoints.every((endpoint) => endpoint.state === 'COMPLETE_ZERO')) {
         reject(`${path} cannot PASS with every endpoint COMPLETE_ZERO`);
@@ -2351,7 +2472,10 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     ) {
         reject(`${path} PASS title endpoint lacks codebook evidence`);
     }
-    const housingFamily = exactHousingFamily(titleRecords);
+    const housingFamily = exactHousingFamily(
+        titleRecords,
+        allowPhase0V2LdaregEvidence
+    );
     if (housingFamily === null) {
         reject(`${path} PASS lacks an exact approved housing classification`);
     }
@@ -2778,6 +2902,10 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
         if (
             !hasLdaregExposUnitCorrelation(
                 resolvedExposRecords,
+                (
+                    endpoint('getBrExposInfo')
+                        .inventory as JsonRecord
+                ).records as JsonRecord[],
                 validLdaregRecords,
                 missingLdaregRecords
             )
@@ -2819,7 +2947,11 @@ function sampleCommitment(
     return `${aliasHash}:${pnuHash}:${expectedBylot}`;
 }
 
-function validateSample(value: unknown, path: string): {
+function validateSample(
+    value: unknown,
+    path: string,
+    allowPhase0V2LdaregEvidence: boolean
+): {
     commitment: string;
     failureCodes: string[];
     reviewCodes: string[];
@@ -2867,7 +2999,11 @@ function validateSample(value: unknown, path: string): {
     validateChecks(value.checks, `${path}.checks`);
     assertSortedUniqueCodes(value.failureCodes, `${path}.failureCodes`);
     assertSortedUniqueCodes(value.reviewCodes, `${path}.reviewCodes`);
-    requireSemanticFailureCodes(value, path);
+    requireSemanticFailureCodes(
+        value,
+        path,
+        allowPhase0V2LdaregEvidence
+    );
     return {
         commitment: sampleCommitment(
             value.aliasHash,
@@ -2953,8 +3089,47 @@ export function validateLandAreaPhase0CaptureArtifact(
     }
 
     assertArray(artifactInput.samples, 'artifact.samples');
-    const validatedSamples = artifactInput.samples.map((sample, index) =>
-        validateSample(sample, `artifact.samples[${index}]`)
+    const expectedMetadataByCommitment = new Map(
+        manifest.samples.map((sample) => [
+            sampleCommitment(
+                hashIdentity('ALIAS', sample.alias),
+                hashIdentity('PNU', sample.pnu),
+                sample.expectedBylot
+            ),
+            {
+                expectedFamily:
+                    expectedLandAreaPhase0Family(sample),
+                allowPhase0V2LdaregEvidence:
+                    sample.expectedFamily === 'LDAREG',
+            },
+        ])
+    );
+    const validatedSamples = artifactInput.samples.map(
+        (sample, index) => {
+            const candidate =
+                sample !== null &&
+                typeof sample === 'object' &&
+                !Array.isArray(sample)
+                    ? (sample as JsonRecord)
+                    : null;
+            const candidateCommitment =
+                candidate &&
+                typeof candidate.aliasHash === 'string' &&
+                typeof candidate.pnuHash === 'string' &&
+                typeof candidate.expectedBylot === 'string'
+                    ? sampleCommitment(
+                          candidate.aliasHash,
+                          candidate.pnuHash,
+                          candidate.expectedBylot
+                      )
+                    : '';
+            return validateSample(
+                sample,
+                `artifact.samples[${index}]`,
+                expectedMetadataByCommitment.get(candidateCommitment)
+                    ?.allowPhase0V2LdaregEvidence ?? false
+            );
+        }
     );
     const expectedCommitments = manifest.samples
         .map((sample) =>
@@ -2979,39 +3154,40 @@ export function validateLandAreaPhase0CaptureArtifact(
     if (new Set(actualCommitments).size !== actualCommitments.length) {
         reject('artifact samples contain duplicate commitments');
     }
-    const expectedFamilyByCommitment = new Map(
-        manifest.samples.map((sample) => [
-            sampleCommitment(
-                hashIdentity('ALIAS', sample.alias),
-                hashIdentity('PNU', sample.pnu),
-                sample.expectedBylot
-            ),
-            expectedLandAreaPhase0Family(sample),
-        ])
-    );
     artifactInput.samples.forEach((sample, index) => {
         const commitment = validatedSamples[index].commitment;
-        const expectedFamily = expectedFamilyByCommitment.get(
+        const expectedMetadata = expectedMetadataByCommitment.get(
             commitment
         );
-        if (expectedFamily === undefined) {
+        if (expectedMetadata === undefined) {
             reject(
                 `artifact.samples[${index}] lacks an approved manifest family`
             );
         }
         requireExpectedHousingFamily(
             sample as JsonRecord,
-            expectedFamily,
+            expectedMetadata.expectedFamily,
+            expectedMetadata.allowPhase0V2LdaregEvidence,
             `artifact.samples[${index}]`
         );
     });
     if (artifactInput.gate.status === 'PASS') {
-        artifactInput.samples.forEach((sample, index) =>
+        artifactInput.samples.forEach((sample, index) => {
+            const expectedMetadata =
+                expectedMetadataByCommitment.get(
+                    validatedSamples[index].commitment
+                );
+            if (expectedMetadata === undefined) {
+                reject(
+                    `artifact.samples[${index}] lacks approved PASS metadata`
+                );
+            }
             requirePassWitnesses(
                 sample as JsonRecord,
-                `artifact.samples[${index}]`
-            )
-        );
+                `artifact.samples[${index}]`,
+                expectedMetadata.allowPhase0V2LdaregEvidence
+            );
+        });
     }
 
     const failureUnion = exactSortedUnion(
