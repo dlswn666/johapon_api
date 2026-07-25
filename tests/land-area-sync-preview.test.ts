@@ -61,7 +61,7 @@ test('buildScopeSnapshot: 3층 hash·정렬 candidate·정렬 bylotEvidence 를 
     assert.deepEqual(snapshot.bylotEvidence.map((e) => e.mgmBldrgstPk), ['PKA', 'PKB']); // sorted
     // C1: resolverRootPks 는 정렬·dedup 되어 고정된다(웹 [5.3] 재검증 계약 입력).
     assert.deepEqual(snapshot.resolverRootPks, ['PK-A', 'PK-UP']);
-    assert.equal(snapshot.canonicalVersion, 2);
+    assert.equal(snapshot.canonicalVersion, 3);
     assert.deepEqual(snapshot.ladfrlAreaEvidence, {
         version: 'land-area-sync.ladfrl-scope.v1',
         parcels: [{ pnu: PNU, area: '100.5' }],
@@ -75,6 +75,63 @@ test('buildScopeSnapshot: 3층 hash·정렬 candidate·정렬 bylotEvidence 를 
         rowCount: 1,
         rowMultisetDigest: 'a'.repeat(64),
     });
+});
+
+test('EXPOS root provenance가 달라지면 canonical v3 scopeHash도 달라진다', () => {
+    const build = (source: 'SELF' | 'BASIS_UNIQUE') =>
+        buildScopeSnapshot({
+            strategy: 'LDAREG',
+            frozenAt: '2026-07-25T00:00:00.000Z',
+            scannedPnus: [PNU],
+            resolverRootPks: ['PK-UP'],
+            bylot,
+            dbScopeHash: 'db-hash',
+            externalScopeDigest: 'ext-digest',
+            propertyMembership: [
+                {
+                    propertyUnitId: UUID_A,
+                    pnu: PNU,
+                    buildingUnitId: null,
+                },
+            ],
+            candidatePropertyUnitIds: [UUID_A],
+            currentLandTuples: [],
+            proposedLandAreas: [
+                { propertyUnitId: UUID_A, landArea: '8.26' },
+            ],
+            ladfrlAreaEvidence: {
+                parcels: [{ pnu: PNU, area: '73' }],
+                totalArea: '73',
+            },
+            replicationEvidence: {
+                canonicalSourcePnu: PNU,
+                comparedPnus: [PNU],
+                exactReplica: true,
+                rowCount: 1,
+                rowMultisetDigest: 'b'.repeat(64),
+            },
+            componentMatchDigest: [
+                {
+                    kind: 'EXPOS_ROOT_RESOLUTION',
+                    rows: [
+                        {
+                            queryPnu: PNU,
+                            selfIdentity: 'PK-SELF',
+                            rootIdentity: 'PK-SELF',
+                            rawUpIdentity: null,
+                            source,
+                        },
+                    ],
+                },
+            ],
+            projectionItems: [{ propertyUnitId: UUID_A }],
+        });
+
+    const self = build('SELF');
+    const basis = build('BASIS_UNIQUE');
+    assert.equal(self.canonicalVersion, 3);
+    assert.equal(basis.canonicalVersion, 3);
+    assert.notEqual(self.scopeHash, basis.scopeHash);
 });
 
 test('sanitizeIssue: allowlist 밖 필드(소유자명 등)는 제거하고 code·PNU·UUID·동/호만 남긴다', () => {

@@ -12,14 +12,23 @@
  *  - §7.3 source record allowlist 12필드 추출.
  */
 
-import type { LdaregRow, BrExposRow, LandAreaSyncIssueCode } from '../../types/land-area-sync.types';
+import type {
+    LdaregRow,
+    BrExposRow,
+    BrBasisOulnRow,
+    LandAreaSyncIssueCode,
+} from '../../types/land-area-sync.types';
 import { createHash } from 'node:crypto';
 import type {
     LandAreaSyncApplyLdaregItem,
     LandAreaSyncApplyLdaregComponent,
     LandAreaSyncIssue,
 } from '../../types/land-area-sync-job.types';
-import { dedupLdaregObservations, type LdaregObservationInput } from './identity';
+import {
+    dedupLdaregObservations,
+    type LdaregObservationInput,
+    type LdaregSourceRecord,
+} from './identity';
 import { parseLdaQotaRate, checkDenominatorAgainstArea } from './ratio';
 import {
     matchLdaregUnit,
@@ -29,15 +38,25 @@ import {
     type MatchSource,
 } from './matcher';
 import { mapClsSeCodeToSourceState, normalizeFloorLabel } from './preview';
-import { normalizeRegistryManagementPk } from './registry-pk';
 import type { ScopeLadfrlArea } from './ladfrl-scope';
-import { normalizeUnitTuple } from './normalizer';
+import { normalizeUnitTuple, unitTupleKey } from './normalizer';
+import {
+    buildBasisRootIndex,
+    resolveExposRootIdentity,
+    type BasisRootIndex,
+    type ExposRootIdentitySource,
+} from './expos-root';
 
 /** 한 대상 PNU 의 LDAREG·전유부 raw scan 묶음. */
 export interface LdaregPnuScan {
     pnu: string;
     ldaregRows: LdaregRow[];
     exposRows: BrExposRow[];
+    /**
+     * LDAREG 분기 전용 same-run basis scan. service 런타임은 모든 scanned PNU에
+     * 반드시 주입한다. optional은 기존 순수 fixture의 title-root self 호환만 위한 것이다.
+     */
+    basisRows?: BrBasisOulnRow[];
 }
 
 export interface LdaregBranchInput {
@@ -220,6 +239,19 @@ export interface LdaregBranchResult {
     blocking: boolean;
 }
 
+export interface ExposRootResolutionEvidence {
+    queryPnu: string;
+    selfIdentity: string;
+    rootIdentity: string;
+    rawUpIdentity: string | null;
+    source: ExposRootIdentitySource;
+    normalized: {
+        dong: string;
+        floor: string;
+        ho: string;
+    };
+}
+
 function str(v: unknown): string {
     return typeof v === 'string' ? v : v == null ? '' : String(v);
 }
@@ -275,25 +307,34 @@ function extractSourceRecord(row: LdaregRow): Record<string, string | null> {
     };
 }
 
-/** getBrExposInfo row 에서 동·층·호 후보를 방어적으로 뽑는다(층 표기 정렬). */
-function toExposCandidate(row: BrExposRow): ExposUnitCandidate {
+/** getBrExposInfo row에서 basis-closed root와 동·층·호 후보를 뽑는다. */
+function toExposCandidate(
+    row: BrExposRow,
+    basisRootIndex: BasisRootIndex
+): ExposUnitCandidate | null {
     const r = row as Record<string, unknown>;
+    const resolved = resolveExposRootIdentity(row, basisRootIndex);
+    if (!resolved.ok) return null;
     return {
         dong: str(r.dongNm ?? r.buldDongNm ?? r.dong) || null,
         floor: normalizeFloorLabel(str(r.flrNoNm ?? r.buldFloorNm ?? r.floor ?? r.flrNo)) || null,
         ho: str(r.hoNm ?? r.buldHoNm ?? r.ho) || null,
-        // matcher 2단계 root identity 비교 축을 scope root(up-PK 우선)와 통일한다(C1).
-        // 총괄표제부 있는 복수 동 집합건물은 mgmUpBldrgstPk(계열 root) ≠ mgmBldrgstPk(동별 self)이므로
-        // self-PK 로 비교하면 ROOT_MISMATCH 로 전량 NO_CHANGE 된다. deriveRootPks 와 동일하게
-        // up 우선(빈 문자열이면 self)으로 뽑는다.
-        // ⚠️ expos row 의 root 식별 필드(up vs self)는 Phase 0 실측 확정 항목이다.
-        rootIdentity: pickRootIdentity(r.mgmUpBldrgstPk, r.mgmBldrgstPk),
+        rootIdentity: resolved.evidence.rootIdentity,
+        selfIdentity: resolved.evidence.selfIdentity,
+        rawUpIdentity: resolved.evidence.rawUpIdentity,
+        rootIdentitySource: resolved.evidence.source,
     };
 }
 
-/** up-PK 우선 root 식별자 선택 — deriveRootPks(service)와 동일 canonical 규칙. */
-function pickRootIdentity(up: unknown, self: unknown): string {
-    return normalizeRegistryManagementPk(up) ?? normalizeRegistryManagementPk(self) ?? '';
+function buildScopeBasisRootIndex(
+    perPnu: LdaregPnuScan[],
+    acceptedRootIdentities: readonly string[]
+): BasisRootIndex | null {
+    const result = buildBasisRootIndex(
+        perPnu.flatMap((scan) => scan.basisRows ?? []),
+        acceptedRootIdentities
+    );
+    return result.ok ? result.index : null;
 }
 
 /**
@@ -305,26 +346,45 @@ function pickRootIdentity(up: unknown, self: unknown): string {
  * 않도록 PNU별 최대 multiplicity를 보존한다.
  */
 function collectScopeExposUnits(
-    perPnu: LdaregPnuScan[]
-): ExposUnitCandidate[] {
+    perPnu: LdaregPnuScan[],
+    basisRootIndex: BasisRootIndex
+):
+    | {
+          ok: true;
+          units: ExposUnitCandidate[];
+          rootEvidence: ExposRootResolutionEvidence[];
+      }
+    | { ok: false } {
     const representativeByKey = new Map<string, ExposUnitCandidate>();
     const maxMultiplicityByKey = new Map<string, number>();
+    const rootEvidence: ExposRootResolutionEvidence[] = [];
 
     for (const scan of perPnu) {
         const localMultiplicity = new Map<string, number>();
         for (const row of scan.exposRows) {
-            const raw = row as Record<string, unknown>;
-            const candidate = toExposCandidate(row);
+            const candidate = toExposCandidate(row, basisRootIndex);
+            if (!candidate || !candidate.selfIdentity || !candidate.rootIdentitySource) {
+                return { ok: false };
+            }
             const normalized = normalizeUnitTuple(candidate);
             const key = JSON.stringify({
                 rootIdentity: candidate.rootIdentity,
-                selfIdentity:
-                    normalizeRegistryManagementPk(
-                        raw.mgmBldrgstPk
-                    ) ?? '',
+                selfIdentity: candidate.selfIdentity,
                 dong: normalized.dong,
                 floor: normalized.floor,
                 ho: normalized.ho,
+            });
+            rootEvidence.push({
+                queryPnu: scan.pnu,
+                selfIdentity: candidate.selfIdentity,
+                rootIdentity: candidate.rootIdentity,
+                rawUpIdentity: candidate.rawUpIdentity ?? null,
+                source: candidate.rootIdentitySource,
+                normalized: {
+                    dong: normalized.dong,
+                    floor: normalized.floor,
+                    ho: normalized.ho,
+                },
             });
             representativeByKey.set(
                 key,
@@ -343,7 +403,7 @@ function collectScopeExposUnits(
         }
     }
 
-    return [...representativeByKey.keys()]
+    const units = [...representativeByKey.keys()]
         .sort()
         .flatMap((key) =>
             Array.from(
@@ -351,6 +411,13 @@ function collectScopeExposUnits(
                 () => representativeByKey.get(key)!
             )
         );
+    return {
+        ok: true,
+        units,
+        rootEvidence: rootEvidence.sort((a, b) =>
+            JSON.stringify(a).localeCompare(JSON.stringify(b))
+        ),
+    };
 }
 
 /**
@@ -360,8 +427,14 @@ function collectScopeExposUnits(
  */
 export function selectCanonicalExposSourcePnu(
     basePnus: string[],
-    perPnu: LdaregPnuScan[]
+    perPnu: LdaregPnuScan[],
+    acceptedRootIdentities: readonly string[]
 ): string | null {
+    const basisRootIndex = buildScopeBasisRootIndex(
+        perPnu,
+        acceptedRootIdentities
+    );
+    if (!basisRootIndex) return null;
     const scansByPnu = new Map(perPnu.map((scan) => [scan.pnu, scan]));
     const candidates = [...new Set(basePnus)].sort();
     if (
@@ -371,31 +444,201 @@ export function selectCanonicalExposSourcePnu(
         return null;
     }
 
-    const digestFor = (pnu: string): string =>
-        JSON.stringify(
-            (scansByPnu.get(pnu)?.exposRows ?? [])
-                .map((rawRow) => ({
-                    raw: rawRow as Record<string, unknown>,
-                    candidate: toExposCandidate(rawRow),
-                }))
-                .map(({ raw, candidate }) => ({
-                    rootIdentity: candidate.rootIdentity,
-                    selfIdentity:
-                        normalizeRegistryManagementPk(
-                            raw.mgmBldrgstPk
-                        ) ?? '',
-                    normalized: normalizeUnitTuple(candidate),
-                }))
-                .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+    const digestFor = (pnu: string): string | null => {
+        const candidates: Array<Record<string, unknown>> = [];
+        for (const rawRow of scansByPnu.get(pnu)?.exposRows ?? []) {
+            const candidate = toExposCandidate(rawRow, basisRootIndex);
+            if (!candidate) return null;
+            candidates.push({
+                rootIdentity: candidate.rootIdentity,
+                selfIdentity: candidate.selfIdentity,
+                rawUpIdentity: candidate.rawUpIdentity ?? null,
+                rootIdentitySource: candidate.rootIdentitySource,
+                normalized: normalizeUnitTuple(candidate),
+            });
+        }
+        return JSON.stringify(
+            candidates.sort((a, b) =>
+                JSON.stringify(a).localeCompare(JSON.stringify(b))
+            )
         );
+    };
     const reference = digestFor(candidates[0]);
-    if (candidates.slice(1).some((pnu) => digestFor(pnu) !== reference)) return null;
+    if (
+        reference === null ||
+        candidates.slice(1).some((pnu) => digestFor(pnu) !== reference)
+    ) {
+        return null;
+    }
     return candidates[0];
 }
 
 /** building_unit 후보 floor 표기를 matcher 주입 전 정규화한다(integer ↔ '3층'). */
 function normalizeBuildingUnitFloor(candidate: BuildingUnitCandidate): BuildingUnitCandidate {
     return { ...candidate, floor: candidate.floor == null ? null : normalizeFloorLabel(candidate.floor) || null };
+}
+
+interface ExposFloorHoFallbackEvidence {
+    kind: 'EXPOS_FLOOR_HO_FALLBACK_GATE';
+    allowed: boolean;
+    fallbackRequiredCount: number;
+    singleRoot: boolean;
+    exposDongUnique: boolean;
+    ldaregDongUnique: boolean;
+    exposFloorHoUnique: boolean;
+    ldaregFloorHoUnique: boolean;
+    ldaregBuildingNameUnique: boolean;
+    ldaregAgbldgSnUnique: boolean;
+    ldaregMetadataCollision: boolean;
+    oneSideDongOnly: boolean;
+}
+
+function floorHoKey(unit: {
+    floor?: string | null;
+    ho?: string | null;
+}): string {
+    return unitTupleKey(normalizeUnitTuple(unit), ['floor', 'ho']);
+}
+
+function dongFloorHoKey(unit: {
+    dong?: string | null;
+    floor?: string | null;
+    ho?: string | null;
+}): string {
+    return unitTupleKey(normalizeUnitTuple(unit), ['dong', 'floor', 'ho']);
+}
+
+/**
+ * dong 누락 호환은 matcher 개별 row 판단 전에 scope 전체에서 먼저 닫는다.
+ * floor+ho와 양쪽의 dong token이 각각 scope 전체에서 유일하고,
+ * 동일 FH의 LDAREG metadata 충돌이 없으며,
+ * 실제 fallback pair마다 정확히 한쪽 dong만 비어 있을 때만 허용한다.
+ */
+function evaluateExposFloorHoFallback(
+    records: readonly LdaregSourceRecord[],
+    exposUnits: readonly ExposUnitCandidate[],
+    scopeRootIdentity: string
+): ExposFloorHoFallbackEvidence {
+    const rootSet = new Set(
+        exposUnits.map((unit) => unit.rootIdentity.trim()).filter(Boolean)
+    );
+    const singleRoot =
+        scopeRootIdentity.trim() !== '' &&
+        rootSet.size === 1 &&
+        rootSet.has(scopeRootIdentity.trim()) &&
+        exposUnits.every((unit) => unit.rootIdentity.trim() !== '');
+    const exposDongTokens = new Set(
+        exposUnits.map((unit) => normalizeUnitTuple(unit).dong)
+    );
+    const exposDongUnique = exposDongTokens.size === 1;
+    const ldaregDongTokens = new Set(
+        records.map((record) => record.normalized.dong)
+    );
+    const ldaregDongUnique = ldaregDongTokens.size === 1;
+
+    const exposFloorHoKeys = exposUnits.map(floorHoKey);
+    const exposFloorHoUnique =
+        exposUnits.every((unit) => {
+            const normalized = normalizeUnitTuple(unit);
+            return normalized.floor !== '' && normalized.ho !== '';
+        }) &&
+        new Set(exposFloorHoKeys).size === exposFloorHoKeys.length;
+    const ldaregFloorHoKeys = records.map((record) =>
+        floorHoKey(record.normalized)
+    );
+    const ldaregFloorHoUnique =
+        records.every(
+            (record) =>
+                record.normalized.floor !== '' &&
+                record.normalized.ho !== ''
+        ) &&
+        new Set(ldaregFloorHoKeys).size === ldaregFloorHoKeys.length;
+    const ldaregBuildingNames = new Set(
+        records.map((record) => record.buildingName).filter(Boolean)
+    );
+    const ldaregAgbldgSns = new Set(
+        records.map((record) => record.agbldgSn ?? '').filter(Boolean)
+    );
+    const ldaregBuildingNameUnique =
+        records.length > 0 &&
+        records.every((record) => record.buildingName !== '') &&
+        ldaregBuildingNames.size === 1;
+    const ldaregAgbldgSnUnique =
+        records.length > 0 &&
+        records.every(
+            (record) =>
+                record.agbldgSn !== null &&
+                record.agbldgSn !== ''
+        ) &&
+        ldaregAgbldgSns.size === 1;
+
+    const metadataByFloorHo = new Map<string, Set<string>>();
+    for (const record of records) {
+        const key = floorHoKey(record.normalized);
+        const signatures = metadataByFloorHo.get(key) ?? new Set<string>();
+        signatures.add(
+            JSON.stringify({
+                buildingName: record.buildingName,
+                agbldgSn: record.agbldgSn,
+                room: record.normalized.room,
+            })
+        );
+        metadataByFloorHo.set(key, signatures);
+    }
+    const ldaregMetadataCollision = [...metadataByFloorHo.values()].some(
+        (signatures) => signatures.size > 1
+    );
+
+    let fallbackRequiredCount = 0;
+    let oneSideDongOnly = true;
+    for (const record of records) {
+        const exactMatches = exposUnits.filter(
+            (candidate) =>
+                dongFloorHoKey(candidate) ===
+                dongFloorHoKey(record.normalized)
+        );
+        if (exactMatches.length > 0) continue; // matcher에서 exact ambiguity를 별도 차단
+        fallbackRequiredCount += 1;
+        const candidates = exposUnits.filter(
+            (candidate) =>
+                floorHoKey(candidate) === floorHoKey(record.normalized)
+        );
+        if (candidates.length !== 1) {
+            oneSideDongOnly = false;
+            continue;
+        }
+        const sourceDong = record.normalized.dong;
+        const candidateDong = normalizeUnitTuple(candidates[0]).dong;
+        if ((sourceDong === '') === (candidateDong === '')) {
+            oneSideDongOnly = false;
+        }
+    }
+
+    const allowed =
+        fallbackRequiredCount > 0 &&
+        singleRoot &&
+        exposDongUnique &&
+        ldaregDongUnique &&
+        exposFloorHoUnique &&
+        ldaregFloorHoUnique &&
+        ldaregBuildingNameUnique &&
+        ldaregAgbldgSnUnique &&
+        !ldaregMetadataCollision &&
+        oneSideDongOnly;
+    return {
+        kind: 'EXPOS_FLOOR_HO_FALLBACK_GATE',
+        allowed,
+        fallbackRequiredCount,
+        singleRoot,
+        exposDongUnique,
+        ldaregDongUnique,
+        exposFloorHoUnique,
+        ldaregFloorHoUnique,
+        ldaregBuildingNameUnique,
+        ldaregAgbldgSnUnique,
+        ldaregMetadataCollision,
+        oneSideDongOnly,
+    };
 }
 
 /**
@@ -415,8 +658,17 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         input.canonicalSourcePnu
     );
     const canonicalScan = perPnu.find((scan) => scan.pnu === input.canonicalSourcePnu);
-    const scopeExposUnits = collectScopeExposUnits(perPnu);
-    if (!replication.ok || !canonicalScan || scopeExposUnits.length === 0) {
+    const basisRootIndex = buildScopeBasisRootIndex(perPnu, [rootIdentity]);
+    const scopeExpos =
+        basisRootIndex === null
+            ? { ok: false as const }
+            : collectScopeExposUnits(perPnu, basisRootIndex);
+    if (
+        !replication.ok ||
+        !canonicalScan ||
+        !scopeExpos.ok ||
+        scopeExpos.units.length === 0
+    ) {
         return {
             items: [],
             issues: [{ code: 'LDAREG_IDENTITY_CONFLICT' }],
@@ -461,7 +713,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
     // canonical base LDAREG를 한 번만 dedup/match한다. EXPOS는 scope 전체에서 합친
     // normalized 후보를 사용하므로 호실이 기준 또는 부속 PNU 한쪽에만 있어도 매칭한다.
     // attached PNU의 expos COMPLETE_ZERO도 정상이다.
-    const exposUnits = scopeExposUnits;
+    const exposUnits = scopeExpos.units;
     const placeholderIndexes = new Set(
         canonicalScan.ldaregRows
             .map((row, index) =>
@@ -506,6 +758,18 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             ];
         });
     const dedup = dedupLdaregObservations(observations);
+    const floorHoFallback = evaluateExposFloorHoFallback(
+        dedup.records,
+        exposUnits,
+        rootIdentity
+    );
+    componentMatchDigest.push(
+        {
+            kind: 'EXPOS_ROOT_RESOLUTION',
+            rows: scopeExpos.rootEvidence,
+        },
+        { ...floorHoFallback }
+    );
     const dedupConflict = dedup.issues.some(
         (issue) => issue.code === 'LDAREG_IDENTITY_CONFLICT'
     );
@@ -556,6 +820,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             buildingUnits,
             propertyUnits,
             unionId,
+            allowExposFloorHoFallback: floorHoFallback.allowed,
         });
         if (decision.kind === 'NO_CHANGE') {
             unitMatchIncomplete = true;

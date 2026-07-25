@@ -21,6 +21,12 @@ import {
     isOptionalRegistryManagementPkValid,
     normalizeRegistryManagementPk,
 } from '../services/land-area-sync/registry-pk';
+import {
+    buildBasisRootIndex,
+    resolveExposRootIdentity,
+    type BasisRootIndex,
+    type ExposRootIdentitySource,
+} from '../services/land-area-sync/expos-root';
 import { resolveScopeLadfrlAreas } from '../services/land-area-sync/ladfrl-scope';
 import { validateLdaregReplication } from '../services/land-area-sync/ldareg-branch';
 import {
@@ -55,9 +61,9 @@ export const LAND_AREA_PHASE0_MANIFEST_VERSION =
 export const LAND_AREA_PHASE0_PLAN_VERSION =
     'land-area-phase0-capture-plan@1' as const;
 export const LAND_AREA_PHASE0_ARTIFACT_VERSION =
-    'land-area-phase0-capture-artifact@5' as const;
+    'land-area-phase0-capture-artifact@6' as const;
 export const LAND_AREA_PHASE0_ARTIFACT_SCHEMA_HASH =
-    '19d9570daa2ec6140a1be71f577ca687807864f494fc367e69204ca38369fe45' as const;
+    '99d06939e77afcf8220fc1b6cef55ea22315f11b38a24a13aeecb45a47c49e16' as const;
 export const LAND_AREA_PHASE0_MAX_ARTIFACT_BYTES = 3 * 1024 * 1024;
 export const LAND_AREA_PHASE0_OUTPUT_DIRECTORY = '.phase0-land-area';
 
@@ -241,10 +247,36 @@ interface ExposInventory extends BoundedInventory {
             | 'FLOOR_HO'
             | 'INCOMPLETE';
         unitIdentityHash?: string;
+        floorHoIdentityHash?: string;
+        dongIdentityHash?: string;
         mainAttachedTypeCode?: string;
         floorTypeCode?: string;
         floorShape?: string;
         area?: string;
+    }>;
+}
+
+interface ScopeBasisEvidence extends BoundedInventory {
+    status: 'PASS' | 'FAIL';
+    queries: Array<
+        | {
+              pnuHash: string;
+              state: 'COMPLETE' | 'COMPLETE_ZERO';
+              totalCount: number;
+              pagesFetched: number;
+          }
+        | {
+              pnuHash: string;
+              state: 'FAILED' | 'INCOMPLETE';
+              issue: SanitizedIssue;
+          }
+    >;
+    records: Array<{
+        queryPnuHash: string;
+        rowPnuHash?: string;
+        selfManagementPkHash?: string;
+        upIdentityState: 'ABSENT' | 'VALID' | 'INVALID';
+        upManagementPkHash?: string;
     }>;
 }
 
@@ -268,11 +300,15 @@ interface ScopeExposEvidence extends BoundedInventory {
         rowPnuHash?: string;
         selfManagementPkHash?: string;
         rootManagementPkHash?: string;
+        rootIdentitySource?: ExposRootIdentitySource;
+        rawUpManagementPkHash?: string;
         unitIdentityShape:
             | 'DONG_FLOOR_HO'
             | 'FLOOR_HO'
             | 'INCOMPLETE';
         unitIdentityHash?: string;
+        floorHoIdentityHash?: string;
+        dongIdentityHash?: string;
     }>;
 }
 
@@ -290,11 +326,14 @@ interface LdaregInventory extends BoundedInventory {
     records: Array<{
         pnuHash?: string;
         aggregateBuildingSerialHash?: string;
+        buildingNameHash?: string;
         unitIdentityShape:
             | 'DONG_FLOOR_HO'
             | 'FLOOR_HO'
             | 'INCOMPLETE';
         unitIdentityHash?: string;
+        floorHoIdentityHash?: string;
+        dongIdentityHash?: string;
         quotaRatioState: 'VALID' | 'MISSING' | 'INVALID';
         quotaRatioInput: {
             presence: 'ABSENT' | 'NULL' | 'PRESENT';
@@ -343,6 +382,7 @@ export interface LandAreaPhase0SampleArtifact {
             records: Array<{ pnuHash: string; area: string }>;
             totalArea: string | null;
         };
+        scopeBasis: ScopeBasisEvidence;
         scopeExpos: ScopeExposEvidence;
         ldaregReplication: {
             status: 'PASS' | 'FAIL' | 'NOT_APPLICABLE';
@@ -397,6 +437,8 @@ interface SampleRawCapture {
     scopeLadfrl: Array<{ pnu: string; scan: StrictScan<LadfrlRow> }>;
     /** sample PNU + same-run attached scope PNU별 LDAREG strict scan. */
     scopeLdareg: Array<{ pnu: string; scan: StrictScan<LdaregRow> }>;
+    /** sample PNU + same-run attached scope PNU별 basis strict scan. */
+    scopeBasis: Array<{ pnu: string; scan: StrictScan<BrBasisOulnRow> }>;
     /** sample PNU + same-run attached scope PNU별 expos strict scan. */
     scopeExpos: Array<{ pnu: string; scan: StrictScan<BrExposRow> }>;
 }
@@ -791,6 +833,8 @@ function unitIdentity(
 ): {
     shape: 'DONG_FLOOR_HO' | 'FLOOR_HO' | 'INCOMPLETE';
     hash?: string;
+    floorHoHash?: string;
+    dongHash?: string;
 } {
     const exactScalarAlias = (
         aliases: readonly string[],
@@ -858,6 +902,12 @@ function unitIdentity(
     if (!tuple.floor || !tuple.ho) {
         return { shape: 'INCOMPLETE' };
     }
+    const floorHoHash = sha256(
+        `FLOOR_HO_TUPLE_JSON\u0000${stableStringify([
+            tuple.floor,
+            tuple.ho,
+        ])}`
+    );
     return {
         shape: tuple.dong ? 'DONG_FLOOR_HO' : 'FLOOR_HO',
         hash: sha256(
@@ -867,6 +917,119 @@ function unitIdentity(
                 tuple.ho,
             ])}`
         ),
+        floorHoHash,
+        ...(tuple.dong
+            ? {
+                  dongHash: sha256(
+                      `DONG_IDENTITY\u0000${tuple.dong}`
+                  ),
+              }
+            : {}),
+    };
+}
+
+/**
+ * 대표·부속 PNU별 basis 조회를 closure 입력과 분리된 비식별 evidence로 남긴다.
+ * title self row의 higher-up lineage는 이 단계에서 해석하지 않고 raw hash로만
+ * 보존하며, child→title root 해석은 전체 scope 합집합에서 별도로 수행한다.
+ */
+function buildScopeBasisEvidence(
+    scopeBasis: Array<{
+        pnu: string;
+        scan: StrictScan<BrBasisOulnRow>;
+    }>
+): ScopeBasisEvidence {
+    const queries: ScopeBasisEvidence['queries'] = [];
+    const records: ScopeBasisEvidence['records'] = [];
+    const seenPnus = new Set<string>();
+    let valid = scopeBasis.length > 0;
+
+    for (const { pnu, scan } of [...scopeBasis].sort((left, right) =>
+        left.pnu.localeCompare(right.pnu)
+    )) {
+        const queryPnuHash = pnuHash(pnu);
+        if (seenPnus.has(pnu)) valid = false;
+        seenPnus.add(pnu);
+
+        if (!successfulScan(scan)) {
+            valid = false;
+            queries.push({
+                pnuHash: queryPnuHash,
+                state: scan.state,
+                issue: sanitizedIssue(scan.issue),
+            });
+            continue;
+        }
+        const scanRows = rowsOf(scan);
+        if (
+            scan.totalCount !== scanRows.length ||
+            scan.pagesFetched < 1 ||
+            (scan.state === 'COMPLETE_ZERO') !==
+                (scanRows.length === 0)
+        ) {
+            valid = false;
+        }
+        queries.push({
+            pnuHash: queryPnuHash,
+            state: scan.state,
+            totalCount: scan.totalCount,
+            pagesFetched: scan.pagesFetched,
+        });
+
+        for (const typedRow of scanRows) {
+            const row = typedRow as Record<string, unknown>;
+            const rowPnu = buildingHubRowPnu(row);
+            const selfIdentity = normalizeRegistryManagementPk(
+                row.mgmBldrgstPk
+            );
+            const rawUp = row.mgmUpBldrgstPk;
+            const upIdentityState:
+                | 'ABSENT'
+                | 'VALID'
+                | 'INVALID' =
+                rawUp === undefined ||
+                rawUp === null ||
+                (typeof rawUp === 'string' &&
+                    rawUp.trim() === '')
+                    ? 'ABSENT'
+                    : normalizeRegistryManagementPk(rawUp) === null
+                      ? 'INVALID'
+                      : 'VALID';
+            if (
+                rowPnu !== pnu ||
+                selfIdentity === null ||
+                upIdentityState === 'INVALID'
+            ) {
+                valid = false;
+            }
+            const selfManagementPkHash = managementPkHash(
+                'MGM_BLDRGST_PK',
+                selfIdentity
+            );
+            const upManagementPkHash = managementPkHash(
+                'MGM_UP_BLDRGST_PK',
+                row.mgmUpBldrgstPk
+            );
+            records.push({
+                queryPnuHash,
+                ...(rowPnu ? { rowPnuHash: pnuHash(rowPnu) } : {}),
+                ...(selfManagementPkHash
+                    ? { selfManagementPkHash }
+                    : {}),
+                upIdentityState,
+                ...(upManagementPkHash
+                    ? { upManagementPkHash }
+                    : {}),
+            });
+        }
+    }
+
+    const bounded = boundRecords(records);
+    if (bounded.truncated) valid = false;
+    return {
+        status: valid ? 'PASS' : 'FAIL',
+        queries: queries.sort(compareCanonical),
+        ...bounded,
     };
 }
 
@@ -876,7 +1039,8 @@ function unitIdentity(
  * scope 조회와 query-PNU 귀속을 별도로 증명한다.
  */
 function buildScopeExposEvidence(
-    scopeExpos: Array<{ pnu: string; scan: StrictScan<BrExposRow> }>
+    scopeExpos: Array<{ pnu: string; scan: StrictScan<BrExposRow> }>,
+    basisRootIndex: BasisRootIndex | null
 ): ScopeExposEvidence {
     const queries: ScopeExposEvidence['queries'] = [];
     const records: ScopeExposEvidence['records'] = [];
@@ -921,18 +1085,15 @@ function buildScopeExposEvidence(
             const selfIdentity = normalizeRegistryManagementPk(
                 row.mgmBldrgstPk
             );
-            const upIdentityValid = isOptionalRegistryManagementPkValid(
-                row.mgmUpBldrgstPk
-            );
-            const rootIdentity = upIdentityValid
-                ? normalizeRegistryManagementPk(row.mgmUpBldrgstPk) ??
-                  selfIdentity
-                : null;
+            const rootResolution =
+                basisRootIndex === null
+                    ? { ok: false as const }
+                    : resolveExposRootIdentity(typedRow, basisRootIndex);
             const unit = unitIdentity('EXPOS_UNIT', row);
             if (
                 rowPnu !== pnu ||
                 selfIdentity === null ||
-                rootIdentity === null
+                !rootResolution.ok
             ) {
                 valid = false;
             }
@@ -943,7 +1104,13 @@ function buildScopeExposEvidence(
             );
             const rootManagementPkHash = managementPkHash(
                 'MGM_BLDRGST_PK',
-                rootIdentity
+                rootResolution.ok
+                    ? rootResolution.evidence.rootIdentity
+                    : undefined
+            );
+            const rawUpManagementPkHash = managementPkHash(
+                'MGM_UP_BLDRGST_PK',
+                row.mgmUpBldrgstPk
             );
             records.push({
                 queryPnuHash,
@@ -954,8 +1121,23 @@ function buildScopeExposEvidence(
                 ...(rootManagementPkHash
                     ? { rootManagementPkHash }
                     : {}),
+                ...(rootResolution.ok
+                    ? {
+                          rootIdentitySource:
+                              rootResolution.evidence.source,
+                      }
+                    : {}),
+                ...(rawUpManagementPkHash
+                    ? { rawUpManagementPkHash }
+                    : {}),
                 unitIdentityShape: unit.shape,
                 ...(unit.hash ? { unitIdentityHash: unit.hash } : {}),
+                ...(unit.floorHoHash
+                    ? { floorHoIdentityHash: unit.floorHoHash }
+                    : {}),
+                ...(unit.dongHash
+                    ? { dongIdentityHash: unit.dongHash }
+                    : {}),
             });
         }
     }
@@ -1015,8 +1197,10 @@ function resolvedScopeExposEvidenceRecords(
             record.rowPnuHash !== record.queryPnuHash ||
             !record.selfManagementPkHash ||
             !record.rootManagementPkHash ||
+            !record.rootIdentitySource ||
             record.unitIdentityShape === 'INCOMPLETE' ||
-            !record.unitIdentityHash
+            !record.unitIdentityHash ||
+            !record.floorHoIdentityHash
         ) {
             return null;
         }
@@ -1029,6 +1213,8 @@ function resolvedScopeExposEvidenceRecords(
             selfManagementPkHash: record.selfManagementPkHash,
             unitIdentityShape: record.unitIdentityShape,
             unitIdentityHash: record.unitIdentityHash,
+            floorHoIdentityHash: record.floorHoIdentityHash,
+            dongIdentityHash: record.dongIdentityHash ?? null,
         });
         if (!representativeByKey.has(key)) {
             representativeByKey.set(key, record);
@@ -1062,6 +1248,150 @@ function resolvedScopeExposEvidenceRecords(
                 () => representativeByKey.get(key)!
             )
         );
+}
+
+function hasExactUniqueSetMatch(
+    left: string[],
+    right: string[]
+): boolean {
+    const leftSet = new Set(left);
+    const rightSet = new Set(right);
+    return (
+        left.length > 0 &&
+        leftSet.size === left.length &&
+        rightSet.size === right.length &&
+        leftSet.size === rightSet.size &&
+        [...leftSet].every((value) => rightSet.has(value))
+    );
+}
+
+/**
+ * full 동/층/호 identity가 같으면 그 증거를 우선한다. provider 한쪽만 동을
+ * 제공하는 경우에는 단일 root·단일 동·단일 LDAREG 건물 identity와 층/호
+ * 1:1 대응을 모두 만족할 때만 제한적으로 보강한다.
+ */
+function hasLdaregExposUnitCorrelation(
+    exposRecords: ScopeExposEvidence['records'] | null,
+    validLdaregRecords: LdaregInventory['records'],
+    missingLdaregRecords: LdaregInventory['records']
+): boolean {
+    if (exposRecords === null) return false;
+    const correlatedLdaregRecords = [
+        ...validLdaregRecords,
+        ...missingLdaregRecords,
+    ];
+    const allUnitComplete =
+        exposRecords.every(
+            (record) =>
+                record.unitIdentityShape !== 'INCOMPLETE' &&
+                typeof record.unitIdentityHash === 'string' &&
+                typeof record.floorHoIdentityHash === 'string'
+        ) &&
+        correlatedLdaregRecords.every(
+            (record) =>
+                record.unitIdentityShape !== 'INCOMPLETE' &&
+                typeof record.unitIdentityHash === 'string' &&
+                typeof record.floorHoIdentityHash === 'string'
+        );
+    if (!allUnitComplete) return false;
+
+    const exposFullHashes = exposRecords.map(
+        (record) => record.unitIdentityHash!
+    );
+    const validFullHashes = validLdaregRecords.map(
+        (record) => record.unitIdentityHash!
+    );
+    const missingFullHashes = missingLdaregRecords.map(
+        (record) => record.unitIdentityHash!
+    );
+    const exactFullCorrelation =
+        hasExactUniqueSetMatch(exposFullHashes, validFullHashes) &&
+        new Set(missingFullHashes).size === missingFullHashes.length &&
+        missingFullHashes.every(
+            (hash) => !new Set(exposFullHashes).has(hash)
+        );
+    if (exactFullCorrelation) return true;
+
+    const roots = new Set(
+        exposRecords.map((record) => record.rootManagementPkHash)
+    );
+    if (
+        roots.size !== 1 ||
+        roots.has(undefined) ||
+        correlatedLdaregRecords.length === 0
+    ) {
+        return false;
+    }
+
+    const exposFloorHoHashes = exposRecords.map(
+        (record) => record.floorHoIdentityHash!
+    );
+    const validFloorHoHashes = validLdaregRecords.map(
+        (record) => record.floorHoIdentityHash!
+    );
+    const missingFloorHoHashes = missingLdaregRecords.map(
+        (record) => record.floorHoIdentityHash!
+    );
+    const exposFloorHoSet = new Set(exposFloorHoHashes);
+    if (
+        !hasExactUniqueSetMatch(
+            exposFloorHoHashes,
+            validFloorHoHashes
+        ) ||
+        new Set(missingFloorHoHashes).size !==
+            missingFloorHoHashes.length ||
+        missingFloorHoHashes.some((hash) =>
+            exposFloorHoSet.has(hash)
+        )
+    ) {
+        return false;
+    }
+
+    const exposHasDong = exposRecords.every(
+        (record) => record.unitIdentityShape === 'DONG_FLOOR_HO'
+    );
+    const exposOmitsDong = exposRecords.every(
+        (record) => record.unitIdentityShape === 'FLOOR_HO'
+    );
+    const ldaregHasDong = correlatedLdaregRecords.every(
+        (record) => record.unitIdentityShape === 'DONG_FLOOR_HO'
+    );
+    const ldaregOmitsDong = correlatedLdaregRecords.every(
+        (record) => record.unitIdentityShape === 'FLOOR_HO'
+    );
+    if (
+        !(
+            (exposHasDong && ldaregOmitsDong) ||
+            (exposOmitsDong && ldaregHasDong)
+        )
+    ) {
+        return false;
+    }
+    const dongSide = exposHasDong
+        ? exposRecords
+        : correlatedLdaregRecords;
+    const dongHashes = dongSide
+        .map((record) => record.dongIdentityHash)
+        .filter((hash): hash is string => typeof hash === 'string');
+    if (
+        dongHashes.length !== dongSide.length ||
+        new Set(dongHashes).size !== 1
+    ) {
+        return false;
+    }
+
+    const aggregateHashes = correlatedLdaregRecords
+        .map((record) => record.aggregateBuildingSerialHash)
+        .filter((hash): hash is string => typeof hash === 'string');
+    const buildingNameHashes = correlatedLdaregRecords
+        .map((record) => record.buildingNameHash)
+        .filter((hash): hash is string => typeof hash === 'string');
+    return (
+        aggregateHashes.length === correlatedLdaregRecords.length &&
+        new Set(aggregateHashes).size === 1 &&
+        buildingNameHashes.length === correlatedLdaregRecords.length &&
+        new Set(buildingNameHashes).size === 1
+    );
 }
 
 function sanitizedIssue(issue: ProviderIssue): SanitizedIssue {
@@ -1299,6 +1629,12 @@ function exposInventory(
             ...(upManagementPkHashValue ? { upManagementPkHash: upManagementPkHashValue } : {}),
             unitIdentityShape: unit.shape,
             ...(unit.hash ? { unitIdentityHash: unit.hash } : {}),
+            ...(unit.floorHoHash
+                ? { floorHoIdentityHash: unit.floorHoHash }
+                : {}),
+            ...(unit.dongHash
+                ? { dongIdentityHash: unit.dongHash }
+                : {}),
             ...(mainAttachedTypeCode ? { mainAttachedTypeCode } : {}),
             ...(floorTypeCode ? { floorTypeCode } : {}),
             ...(sanitizedFloorShape
@@ -1343,6 +1679,7 @@ function ldaregInventory(
             'AGBLDG_SN',
             row.agbldgSn
         );
+        const buildingNameHash = identityHash('BUILDING_NAME', row.buldNm);
         const unit = unitIdentity('LDAREG_UNIT', row);
         const quotaRatio = safeRatio(row.ldaQotaRate, isSensitive);
         const quotaRatioState: LdaregInventory['records'][number]['quotaRatioState'] =
@@ -1391,8 +1728,15 @@ function ldaregInventory(
             ...(aggregateBuildingSerialHash
                 ? { aggregateBuildingSerialHash }
                 : {}),
+            ...(buildingNameHash ? { buildingNameHash } : {}),
             unitIdentityShape: unit.shape,
             ...(unit.hash ? { unitIdentityHash: unit.hash } : {}),
+            ...(unit.floorHoHash
+                ? { floorHoIdentityHash: unit.floorHoHash }
+                : {}),
+            ...(unit.dongHash
+                ? { dongIdentityHash: unit.dongHash }
+                : {}),
             quotaRatioState,
             quotaRatioInput,
             ...(quotaRatio ? { quotaRatio } : {}),
@@ -1532,18 +1876,21 @@ function buildSampleArtifact(
     isSensitive: SensitiveValueGuard
 ): LandAreaPhase0SampleArtifact {
     const titleRows = rowsOf(raw.title);
-    const basisRows = rowsOf(raw.basis);
+    const baseBasisRows = rowsOf(raw.basis);
     const attachedRows = rowsOf(raw.attached);
     const exposRows = rowsOf(raw.expos);
     const ladfrlRows = rowsOf(raw.ladfrl);
     const ldaregRows = rowsOf(raw.ldareg);
     const scopeLdareg =
         raw.scopeLdareg ?? [{ pnu: raw.sample.pnu, scan: raw.ldareg }];
+    const scopeBasis =
+        raw.scopeBasis ?? [{ pnu: raw.sample.pnu, scan: raw.basis }];
     const scopeExpos =
         raw.scopeExpos ?? [{ pnu: raw.sample.pnu, scan: raw.expos }];
-    const scopeExposEvidence = buildScopeExposEvidence(scopeExpos);
-    const resolvedScopeExposRecords =
-        resolvedScopeExposEvidenceRecords(scopeExposEvidence);
+    const scopeBasisRows = scopeBasis.flatMap(({ scan }) =>
+        rowsOf(scan)
+    );
+    const scopeBasisEvidence = buildScopeBasisEvidence(scopeBasis);
     const scopeLadfrl = resolveCaptureScopeLadfrl(raw);
     const ldaregReplication = resolveCaptureLdaregReplication(raw);
     const assembled = assembledAttached(attachedRows);
@@ -1551,9 +1898,13 @@ function buildSampleArtifact(
         titleRows as Array<Record<string, unknown>>,
         raw.sample.pnu
     );
-    const basisPnuExact = buildingHubRowsMatchPnu(
-        basisRows as Array<Record<string, unknown>>,
-        raw.sample.pnu
+    const basisPnuExact = scopeBasis.every(
+        ({ pnu, scan }) =>
+            !successfulScan(scan) ||
+            buildingHubRowsMatchPnu(
+                rowsOf(scan) as Array<Record<string, unknown>>,
+                pnu
+            )
     );
     const exposPnuExact = buildingHubRowsMatchPnu(
         exposRows as Array<Record<string, unknown>>,
@@ -1569,14 +1920,16 @@ function buildSampleArtifact(
     );
 
     const titleCounts = countsByPk(titleRows);
-    const basisCounts = countsByPk(basisRows);
+    // bylot policy는 기존 대표 PNU basis endpoint만 원천으로 유지한다.
+    // linked scope basis 합집합은 EXPOS root closure에만 사용한다.
+    const basisCounts = countsByPk(baseBasisRows);
     const attachedCounts = new Map<string, number>();
     const titlePkInvalid = titleRows.some(
         (row) =>
             normalizeRegistryManagementPk(row.mgmBldrgstPk) === null ||
             !isOptionalRegistryManagementPkValid(row.mgmUpBldrgstPk)
     );
-    const basisPkInvalid = basisRows.some(
+    const basisPkInvalid = scopeBasisRows.some(
         (row) =>
             normalizeRegistryManagementPk(row.mgmBldrgstPk) === null ||
             !isOptionalRegistryManagementPkValid(row.mgmUpBldrgstPk)
@@ -1608,57 +1961,48 @@ function buildSampleArtifact(
     const titlePks = [...titleCounts.counts.keys()].sort();
     const basisPks = [...basisCounts.counts.keys()].sort();
     const titlePkSet = new Set(titlePks);
-    const basisParentByPk = new Map<string, string>();
-    let basisClosureValid = true;
-    for (const row of basisRows) {
-        const pk = normalizeRegistryManagementPk(row.mgmBldrgstPk);
-        const upPk = normalizeRegistryManagementPk(row.mgmUpBldrgstPk);
-        if (!pk) {
-            basisClosureValid = false;
-            continue;
-        }
-        if (titlePkSet.has(pk)) {
-            continue;
-        }
-        if (!upPk || !titlePkSet.has(upPk)) {
-            basisClosureValid = false;
-            continue;
-        }
-        const existing = basisParentByPk.get(pk);
-        if (existing && existing !== upPk) {
-            basisClosureValid = false;
-            continue;
-        }
-        basisParentByPk.set(pk, upPk);
-    }
+    const basisRootIndexResult = buildBasisRootIndex(
+        scopeBasisRows,
+        titlePks
+    );
+    const basisRootIndex = basisRootIndexResult.ok
+        ? basisRootIndexResult.index
+        : null;
+    const basisParentByPk = new Map(
+        basisRootIndex?.parentBySelf ?? []
+    );
+    const basisClosureValid =
+        basisRootIndex !== null &&
+        scopeBasisEvidence.status === 'PASS';
+    const scopeExposEvidence = buildScopeExposEvidence(
+        scopeExpos,
+        basisRootIndex
+    );
+    const resolvedScopeExposRecords =
+        resolvedScopeExposEvidenceRecords(scopeExposEvidence);
     // 대표 PNU 단일 EXPOS가 아니라 대표·부속 PNU 전체 scope의 EXPOS가
     // title/basis 관리번호 closure 안에 있어야 한다. 일부 호실이 부속지번
     // 응답에만 나타나는 경우를 허용하되, 다른 건물 row의 혼입은 fail-close한다.
     const scopeExposPks = new Set<string>();
     let scopeExposClosureValid = true;
     for (const typedRow of scopeExpos.flatMap(({ scan }) => rowsOf(scan))) {
-        const row = typedRow as Record<string, unknown>;
-        const pk = normalizeRegistryManagementPk(row.mgmBldrgstPk);
-        const upPk = normalizeRegistryManagementPk(row.mgmUpBldrgstPk);
-        if (!pk) {
+        if (basisRootIndex === null) {
             scopeExposClosureValid = false;
             continue;
         }
-        scopeExposPks.add(pk);
-        const isTitleRoot = titlePkSet.has(pk);
-        const expectedRoot = isTitleRoot
-            ? pk
-            : basisParentByPk.get(pk);
-        if (
-            !expectedRoot ||
-            (isTitleRoot
-                ? upPk !== null && upPk !== expectedRoot
-                : upPk !== expectedRoot)
-        ) {
+        const resolution = resolveExposRootIdentity(
+            typedRow,
+            basisRootIndex
+        );
+        if (!resolution.ok) {
             scopeExposClosureValid = false;
+            continue;
         }
+        scopeExposPks.add(resolution.evidence.selfIdentity);
     }
-    const basisChildPks = basisPks.filter((pk) => !titlePkSet.has(pk));
+    const basisChildPks = [
+        ...(basisRootIndex?.parentBySelf.keys() ?? []),
+    ].sort();
     const basisScopeExposClosureValid =
         scopeExposEvidence.status === 'PASS' &&
         scopeExposClosureValid &&
@@ -1670,7 +2014,7 @@ function buildSampleArtifact(
         null;
     if (
         successfulScan(raw.title) &&
-        successfulScan(raw.basis) &&
+        scopeBasis.every(({ scan }) => successfulScan(scan)) &&
         !titleCounts.hasInvalidPk &&
         !basisCounts.hasInvalidPk &&
         titlePnuExact &&
@@ -1850,6 +2194,10 @@ function buildSampleArtifact(
     for (const { scan } of raw.scopeLadfrl) {
         for (const code of scanFailureCodes([scan])) failureCodes.add(code);
     }
+    for (const { scan } of scopeBasis) {
+        for (const code of scanFailureCodes([scan]))
+            failureCodes.add(code);
+    }
     if (ldaregRequired) {
         for (const { scan } of scopeLdareg) {
             for (const code of scanFailureCodes([scan]))
@@ -1869,6 +2217,16 @@ function buildSampleArtifact(
         ) {
             failureCodes.add('EXPOS_PK_INVALID');
         }
+    }
+    if (
+        scopeExposEvidence.records.some(
+            (record) =>
+                typeof record.selfManagementPkHash !== 'string' ||
+                typeof record.rootManagementPkHash !== 'string' ||
+                typeof record.rootIdentitySource !== 'string'
+        )
+    ) {
+        failureCodes.add('EXPOS_PK_INVALID');
     }
     const reviewCodes = new Set<string>();
     const expectedFamily =
@@ -1921,7 +2279,7 @@ function buildSampleArtifact(
         failureCodes.add('BYLOT_ATTACHED_EXPECTATION_MISMATCH');
 
     const titleResult = titleInventory(titleRows, isSensitive);
-    const basisResult = basisInventory(basisRows);
+    const basisResult = basisInventory(baseBasisRows);
     const attachedResult = attachedInventory(attachedRows);
     const exposResult = exposInventory(exposRows, isSensitive);
     const ladfrlResult = ladfrlInventory(ladfrlRows, isSensitive);
@@ -1963,6 +2321,7 @@ function buildSampleArtifact(
         titleResult.truncated ||
         basisResult.truncated ||
         attachedResult.pairsTruncated ||
+        scopeBasisEvidence.truncated ||
         exposResult.truncated ||
         scopeExposEvidence.truncated ||
         ladfrlResult.truncated ||
@@ -2103,43 +2462,13 @@ function buildSampleArtifact(
         const missingLdaregRecords = ldaregResult.records.filter(
             (record) => record.quotaRatioState === 'MISSING'
         );
-        const exposUnitHashes = (resolvedScopeExposRecords ?? [])
-            .map((record) => record.unitIdentityHash)
-            .filter((hash): hash is string => hash !== undefined);
-        const validLdaregUnitHashes = validLdaregRecords
-            .map((record) => record.unitIdentityHash)
-            .filter((hash): hash is string => hash !== undefined);
-        const missingLdaregUnitHashes = new Set(
-            missingLdaregRecords
-                .map((record) => record.unitIdentityHash)
-                .filter((hash): hash is string => hash !== undefined)
-        );
-        const exposSet = new Set(exposUnitHashes);
-        const validLdaregSet = new Set(validLdaregUnitHashes);
-        const exactUnitCorrelation =
-            resolvedScopeExposRecords !== null &&
-            exposUnitHashes.length === resolvedScopeExposRecords.length &&
-            validLdaregUnitHashes.length === validLdaregRecords.length &&
-            missingLdaregUnitHashes.size === missingLdaregRecords.length &&
-            resolvedScopeExposRecords.every((record) =>
-                ['DONG_FLOOR_HO', 'FLOOR_HO'].includes(
-                    record.unitIdentityShape
-                )
-            ) &&
-            [...validLdaregRecords, ...missingLdaregRecords].every(
-                (record) =>
-                    record.unitIdentityShape === 'DONG_FLOOR_HO' ||
-                    record.unitIdentityShape === 'FLOOR_HO'
-            ) &&
-            exposUnitHashes.length === exposSet.size &&
-            validLdaregUnitHashes.length === validLdaregSet.size &&
-            exposSet.size > 0 &&
-            exposSet.size === validLdaregSet.size &&
-            [...exposSet].every((hash) => validLdaregSet.has(hash)) &&
-            [...missingLdaregUnitHashes].every(
-                (hash) => !exposSet.has(hash)
-            );
-        if (!exactUnitCorrelation) {
+        if (
+            !hasLdaregExposUnitCorrelation(
+                resolvedScopeExposRecords,
+                validLdaregRecords,
+                missingLdaregRecords
+            )
+        ) {
             failureCodes.add('LDAREG_EXPOS_UNIT_CORRELATION_MISMATCH');
         }
     }
@@ -2162,6 +2491,7 @@ function buildSampleArtifact(
                         : [],
                 totalArea: scopeLadfrl?.ok === true ? scopeLadfrl.totalArea : null,
             },
+            scopeBasis: scopeBasisEvidence,
             scopeExpos: scopeExposEvidence,
             ldaregReplication: {
                 status:
@@ -2347,12 +2677,25 @@ export async function captureLandAreaPhase0(input: {
             pnu: string;
             scan: StrictScan<LdaregRow>;
         }> = [{ pnu: sample.pnu, scan: ldareg }];
+        const scopeBasis: Array<{
+            pnu: string;
+            scan: StrictScan<BrBasisOulnRow>;
+        }> = [{ pnu: sample.pnu, scan: basis }];
         const scopeExpos: Array<{
             pnu: string;
             scan: StrictScan<BrExposRow>;
         }> = [{ pnu: sample.pnu, scan: expos }];
         for (const pnu of linkedPnus) {
             if (pnu === sample.pnu) continue;
+            scopeBasis.push({
+                pnu,
+                scan: await safeScan('getBrBasisOulnInfo', () =>
+                    input.adapter.scanBasis(
+                        pnu,
+                        input.buildingHubAuth
+                    )
+                ),
+            });
             scopeLadfrl.push({
                 pnu,
                 scan: await safeScan('ladfrlList', () =>
@@ -2382,6 +2725,7 @@ export async function captureLandAreaPhase0(input: {
             ldareg,
             scopeLadfrl,
             scopeLdareg,
+            scopeBasis,
             scopeExpos,
         });
     }

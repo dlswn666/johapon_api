@@ -34,7 +34,7 @@ import { LAND_AREA_SYNC_ISSUE_CODES } from '../../types/land-area-sync.types';
 import type { LdaregSourceState } from './identity';
 
 /** snapshot canonical 버전. 직렬화가 바뀌면 올린다. */
-export const LAND_AREA_SYNC_CANONICAL_VERSION = 2;
+export const LAND_AREA_SYNC_CANONICAL_VERSION = 3;
 export const LADFRL_SCOPE_EVIDENCE_VERSION =
     'land-area-sync.ladfrl-scope.v1' as const;
 export const LDAREG_REPLICATION_EVIDENCE_VERSION =

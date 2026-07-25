@@ -549,12 +549,20 @@ function validateInventory(value: unknown, endpoint: string, path: string): void
                 'managementPkHash',
                 'upManagementPkHash',
                 'unitIdentityHash',
+                'floorHoIdentityHash',
+                'dongIdentityHash',
                 'mainAttachedTypeCode',
                 'floorTypeCode',
                 'floorShape',
                 'area',
             ],
-            hash: ['managementPkHash', 'upManagementPkHash', 'unitIdentityHash'],
+            hash: [
+                'managementPkHash',
+                'upManagementPkHash',
+                'unitIdentityHash',
+                'floorHoIdentityHash',
+                'dongIdentityHash',
+            ],
             decimal: ['area'],
         },
         LADFRL: {
@@ -572,13 +580,23 @@ function validateInventory(value: unknown, endpoint: string, path: string): void
             optional: [
                 'pnuHash',
                 'aggregateBuildingSerialHash',
+                'buildingNameHash',
                 'unitIdentityHash',
+                'floorHoIdentityHash',
+                'dongIdentityHash',
                 'quotaRatio',
                 'classificationCode',
                 'classificationLabel',
                 'floorShape',
             ],
-            hash: ['pnuHash', 'aggregateBuildingSerialHash', 'unitIdentityHash'],
+            hash: [
+                'pnuHash',
+                'aggregateBuildingSerialHash',
+                'buildingNameHash',
+                'unitIdentityHash',
+                'floorHoIdentityHash',
+                'dongIdentityHash',
+            ],
             decimal: [],
         },
     };
@@ -722,8 +740,12 @@ function validateInventory(value: unknown, endpoint: string, path: string): void
         }
         if (
             (value.kind === 'EXPOS' || value.kind === 'LDAREG') &&
-            (record.unitIdentityShape !== 'INCOMPLETE') !==
-                (record.unitIdentityHash !== undefined)
+            ((record.unitIdentityShape !== 'INCOMPLETE') !==
+                (record.unitIdentityHash !== undefined) ||
+                (record.unitIdentityShape !== 'INCOMPLETE') !==
+                    (record.floorHoIdentityHash !== undefined) ||
+                (record.unitIdentityShape === 'DONG_FLOOR_HO') !==
+                    (record.dongIdentityHash !== undefined))
         ) {
             reject(`${recordPath}.unitIdentityShape conflicts with hash`);
         }
@@ -832,6 +854,201 @@ function validateBylotEvidence(value: unknown, path: string): void {
     validateBoundedRecordEnvelope(value, value.records, path);
 }
 
+function validateScopeBasisEvidence(value: unknown, path: string): void {
+    assertRecord(value, path);
+    assertExactKeys(
+        value,
+        [
+            'status',
+            'queries',
+            'records',
+            'totalRecords',
+            'truncated',
+            'sanitizedDigest',
+        ],
+        [],
+        path
+    );
+    assertEnum(value.status, ['PASS', 'FAIL'], `${path}.status`);
+    assertArray(value.queries, `${path}.queries`);
+    if (
+        value.queries.length === 0 ||
+        value.queries.length > MAX_INVENTORY_RECORDS + 1
+    ) {
+        reject(`${path}.queries is outside the approved bound`);
+    }
+    const queryStates = new Map<
+        string,
+        {
+            state:
+                | 'COMPLETE'
+                | 'COMPLETE_ZERO'
+                | 'FAILED'
+                | 'INCOMPLETE';
+            totalCount: number;
+        }
+    >();
+    value.queries.forEach((query, index) => {
+        const queryPath = `${path}.queries[${index}]`;
+        assertRecord(query, queryPath);
+        assertEnum(
+            query.state,
+            ['COMPLETE', 'COMPLETE_ZERO', 'FAILED', 'INCOMPLETE'],
+            `${queryPath}.state`
+        );
+        if (
+            query.state === 'COMPLETE' ||
+            query.state === 'COMPLETE_ZERO'
+        ) {
+            assertExactKeys(
+                query,
+                ['pnuHash', 'state', 'totalCount', 'pagesFetched'],
+                [],
+                queryPath
+            );
+            assertNonNegativeInteger(
+                query.totalCount,
+                `${queryPath}.totalCount`
+            );
+            assertNonNegativeInteger(
+                query.pagesFetched,
+                `${queryPath}.pagesFetched`
+            );
+            if (
+                query.pagesFetched === 0 ||
+                (query.state === 'COMPLETE_ZERO') !==
+                    (query.totalCount === 0)
+            ) {
+                reject(`${queryPath} successful state is inconsistent`);
+            }
+        } else {
+            assertExactKeys(
+                query,
+                ['pnuHash', 'state', 'issue'],
+                [],
+                queryPath
+            );
+            validateIssue(query.issue, `${queryPath}.issue`);
+        }
+        assertHash(query.pnuHash, `${queryPath}.pnuHash`);
+        if (queryStates.has(query.pnuHash)) {
+            reject(`${path}.queries contains duplicate PNU hashes`);
+        }
+        queryStates.set(query.pnuHash, {
+            state: query.state as
+                | 'COMPLETE'
+                | 'COMPLETE_ZERO'
+                | 'FAILED'
+                | 'INCOMPLETE',
+            totalCount:
+                typeof query.totalCount === 'number'
+                    ? query.totalCount
+                    : 0,
+        });
+    });
+    assertCanonicalOrder(value.queries, `${path}.queries`);
+
+    assertArray(value.records, `${path}.records`);
+    const observedCounts = new Map<string, number>();
+    let exactIdentifiers = true;
+    value.records.forEach((record, index) => {
+        const recordPath = `${path}.records[${index}]`;
+        assertRecord(record, recordPath);
+        assertExactKeys(
+            record,
+            ['queryPnuHash', 'upIdentityState'],
+            [
+                'rowPnuHash',
+                'selfManagementPkHash',
+                'upManagementPkHash',
+            ],
+            recordPath
+        );
+        assertEnum(
+            record.upIdentityState,
+            ['ABSENT', 'VALID', 'INVALID'],
+            `${recordPath}.upIdentityState`
+        );
+        for (const field of [
+            'queryPnuHash',
+            'rowPnuHash',
+            'selfManagementPkHash',
+            'upManagementPkHash',
+        ] as const) {
+            if (record[field] !== undefined) {
+                assertHash(record[field], `${recordPath}.${field}`);
+            }
+        }
+        if (
+            (record.upIdentityState === 'VALID') !==
+            (record.upManagementPkHash !== undefined)
+        ) {
+            reject(
+                `${recordPath}.upIdentityState conflicts with up hash`
+            );
+        }
+        const query = queryStates.get(record.queryPnuHash as string);
+        if (
+            !query ||
+            (query.state !== 'COMPLETE' &&
+                query.state !== 'COMPLETE_ZERO')
+        ) {
+            reject(`${recordPath} is not bound to a successful query`);
+        }
+        observedCounts.set(
+            record.queryPnuHash as string,
+            (observedCounts.get(record.queryPnuHash as string) ?? 0) +
+                1
+        );
+        if (
+            record.rowPnuHash !== record.queryPnuHash ||
+            typeof record.selfManagementPkHash !== 'string' ||
+            record.upIdentityState === 'INVALID'
+        ) {
+            exactIdentifiers = false;
+        }
+    });
+    assertCanonicalOrder(value.records, `${path}.records`);
+    validateBoundedRecordEnvelope(value, value.records, path);
+    if (
+        value.totalRecords !==
+        [...queryStates.values()].reduce(
+            (sum, query) => sum + query.totalCount,
+            0
+        )
+    ) {
+        reject(`${path}.totalRecords does not match query totals`);
+    }
+    if (
+        !value.truncated &&
+        value.sanitizedDigest !== sanitizedDigest(value.records)
+    ) {
+        reject(
+            `${path}.sanitizedDigest does not match producer contract`
+        );
+    }
+    const allQueriesSuccessful = [...queryStates.values()].every(
+        (query) =>
+            query.state === 'COMPLETE' ||
+            query.state === 'COMPLETE_ZERO'
+    );
+    const countsExact =
+        !value.truncated &&
+        [...queryStates].every(
+            ([pnuHash, query]) =>
+                (observedCounts.get(pnuHash) ?? 0) ===
+                query.totalCount
+        );
+    const shouldPass =
+        allQueriesSuccessful &&
+        countsExact &&
+        exactIdentifiers &&
+        value.truncated === false;
+    if ((value.status === 'PASS') !== shouldPass) {
+        reject(`${path}.status is inconsistent`);
+    }
+}
+
 function validateScopeExposEvidence(value: unknown, path: string): void {
     assertRecord(value, path);
     assertExactKeys(
@@ -932,7 +1149,11 @@ function validateScopeExposEvidence(value: unknown, path: string): void {
                 'rowPnuHash',
                 'selfManagementPkHash',
                 'rootManagementPkHash',
+                'rootIdentitySource',
+                'rawUpManagementPkHash',
                 'unitIdentityHash',
+                'floorHoIdentityHash',
+                'dongIdentityHash',
             ],
             recordPath
         );
@@ -941,7 +1162,10 @@ function validateScopeExposEvidence(value: unknown, path: string): void {
             'rowPnuHash',
             'selfManagementPkHash',
             'rootManagementPkHash',
+            'rawUpManagementPkHash',
             'unitIdentityHash',
+            'floorHoIdentityHash',
+            'dongIdentityHash',
         ] as const) {
             if (record[field] !== undefined) {
                 assertHash(record[field], `${recordPath}.${field}`);
@@ -952,11 +1176,40 @@ function validateScopeExposEvidence(value: unknown, path: string): void {
             ['DONG_FLOOR_HO', 'FLOOR_HO', 'INCOMPLETE'],
             `${recordPath}.unitIdentityShape`
         );
+        if (record.rootIdentitySource !== undefined) {
+            assertEnum(
+                record.rootIdentitySource,
+                ['SELF', 'RAW_UP', 'BASIS_UNIQUE'],
+                `${recordPath}.rootIdentitySource`
+            );
+        }
         if (
             (record.unitIdentityShape !== 'INCOMPLETE') !==
-            (record.unitIdentityHash !== undefined)
+                (record.unitIdentityHash !== undefined) ||
+            (record.unitIdentityShape !== 'INCOMPLETE') !==
+                (record.floorHoIdentityHash !== undefined) ||
+            (record.unitIdentityShape === 'DONG_FLOOR_HO') !==
+                (record.dongIdentityHash !== undefined)
         ) {
             reject(`${recordPath}.unitIdentityShape conflicts with hash`);
+        }
+        const hasResolvedRoot =
+            typeof record.rootManagementPkHash === 'string';
+        if (
+            hasResolvedRoot !==
+                (typeof record.rootIdentitySource === 'string') ||
+            (record.rootIdentitySource === 'SELF' &&
+                (record.rootManagementPkHash !==
+                    record.selfManagementPkHash ||
+                    record.rawUpManagementPkHash !== undefined)) ||
+            (record.rootIdentitySource === 'RAW_UP' &&
+                (typeof record.rawUpManagementPkHash !== 'string' ||
+                    record.rootManagementPkHash !==
+                        record.rawUpManagementPkHash)) ||
+            (record.rootIdentitySource === 'BASIS_UNIQUE' &&
+                record.rawUpManagementPkHash !== undefined)
+        ) {
+            reject(`${recordPath}.root identity provenance is inconsistent`);
         }
         const query = queryStates.get(record.queryPnuHash as string);
         if (
@@ -973,7 +1226,8 @@ function validateScopeExposEvidence(value: unknown, path: string): void {
         if (
             record.rowPnuHash !== record.queryPnuHash ||
             typeof record.selfManagementPkHash !== 'string' ||
-            typeof record.rootManagementPkHash !== 'string'
+            typeof record.rootManagementPkHash !== 'string' ||
+            typeof record.rootIdentitySource !== 'string'
         ) {
             exactIdentifiers = false;
         }
@@ -1016,14 +1270,14 @@ function validateScopeExposEvidence(value: unknown, path: string): void {
     }
 }
 
-function resolvedScopeExposUnitHashes(
+function resolvedScopeExposRecords(
     value: JsonRecord
-): string[] | null {
+): JsonRecord[] | null {
     if (value.status !== 'PASS' || value.truncated !== false) {
         return null;
     }
     const records = value.records as JsonRecord[];
-    const representativeByKey = new Map<string, string>();
+    const representativeByKey = new Map<string, JsonRecord>();
     const maxMultiplicityByKey = new Map<string, number>();
     const localMultiplicityByPnu = new Map<
         string,
@@ -1035,8 +1289,10 @@ function resolvedScopeExposUnitHashes(
             record.rowPnuHash !== record.queryPnuHash ||
             typeof record.selfManagementPkHash !== 'string' ||
             typeof record.rootManagementPkHash !== 'string' ||
+            typeof record.rootIdentitySource !== 'string' ||
             record.unitIdentityShape === 'INCOMPLETE' ||
-            typeof record.unitIdentityHash !== 'string'
+            typeof record.unitIdentityHash !== 'string' ||
+            typeof record.floorHoIdentityHash !== 'string'
         ) {
             return null;
         }
@@ -1045,11 +1301,12 @@ function resolvedScopeExposUnitHashes(
             selfManagementPkHash: record.selfManagementPkHash,
             unitIdentityShape: record.unitIdentityShape,
             unitIdentityHash: record.unitIdentityHash,
+            floorHoIdentityHash: record.floorHoIdentityHash,
+            dongIdentityHash: record.dongIdentityHash ?? null,
         });
         representativeByKey.set(
             key,
-            representativeByKey.get(key) ??
-                (record.unitIdentityHash as string)
+            representativeByKey.get(key) ?? record
         );
         const queryPnuHash = record.queryPnuHash as string;
         const local =
@@ -1076,6 +1333,145 @@ function resolvedScopeExposUnitHashes(
         );
 }
 
+function hasExactUniqueSetMatch(
+    left: string[],
+    right: string[]
+): boolean {
+    const leftSet = new Set(left);
+    const rightSet = new Set(right);
+    return (
+        left.length > 0 &&
+        leftSet.size === left.length &&
+        rightSet.size === right.length &&
+        leftSet.size === rightSet.size &&
+        [...leftSet].every((value) => rightSet.has(value))
+    );
+}
+
+function hasLdaregExposUnitCorrelation(
+    exposRecords: JsonRecord[] | null,
+    validLdaregRecords: JsonRecord[],
+    missingLdaregRecords: JsonRecord[]
+): boolean {
+    if (exposRecords === null) return false;
+    const correlatedLdaregRecords = [
+        ...validLdaregRecords,
+        ...missingLdaregRecords,
+    ];
+    const allUnitComplete =
+        exposRecords.every(
+            (record) =>
+                record.unitIdentityShape !== 'INCOMPLETE' &&
+                typeof record.unitIdentityHash === 'string' &&
+                typeof record.floorHoIdentityHash === 'string'
+        ) &&
+        correlatedLdaregRecords.every(
+            (record) =>
+                record.unitIdentityShape !== 'INCOMPLETE' &&
+                typeof record.unitIdentityHash === 'string' &&
+                typeof record.floorHoIdentityHash === 'string'
+        );
+    if (!allUnitComplete) return false;
+
+    const exposFullHashes = exposRecords.map(
+        (record) => record.unitIdentityHash as string
+    );
+    const validFullHashes = validLdaregRecords.map(
+        (record) => record.unitIdentityHash as string
+    );
+    const missingFullHashes = missingLdaregRecords.map(
+        (record) => record.unitIdentityHash as string
+    );
+    const exposFullSet = new Set(exposFullHashes);
+    if (
+        hasExactUniqueSetMatch(exposFullHashes, validFullHashes) &&
+        new Set(missingFullHashes).size === missingFullHashes.length &&
+        missingFullHashes.every((hash) => !exposFullSet.has(hash))
+    ) {
+        return true;
+    }
+
+    const roots = new Set(
+        exposRecords.map((record) => record.rootManagementPkHash)
+    );
+    if (
+        roots.size !== 1 ||
+        roots.has(undefined) ||
+        correlatedLdaregRecords.length === 0
+    ) {
+        return false;
+    }
+    const exposFloorHoHashes = exposRecords.map(
+        (record) => record.floorHoIdentityHash as string
+    );
+    const validFloorHoHashes = validLdaregRecords.map(
+        (record) => record.floorHoIdentityHash as string
+    );
+    const missingFloorHoHashes = missingLdaregRecords.map(
+        (record) => record.floorHoIdentityHash as string
+    );
+    const exposFloorHoSet = new Set(exposFloorHoHashes);
+    if (
+        !hasExactUniqueSetMatch(
+            exposFloorHoHashes,
+            validFloorHoHashes
+        ) ||
+        new Set(missingFloorHoHashes).size !==
+            missingFloorHoHashes.length ||
+        missingFloorHoHashes.some((hash) =>
+            exposFloorHoSet.has(hash)
+        )
+    ) {
+        return false;
+    }
+
+    const exposHasDong = exposRecords.every(
+        (record) => record.unitIdentityShape === 'DONG_FLOOR_HO'
+    );
+    const exposOmitsDong = exposRecords.every(
+        (record) => record.unitIdentityShape === 'FLOOR_HO'
+    );
+    const ldaregHasDong = correlatedLdaregRecords.every(
+        (record) => record.unitIdentityShape === 'DONG_FLOOR_HO'
+    );
+    const ldaregOmitsDong = correlatedLdaregRecords.every(
+        (record) => record.unitIdentityShape === 'FLOOR_HO'
+    );
+    if (
+        !(
+            (exposHasDong && ldaregOmitsDong) ||
+            (exposOmitsDong && ldaregHasDong)
+        )
+    ) {
+        return false;
+    }
+    const dongSide = exposHasDong
+        ? exposRecords
+        : correlatedLdaregRecords;
+    const dongHashes = dongSide
+        .map((record) => record.dongIdentityHash)
+        .filter((hash): hash is string => typeof hash === 'string');
+    if (
+        dongHashes.length !== dongSide.length ||
+        new Set(dongHashes).size !== 1
+    ) {
+        return false;
+    }
+
+    const aggregateHashes = correlatedLdaregRecords
+        .map((record) => record.aggregateBuildingSerialHash)
+        .filter((hash): hash is string => typeof hash === 'string');
+    const buildingNameHashes = correlatedLdaregRecords
+        .map((record) => record.buildingNameHash)
+        .filter((hash): hash is string => typeof hash === 'string');
+    return (
+        aggregateHashes.length === correlatedLdaregRecords.length &&
+        new Set(aggregateHashes).size === 1 &&
+        buildingNameHashes.length === correlatedLdaregRecords.length &&
+        new Set(buildingNameHashes).size === 1
+    );
+}
+
 function validateEvidence(value: unknown, path: string): void {
     assertRecord(value, path);
     assertExactKeys(
@@ -1083,6 +1479,7 @@ function validateEvidence(value: unknown, path: string): void {
         [
             'bylotByManagementPk',
             'scopeLadfrl',
+            'scopeBasis',
             'scopeExpos',
             'ldaregReplication',
         ],
@@ -1125,6 +1522,10 @@ function validateEvidence(value: unknown, path: string): void {
         reject(`${path}.scopeLadfrl status is inconsistent`);
     }
 
+    validateScopeBasisEvidence(
+        value.scopeBasis,
+        `${path}.scopeBasis`
+    );
     validateScopeExposEvidence(
         value.scopeExpos,
         `${path}.scopeExpos`
@@ -1268,6 +1669,192 @@ function hasExactHousingClassification(
     );
 }
 
+function deriveScopeBasisParentMap(
+    titleRecords: JsonRecord[],
+    basisRecords: JsonRecord[]
+): {
+    valid: boolean;
+    titleHashes: Set<string>;
+    parentByChild: Map<string, string>;
+} {
+    const titleHashes = new Set(
+        titleRecords
+            .map((record) => record.managementPkHash)
+            .filter((hash): hash is string => typeof hash === 'string')
+    );
+    const parentsByChild = new Map<string, Set<string>>();
+    let valid = titleHashes.size > 0;
+    for (const record of basisRecords) {
+        const self = record.selfManagementPkHash;
+        const parent = record.upManagementPkHash;
+        if (typeof self !== 'string') {
+            valid = false;
+            continue;
+        }
+        if (record.upIdentityState === 'INVALID') {
+            valid = false;
+            continue;
+        }
+        // 설계 §10.4: title self row의 higher-up lineage는 child root가 아니다.
+        if (titleHashes.has(self)) continue;
+        if (
+            typeof parent !== 'string' ||
+            !titleHashes.has(parent)
+        ) {
+            valid = false;
+            continue;
+        }
+        const parents = parentsByChild.get(self) ?? new Set<string>();
+        parents.add(parent);
+        parentsByChild.set(self, parents);
+    }
+    const parentByChild = new Map<string, string>();
+    for (const [child, parents] of parentsByChild) {
+        if (parents.size !== 1) {
+            valid = false;
+            continue;
+        }
+        parentByChild.set(child, [...parents][0]);
+    }
+    return { valid, titleHashes, parentByChild };
+}
+
+function validateScopeExposRootProvenance(
+    titleRecords: JsonRecord[],
+    basisRecords: JsonRecord[],
+    scopeRecords: JsonRecord[],
+    path: string
+): void {
+    const closure = deriveScopeBasisParentMap(
+        titleRecords,
+        basisRecords
+    );
+
+    scopeRecords.forEach((record, index) => {
+        if (record.rootIdentitySource === undefined) return;
+        const recordPath = `${path}[${index}]`;
+        const self = record.selfManagementPkHash;
+        const source = record.rootIdentitySource;
+        if (typeof self !== 'string') {
+            reject(`${recordPath} root provenance lacks self identity`);
+        }
+        const isTitleRoot = closure.titleHashes.has(self);
+        const expectedRoot = isTitleRoot
+            ? self
+            : closure.parentByChild.get(self);
+        const expectedSource =
+            isTitleRoot
+                ? record.rawUpManagementPkHash === undefined
+                    ? 'SELF'
+                    : 'RAW_UP'
+                : record.rawUpManagementPkHash === undefined
+                  ? 'BASIS_UNIQUE'
+                  : 'RAW_UP';
+        if (
+            typeof expectedRoot !== 'string' ||
+            record.rootManagementPkHash !== expectedRoot ||
+            source !== expectedSource ||
+            (source === 'RAW_UP' &&
+                record.rawUpManagementPkHash !== expectedRoot)
+        ) {
+            reject(
+                `${recordPath} root provenance is outside exact title/basis closure`
+            );
+        }
+    });
+}
+
+function validateBaseExposScopeBinding(
+    samplePnuHash: string,
+    exposInventory: JsonRecord,
+    scopeRecords: JsonRecord[],
+    path: string
+): void {
+    if (exposInventory.truncated === true) return;
+    const inventoryRecords = exposInventory.records as JsonRecord[];
+    const baseScopeRecords = scopeRecords.filter(
+        (record) =>
+            record.queryPnuHash === samplePnuHash &&
+            record.rowPnuHash === samplePnuHash
+    );
+    const inventoryKeys = inventoryRecords.map((record) =>
+        stableStringify({
+            selfManagementPkHash: record.managementPkHash ?? null,
+            rawUpManagementPkHash:
+                record.upManagementPkHash ?? null,
+            unitIdentityShape: record.unitIdentityShape,
+            unitIdentityHash: record.unitIdentityHash ?? null,
+            floorHoIdentityHash:
+                record.floorHoIdentityHash ?? null,
+            dongIdentityHash: record.dongIdentityHash ?? null,
+        })
+    );
+    const scopeKeys = baseScopeRecords.map((record) =>
+        stableStringify({
+            selfManagementPkHash:
+                record.selfManagementPkHash ?? null,
+            rawUpManagementPkHash:
+                record.rawUpManagementPkHash ?? null,
+            unitIdentityShape: record.unitIdentityShape,
+            unitIdentityHash: record.unitIdentityHash ?? null,
+            floorHoIdentityHash:
+                record.floorHoIdentityHash ?? null,
+            dongIdentityHash: record.dongIdentityHash ?? null,
+        })
+    );
+    inventoryKeys.sort();
+    scopeKeys.sort();
+    if (
+        inventoryKeys.length !== scopeKeys.length ||
+        inventoryKeys.some(
+            (key, index) => key !== scopeKeys[index]
+        )
+    ) {
+        reject(`${path} is not exactly bound to base EXPOS inventory`);
+    }
+}
+
+function validateBaseBasisScopeBinding(
+    samplePnuHash: string,
+    basisInventory: JsonRecord,
+    scopeRecords: JsonRecord[],
+    path: string
+): void {
+    if (basisInventory.truncated === true) return;
+    const inventoryRecords = basisInventory.records as JsonRecord[];
+    const baseScopeRecords = scopeRecords.filter(
+        (record) =>
+            record.queryPnuHash === samplePnuHash &&
+            record.rowPnuHash === samplePnuHash
+    );
+    const inventoryKeys = inventoryRecords.map((record) =>
+        stableStringify({
+            selfManagementPkHash:
+                record.managementPkHash ?? null,
+            upManagementPkHash:
+                record.upManagementPkHash ?? null,
+        })
+    );
+    const scopeKeys = baseScopeRecords.map((record) =>
+        stableStringify({
+            selfManagementPkHash:
+                record.selfManagementPkHash ?? null,
+            upManagementPkHash:
+                record.upManagementPkHash ?? null,
+        })
+    );
+    inventoryKeys.sort();
+    scopeKeys.sort();
+    if (
+        inventoryKeys.length !== scopeKeys.length ||
+        inventoryKeys.some(
+            (key, index) => key !== scopeKeys[index]
+        )
+    ) {
+        reject(`${path} is not exactly bound to base BASIS inventory`);
+    }
+}
+
 function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     const required = new Set<string>();
     const requiredReview = new Set<string>();
@@ -1277,10 +1864,17 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     const titleInventory = endpointByName('getBrTitleInfo')
         .inventory as JsonRecord;
     const titleInventoryRecords = titleInventory.records as JsonRecord[];
-    const ldaregApplicable = hasExactHousingClassification(
-        'POSITIVE',
+    const titleRootHashes = new Set(
         titleInventoryRecords
+            .map((record) => record.managementPkHash)
+            .filter((hash): hash is string => typeof hash === 'string')
     );
+    const ldaregApplicable =
+        titleRootHashes.size === 1 &&
+        hasExactHousingClassification(
+            'POSITIVE',
+            titleInventoryRecords
+        );
     for (const endpoint of endpoints) {
         const isNonApplicableLdareg =
             !ldaregApplicable &&
@@ -1307,6 +1901,7 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     const evidence = sample.evidence as JsonRecord;
     const bylotEvidence = evidence.bylotByManagementPk as JsonRecord;
     const scopeLadfrl = evidence.scopeLadfrl as JsonRecord;
+    const scopeBasis = evidence.scopeBasis as JsonRecord;
     const scopeExpos = evidence.scopeExpos as JsonRecord;
     const ldaregReplication = evidence.ldaregReplication as JsonRecord;
     const checks = sample.checks as JsonRecord;
@@ -1326,6 +1921,9 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     const scopeExposQueryHashes = (
         scopeExpos.queries as JsonRecord[]
     ).map((query) => query.pnuHash as string);
+    const scopeBasisQueryHashes = (
+        scopeBasis.queries as JsonRecord[]
+    ).map((query) => query.pnuHash as string);
     const comparedPnuHashes =
         ldaregReplication.comparedPnuHashes as string[];
     if (
@@ -1338,6 +1936,44 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     ) {
         reject(`${path}.scopeExpos does not bind to the LDAREG scope`);
     }
+    if (
+        new Set(scopeBasisQueryHashes).size !==
+            scopeBasisQueryHashes.length ||
+        scopeBasisQueryHashes.length !== scopeExposQueryHashes.length ||
+        scopeBasisQueryHashes.some(
+            (hash) => !scopeExposQueryHashes.includes(hash)
+        )
+    ) {
+        reject(
+            `${path}.scopeBasis does not bind to the captured parcel scope`
+        );
+    }
+    const attachedInventory = endpointByName(
+        'getBrAtchJibunInfo'
+    ).inventory as JsonRecord;
+    if (attachedInventory.pairsTruncated === false) {
+        const expectedScopeHashes = new Set<string>([
+            sample.pnuHash as string,
+        ]);
+        for (const pair of attachedInventory.pairs as JsonRecord[]) {
+            if (pair.basePnuHash === sample.pnuHash) {
+                expectedScopeHashes.add(
+                    pair.attachedPnuHash as string
+                );
+            }
+        }
+        if (
+            scopeBasisQueryHashes.length !==
+                expectedScopeHashes.size ||
+            scopeBasisQueryHashes.some(
+                (hash) => !expectedScopeHashes.has(hash)
+            )
+        ) {
+            reject(
+                `${path}.scopeBasis does not cover the exact base/attached parcel scope`
+            );
+        }
+    }
 
     if (bylotEvidence.truncated === true || matchedHashes.truncated === true) {
         required.add('CAPTURE_INVENTORY_TRUNCATED');
@@ -1345,17 +1981,66 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     if (scopeExpos.truncated === true) {
         required.add('CAPTURE_INVENTORY_TRUNCATED');
     }
+    if (scopeBasis.truncated === true) {
+        required.add('CAPTURE_INVENTORY_TRUNCATED');
+    }
+    for (const query of scopeBasis.queries as JsonRecord[]) {
+        if (query.state === 'FAILED') required.add('SCAN_FAILED');
+        if (query.state === 'INCOMPLETE')
+            required.add('SCAN_INCOMPLETE');
+    }
     for (const query of scopeExpos.queries as JsonRecord[]) {
         if (query.state === 'FAILED') required.add('SCAN_FAILED');
         if (query.state === 'INCOMPLETE')
             required.add('SCAN_INCOMPLETE');
     }
     const scopeExposRecords = scopeExpos.records as JsonRecord[];
+    const scopeBasisRecords = scopeBasis.records as JsonRecord[];
+    if (
+        scopeBasisRecords.some(
+            (record) =>
+                typeof record.selfManagementPkHash !== 'string' ||
+                record.upIdentityState === 'INVALID'
+        )
+    ) {
+        required.add('BASIS_PK_INVALID');
+    }
+    if (
+        scopeBasisRecords.some(
+            (record) =>
+                record.rowPnuHash !== record.queryPnuHash
+        )
+    ) {
+        required.add('BASIS_PNU_EXACT_MISMATCH');
+    }
+    const scopeBasisClosure = deriveScopeBasisParentMap(
+        titleInventoryRecords,
+        scopeBasisRecords
+    );
+    validateBaseBasisScopeBinding(
+        sample.pnuHash as string,
+        endpointByName('getBrBasisOulnInfo').inventory as JsonRecord,
+        scopeBasisRecords,
+        `${path}.evidence.scopeBasis`
+    );
+    validateScopeExposRootProvenance(
+        titleInventoryRecords,
+        scopeBasisRecords,
+        scopeExposRecords,
+        `${path}.evidence.scopeExpos.records`
+    );
+    validateBaseExposScopeBinding(
+        sample.pnuHash as string,
+        endpointByName('getBrExposInfo').inventory as JsonRecord,
+        scopeExposRecords,
+        `${path}.evidence.scopeExpos`
+    );
     if (
         scopeExposRecords.some(
             (record) =>
                 typeof record.selfManagementPkHash !== 'string' ||
-                typeof record.rootManagementPkHash !== 'string'
+                typeof record.rootManagementPkHash !== 'string' ||
+                typeof record.rootIdentitySource !== 'string'
         )
     ) {
         required.add('EXPOS_PK_INVALID');
@@ -1379,6 +2064,7 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     }
 
     if (
+        titleRootHashes.size !== 1 ||
         !hasExactHousingClassification(
             sample.expectedBylot as 'ZERO' | 'POSITIVE',
             titleInventoryRecords
@@ -1420,48 +2106,18 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     }
 
     if (sample.expectedBylot === 'POSITIVE') {
-        const exposHashes =
-            resolvedScopeExposUnitHashes(scopeExpos) ?? [];
-        const validLdaregHashes = ldaregRecords
-            .filter((record) => record.quotaRatioState === 'VALID')
-            .map((record) => record.unitIdentityHash)
-            .filter((hash): hash is string => typeof hash === 'string');
-        const missingLdaregHashes = new Set(
-            ldaregRecords
-                .filter(
-                    (record) => record.quotaRatioState === 'MISSING'
-                )
-                .map((record) => record.unitIdentityHash)
-                .filter((hash): hash is string => typeof hash === 'string')
+        const validLdaregRecords = ldaregRecords.filter(
+            (record) => record.quotaRatioState === 'VALID'
         );
-        const exposSet = new Set(exposHashes);
-        const ldaregSet = new Set(validLdaregHashes);
+        const missingLdaregRecords = ldaregRecords.filter(
+            (record) => record.quotaRatioState === 'MISSING'
+        );
         if (
-            resolvedScopeExposUnitHashes(scopeExpos) === null ||
-            validLdaregHashes.length !==
-                ldaregRecords.filter(
-                    (record) => record.quotaRatioState === 'VALID'
-                ).length ||
-            missingLdaregHashes.size !==
-                ldaregRecords.filter(
-                    (record) => record.quotaRatioState === 'MISSING'
-                ).length ||
-            ldaregRecords
-                .filter(
-                    (record) =>
-                        record.quotaRatioState === 'VALID' ||
-                        record.quotaRatioState === 'MISSING'
-                )
-                .some(
-                    (record) =>
-                        record.unitIdentityShape === 'INCOMPLETE'
-                ) ||
-            exposSet.size === 0 ||
-            exposSet.size !== exposHashes.length ||
-            ldaregSet.size !== validLdaregHashes.length ||
-            exposSet.size !== ldaregSet.size ||
-            [...exposSet].some((hash) => !ldaregSet.has(hash)) ||
-            [...missingLdaregHashes].some((hash) => exposSet.has(hash))
+            !hasLdaregExposUnitCorrelation(
+                resolvedScopeExposRecords(scopeExpos),
+                validLdaregRecords,
+                missingLdaregRecords
+            )
         ) {
             required.add('LDAREG_EXPOS_UNIT_CORRELATION_MISMATCH');
         }
@@ -1470,6 +2126,9 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     const evidenceRecords = bylotEvidence.records as JsonRecord[];
     const titleBasisShouldPass =
         sample.policyCandidate !== null &&
+        scopeBasis.status === 'PASS' &&
+        scopeBasisClosure.valid &&
+        scopeExpos.status === 'PASS' &&
         evidenceRecords.some(
             (record) =>
                 record.titleState !== 'MISSING' &&
@@ -1675,6 +2334,7 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     }
 
     const evidence = sample.evidence as JsonRecord;
+    const scopeBasis = evidence.scopeBasis as JsonRecord;
     const scopeExpos = evidence.scopeExpos as JsonRecord;
     const bylotEnvelope = evidence.bylotByManagementPk as JsonRecord;
     const bylotRecords = bylotEnvelope.records as JsonRecord[];
@@ -1705,15 +2365,28 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     const basisEndpoint = endpoint('getBrBasisOulnInfo');
     const basisInventory = basisEndpoint.inventory as JsonRecord;
     const basisRecords = basisInventory.records as JsonRecord[];
+    const scopeBasisRecords = scopeBasis.records as JsonRecord[];
+    const scopeBasisClosure = deriveScopeBasisParentMap(
+        titleRecords,
+        scopeBasisRecords
+    );
     if (
         basisEndpoint.state !== 'COMPLETE' ||
-        basisRecords.length === 0
+        basisRecords.length === 0 ||
+        scopeBasis.status !== 'PASS' ||
+        scopeBasis.truncated !== false ||
+        !scopeBasisClosure.valid
     ) {
-        reject(`${path} PASS basis endpoint lacks nonzero COMPLETE evidence`);
+        reject(
+            `${path} PASS basis scope lacks exact nonzero closure evidence`
+        );
     }
     const titleBoundBasisHashes = new Set<string>();
-    const basisChildHashes = new Set<string>();
-    const basisParentByChildHash = new Map<string, string>();
+    const basisChildHashes = new Set(
+        scopeBasisClosure.parentByChild.keys()
+    );
+    const basisParentByChildHash =
+        scopeBasisClosure.parentByChild;
     basisRecords.forEach((record, index) => {
         if (typeof record.managementPkHash !== 'string') {
             reject(
@@ -1724,7 +2397,7 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
         const isTitleRoot = titleHashes.has(managementHash);
         const rootHash = isTitleRoot
             ? managementHash
-            : record.upManagementPkHash;
+            : basisParentByChildHash.get(managementHash);
         if (
             typeof rootHash !== 'string' ||
             !titleHashes.has(rootHash)
@@ -1735,16 +2408,6 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
         }
         if (managementHash === rootHash) {
             titleBoundBasisHashes.add(managementHash);
-        } else {
-            const existingParent =
-                basisParentByChildHash.get(managementHash);
-            if (existingParent && existingParent !== rootHash) {
-                reject(
-                    `${path}.basisInventory.records[${index}] has conflicting roots`
-                );
-            }
-            basisParentByChildHash.set(managementHash, rootHash);
-            basisChildHashes.add(managementHash);
         }
         const rootEvidence = evidenceByHash.get(rootHash);
         const bylot = record.bylot as JsonRecord;
@@ -1873,6 +2536,14 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
             typeof record.unitIdentityHash === 'string'
                 ? record.unitIdentityHash
                 : undefined;
+        const floorHoHash =
+            typeof record.floorHoIdentityHash === 'string'
+                ? record.floorHoIdentityHash
+                : undefined;
+        const dongHash =
+            typeof record.dongIdentityHash === 'string'
+                ? record.dongIdentityHash
+                : undefined;
         if (
             !scopeExposRecords.some(
                 (scopeRecord) =>
@@ -1881,9 +2552,13 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
                     scopeRecord.selfManagementPkHash ===
                         record.managementPkHash &&
                     scopeRecord.rootManagementPkHash === expectedRoot &&
+                    scopeRecord.rawUpManagementPkHash ===
+                        record.upManagementPkHash &&
                     scopeRecord.unitIdentityShape ===
                         record.unitIdentityShape &&
-                    scopeRecord.unitIdentityHash === unitHash
+                    scopeRecord.unitIdentityHash === unitHash &&
+                    scopeRecord.floorHoIdentityHash === floorHoHash &&
+                    scopeRecord.dongIdentityHash === dongHash
             )
         ) {
             reject(
@@ -1909,6 +2584,9 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     const scopeExposQueryHashes = (
         scopeExpos.queries as JsonRecord[]
     ).map((query) => query.pnuHash as string);
+    const scopeBasisQueryHashes = (
+        scopeBasis.queries as JsonRecord[]
+    ).map((query) => query.pnuHash as string);
     const totalMicrounits =
         typeof scope.totalArea === 'string'
             ? decimalToMicrounits(scope.totalArea, `${path}.scopeLadfrl.totalArea`)
@@ -1924,11 +2602,18 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     );
     if (
         scope.status !== 'PASS' ||
+        scopeBasis.status !== 'PASS' ||
         scopeExpos.status !== 'PASS' ||
         scopeRecords.length === 0 ||
         new Set(scopeHashes).size !== scopeHashes.length ||
+        new Set(scopeBasisQueryHashes).size !==
+            scopeBasisQueryHashes.length ||
         new Set(scopeExposQueryHashes).size !==
             scopeExposQueryHashes.length ||
+        scopeHashes.length !== scopeBasisQueryHashes.length ||
+        scopeHashes.some(
+            (hash) => !scopeBasisQueryHashes.includes(hash)
+        ) ||
         scopeHashes.length !== scopeExposQueryHashes.length ||
         scopeHashes.some(
             (hash) => !scopeExposQueryHashes.includes(hash)
@@ -1980,6 +2665,11 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
         scopeHashes.length !== expectedParcelScopeHashes.size ||
         scopeHashes.some(
             (hash) => !expectedParcelScopeHashes.has(hash)
+        ) ||
+        scopeBasisQueryHashes.length !==
+            expectedParcelScopeHashes.size ||
+        scopeBasisQueryHashes.some(
+            (hash) => !expectedParcelScopeHashes.has(hash)
         )
     ) {
         reject(
@@ -2025,14 +2715,14 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
         const missingLdaregRecords = ldaregRecords.filter(
             (record) => record.quotaRatioState === 'MISSING'
         );
-        const exposUnitHashes =
-            resolvedScopeExposUnitHashes(scopeExpos);
-        if (exposUnitHashes === null) {
+        const resolvedExposRecords =
+            resolvedScopeExposRecords(scopeExpos);
+        if (resolvedExposRecords === null) {
             reject(
                 `${path}.evidence.scopeExpos lacks exact unit identities`
             );
         }
-        const validLdaregUnitHashes = validLdaregRecords.map(
+        validLdaregRecords.forEach(
             (record, index) => {
                 if (
                     record.unitIdentityShape === 'INCOMPLETE' ||
@@ -2046,27 +2736,16 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
                         `${path}.ldaregInventory.validRecords[${index}] lacks a valid unit ratio witness`
                     );
                 }
-                return record.unitIdentityHash;
             }
         );
-        const exposUnitSet = new Set(exposUnitHashes);
-        const validLdaregUnitSet = new Set(validLdaregUnitHashes);
         if (
-            exposUnitSet.size !== exposUnitHashes.length ||
-            validLdaregUnitSet.size !== validLdaregUnitHashes.length ||
-            exposUnitSet.size === 0 ||
-            exposUnitSet.size !== validLdaregUnitSet.size ||
-            [...exposUnitSet].some(
-                (hash) => !validLdaregUnitSet.has(hash)
-            ) ||
-            missingLdaregRecords.some(
-                (record) =>
-                    record.unitIdentityShape === 'INCOMPLETE' ||
-                    typeof record.unitIdentityHash !== 'string' ||
-                    exposUnitSet.has(record.unitIdentityHash)
+            !hasLdaregExposUnitCorrelation(
+                resolvedExposRecords,
+                validLdaregRecords,
+                missingLdaregRecords
             )
         ) {
-            reject(`${path} POSITIVE PASS lacks exact EXPOS/LDAREG unit correlation`);
+            reject(`${path} POSITIVE PASS lacks approved EXPOS/LDAREG unit correlation`);
         }
         if (
             missingLdaregRecords.length > 0 &&

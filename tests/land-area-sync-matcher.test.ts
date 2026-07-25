@@ -227,6 +227,92 @@ test('1단계 전유부 2건+ → 무변경 / AMBIGUOUS', () => {
     assert.equal(d.kind === 'NO_CHANGE' && d.issue, 'PROPERTY_UNIT_AMBIGUOUS');
 });
 
+test('assemble가 허용한 경우에만 EXPOS의 dong 누락을 floor+ho exact로 보강한다', () => {
+    const withoutGate = matchLdaregUnit(
+        input({
+            source: {
+                targetPnu: PNU,
+                dong: null,
+                floor: '3층',
+                ho: '302호',
+                registryExternalId: null,
+                expectedPnuScope: [PNU],
+            },
+            exposUnits: [expos({ dong: '101동' })],
+            buildingUnits: [],
+            propertyUnits: [
+                pu({
+                    buildingUnitId: null,
+                    dong: null,
+                }),
+            ],
+        })
+    );
+    assert.equal(withoutGate.kind, 'NO_CHANGE');
+    assert.equal(
+        withoutGate.kind === 'NO_CHANGE' && withoutGate.stage,
+        'EXPOS_EXACT'
+    );
+
+    const withGate = matchLdaregUnit(
+        input({
+            source: {
+                targetPnu: PNU,
+                dong: null,
+                floor: '3층',
+                ho: '302호',
+                registryExternalId: null,
+                expectedPnuScope: [PNU],
+            },
+            exposUnits: [expos({ dong: '101동' })],
+            buildingUnits: [],
+            propertyUnits: [
+                pu({
+                    buildingUnitId: null,
+                    dong: null,
+                }),
+            ],
+            allowExposFloorHoFallback: true,
+        })
+    );
+    assert.equal(withGate.kind, 'MATCHED');
+});
+
+test('floor+ho gate가 켜져도 양쪽 dong이 다르면 dong을 버리지 않는다', () => {
+    const d = matchLdaregUnit(
+        input({
+            source: {
+                targetPnu: PNU,
+                dong: '102동',
+                floor: '3층',
+                ho: '302호',
+                registryExternalId: null,
+                expectedPnuScope: [PNU],
+            },
+            exposUnits: [expos({ dong: '101동' })],
+            allowExposFloorHoFallback: true,
+        })
+    );
+    assert.equal(d.kind, 'NO_CHANGE');
+    assert.equal(
+        d.kind === 'NO_CHANGE' && d.issue,
+        'UNIT_NORMALIZATION_COLLISION'
+    );
+});
+
+test('DFH exact 후보가 있으면 같은 FH의 다른 dong 후보보다 우선한다', () => {
+    const d = matchLdaregUnit(
+        input({
+            exposUnits: [
+                expos({ dong: '101동' }),
+                expos({ dong: '102동' }),
+            ],
+            allowExposFloorHoFallback: true,
+        })
+    );
+    assert.equal(d.kind, 'MATCHED');
+});
+
 test('2단계 root identity 불일치 → 무변경 / LDAREG_IDENTITY_CONFLICT', () => {
     const d = matchLdaregUnit(input({ scopeRootIdentity: 'OTHER-ROOT' }));
     assert.equal(d.kind, 'NO_CHANGE');

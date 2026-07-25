@@ -3,6 +3,7 @@
  *
  * 7단계 순서를 그대로 구현한다:
  *  1. LDAREG ↔ complete Building HUB 전유부의 동·층·호 exact match
+ *  1a. assemble이 scope 전역 유일성을 입증한 경우에만 한쪽 dong 누락의 층·호 exact
  *  2. 전유부 root identity와 scope root identity 일치
  *  3. `registry_external_id`로 기존 building_unit exact match
  *  4. 외부 ID가 없을 때만 같은 root 범위에서 normalized tuple exact match
@@ -14,11 +15,13 @@
  *
  * 계약:
  *  - fuzzy 경로가 **존재하지 않는다**. 오직 정규화(normalizer) 후 exact 비교만 사용한다.
+ *    층·호 호환도 전역 gate + 한쪽 dong 누락 + exact FH가 모두 성립할 때뿐이다.
  *  - DB를 호출하지 않는 **순수 함수**다. 후보(building_unit/property_unit/전유부)는 호출측이
  *    조회해 주입한다(writer-guard). 이 함수는 입력을 변형하지 않고 결정만 반환한다.
  */
 
 import type { LandAreaSyncIssueCode } from '../../types/land-area-sync.types';
+import type { ExposRootIdentitySource } from './expos-root';
 import { normalizeUnitTuple, unitTupleKey } from './normalizer';
 
 /** Building HUB 전유부 후보(1단계). */
@@ -28,6 +31,10 @@ export interface ExposUnitCandidate {
     ho?: string | null;
     /** 전유부 root identity(2단계 scope root와 비교). */
     rootIdentity: string;
+    /** root 해소 근거를 snapshot digest에 고정하기 위한 원본 self/up provenance. */
+    selfIdentity?: string;
+    rawUpIdentity?: string | null;
+    rootIdentitySource?: ExposRootIdentitySource;
 }
 
 /** 기존 building_unit 후보(3·4단계). */
@@ -78,6 +85,12 @@ export interface MatchInput {
     /** 후보 property_unit 목록. union·scope 범위로 이미 좁혀 주입한다. */
     propertyUnits: PropertyUnitCandidate[];
     unionId: string;
+    /**
+     * assemble 단계가 scope 전체의 단일 root·FH 유일성·metadata 충돌 부재를
+     * 입증한 경우에만 켠다. matcher는 각 row에서 정확히 한쪽에만 dong이 있을 때
+     * EXPOS 단계의 floor+ho exact fallback을 허용한다.
+     */
+    allowExposFloorHoFallback?: boolean;
 }
 
 /** 결정이 내려진(또는 무변경으로 끝난) 매칭 단계. */
@@ -110,6 +123,11 @@ function noChange(stage: MatchStage, reason: MatchNoChangeReason, issue: LandAre
 /** 동·층·호 3필드 정규화 key. */
 function dfhKey(u: { dong?: string | null; floor?: string | null; ho?: string | null }): string {
     return unitTupleKey(normalizeUnitTuple(u), ['dong', 'floor', 'ho']);
+}
+
+/** 층·호 2필드 정규화 key(EXPOS 호환 fallback 전용). */
+function fhKey(u: { floor?: string | null; ho?: string | null }): string {
+    return unitTupleKey(normalizeUnitTuple(u), ['floor', 'ho']);
 }
 
 /** 동·호 2필드 정규화 key(property fallback). */
@@ -160,14 +178,36 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
 
     // 1) Building HUB 전유부 동·층·호 exact match
     const exposMatches = exposUnits.filter((e) => dfhKey(e) === sourceDfh);
-    if (exposMatches.length === 0) return noChange('EXPOS_EXACT', 'NONE', 'PROPERTY_UNIT_NOT_FOUND');
     if (exposMatches.length > 1) return noChange('EXPOS_EXACT', 'AMBIGUOUS', 'PROPERTY_UNIT_AMBIGUOUS');
-    const expos = exposMatches[0];
+    let expos = exposMatches[0];
+    if (!expos) {
+        if (input.allowExposFloorHoFallback !== true) {
+            return noChange('EXPOS_EXACT', 'NONE', 'PROPERTY_UNIT_NOT_FOUND');
+        }
+        const byFloorHo = exposUnits.filter((candidate) => fhKey(candidate) === fhKey(source));
+        if (byFloorHo.length === 0) {
+            return noChange('EXPOS_EXACT', 'NONE', 'PROPERTY_UNIT_NOT_FOUND');
+        }
+        if (byFloorHo.length > 1) {
+            return noChange('EXPOS_EXACT', 'AMBIGUOUS', 'PROPERTY_UNIT_AMBIGUOUS');
+        }
+        const sourceDong = normalizeUnitTuple(source).dong;
+        const exposDong = normalizeUnitTuple(byFloorHo[0]).dong;
+        // 양쪽 모두 dong이 없으면 원래 DFH exact였어야 하고, 양쪽 모두 있으면
+        // 서로 다른 dong을 버리는 fuzzy 경로가 된다. 오직 한쪽 누락만 보강한다.
+        if ((sourceDong === '') === (exposDong === '')) {
+            return noChange(
+                'EXPOS_EXACT',
+                'COLLISION',
+                'UNIT_NORMALIZATION_COLLISION'
+            );
+        }
+        expos = byFloorHo[0];
+    }
 
     // 2) 전유부 root identity == scope root identity
-    // 두 축 모두 up-PK 우선(`mgmUpBldrgstPk ?? mgmBldrgstPk`)으로 통일한다: scopeRootIdentity 는
-    // 전 base title 계열 root, expos.rootIdentity 는 toExposCandidate 가 같은 축으로 뽑는다(C1).
-    // ⚠️ expos row 의 root 식별 필드(up vs self)는 Phase 0 실측 확정 항목이다.
+    // scopeRootIdentity는 전 base title self exactly-one, expos.rootIdentity는
+    // title-bound basis closure로 해소된 effective root다. resolver의 up-preferred 축과 섞지 않는다.
     if (nonEmpty(expos.rootIdentity) !== nonEmpty(scopeRootIdentity) || nonEmpty(scopeRootIdentity) === '') {
         return noChange('ROOT_IDENTITY', 'ROOT_MISMATCH', 'LDAREG_IDENTITY_CONFLICT');
     }

@@ -145,27 +145,43 @@ function aborted(signal?: AbortSignal): boolean {
 }
 
 /**
- * 한 title scan → 정렬된 distinct root 관리 PK. 계열 grouping 목적이므로 up-PK 우선
+ * 한 title scan → 정렬된 distinct resolver root 관리 PK. 계열 grouping 목적이므로 up-PK 우선
  * (`mgmUpBldrgstPk` 있으면 그 값, 없으면 `mgmBldrgstPk`). anchor title 로 뽑은 결과가
  * resolver 호출 입력(`p_root_mgm_bldrgst_pks`)이자 snapshot.resolverRootPks 로 고정된다(C1).
- * ⚠️ up-PK/self-PK 축 선택은 Phase 0 실측 확정 항목이며, matcher 2단계·expos root 비교와
- * 동일 축(up 우선)을 쓴다. bylot reduce 는 이와 별개로 정확 PK(self) 축을 유지한다.
+ * LDAREG branch title root(self) 선택과는 의도적으로 별도 축이다.
  */
 function deriveRootPks(scan: StrictScan<BrTitleRow>): string[] {
-    return collectRootPks([scan]);
+    return collectResolverRootPks([scan]);
 }
 
 /**
- * gate 입력으로 채택된 전 base title 의 계열 root 를 통일 유도한다(C1). matcher 의 scopeRootIdentity
- * 는 anchor title 단독이 아니라 전 base title 계열 기준(up-PK 우선)으로 뽑아 anchor 가 up-PK 를
- * 누락한 component 여도 계열 root 가 흔들리지 않게 한다.
+ * §10.4 LDAREG root: gate에 채택된 모든 base title의 exact self-PK 집합.
+ * 같은 self 반복은 dedup하지만, 같은 higher up을 공유하더라도 self가 둘이면 하나로 합치지 않는다.
  */
-function deriveSeriesRootPks(baseScans: BasePnuScan[]): string[] {
-    return collectRootPks(baseScans.map((b) => b.title));
+function deriveLdaregTitleSelfRootPks(baseScans: BasePnuScan[]): string[] {
+    const roots = new Set<string>();
+    for (const base of baseScans) {
+        if (base.title.state !== 'COMPLETE') continue;
+        for (const row of base.title.rows) {
+            const self = normalizeRegistryManagementPk(
+                row.mgmBldrgstPk
+            );
+            if (self) roots.add(self);
+        }
+    }
+    return [...roots].sort();
 }
 
-/** title scan 묶음에서 up-PK 우선 root 를 정렬·dedup 수집한다. */
-function collectRootPks(scans: StrictScan<BrTitleRow>[]): string[] {
+/** LDAREG branch가 허용하는 전 base title self root exactly-one gate. */
+export function selectSingleLdaregRootIdentity(
+    baseScans: BasePnuScan[]
+): string | null {
+    const roots = deriveLdaregTitleSelfRootPks(baseScans);
+    return roots.length === 1 ? roots[0] : null;
+}
+
+/** resolver 입력 전용: title scan 묶음에서 up-PK 우선 root를 정렬·dedup 수집한다. */
+function collectResolverRootPks(scans: StrictScan<BrTitleRow>[]): string[] {
     const set = new Set<string>();
     for (const scan of scans) {
         if (scan.state !== 'COMPLETE') continue;
@@ -353,8 +369,6 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         bylot: gate.bylot,
         dbScopeHash: gate.dbScopeHash,
         externalScopeDigest: gate.externalScopeDigest,
-        // matcher scopeRootIdentity: 전 base title 계열 root(up-PK 우선, C1).
-        rootPk: deriveSeriesRootPks(baseScans)[0] ?? '',
         // resolver 호출 입력(anchor title 계열 root) — snapshot.resolverRootPks 로 고정한다(C1 계약).
         resolverRootPks: rootPks,
         baseScans,
@@ -388,8 +402,6 @@ interface BranchContext {
     bylot: import('./bylot').BylotResolution;
     dbScopeHash: string;
     externalScopeDigest: string;
-    /** matcher scopeRootIdentity(전 base title 계열 root, up-PK 우선). */
-    rootPk: string;
     /** resolver 호출에 실제 쓴 root 식별자(anchor title 계열, 정렬·dedup). snapshot 고정 대상(C1). */
     resolverRootPks: string[];
     baseScans: BasePnuScan[];
@@ -512,11 +524,30 @@ async function runLadfrlBranch(ctx: BranchContext): Promise<void> {
 async function runLdaregBranch(ctx: BranchContext): Promise<void> {
     const { deps, jobId, unionId, signal } = ctx;
     const scannedPnus = [...new Set(ctx.scannedPnus)].sort();
+    const rootIdentity = selectSingleLdaregRootIdentity(ctx.baseScans);
+    if (rootIdentity === null) {
+        await finalizeDiscoveryTerminal(deps, jobId, unionId, {
+            status: 'COMPLETED',
+            scopeState: 'REVIEW_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
+            issues: [{ code: 'LDAREG_IDENTITY_CONFLICT' }],
+            counts: gateCounts(ctx.baseScans),
+        });
+        return;
+    }
+    const acceptedRootIdentities = [rootIdentity];
 
-    // 대상 PNU별 필수 scan: ldareg + ladfrl + expos.
+    // 대상 PNU별 필수 scan: ldareg + ladfrl + expos + LDAREG 전용 basis.
+    // gate 단계의 bylot basis scan과 공유/변형하지 않고 same-run root closure 근거로만 쓴다.
     const perPnu: LdaregPnuScan[] = [];
     const ladfrlScopeScans: Array<{ pnu: string; rows: LadfrlRow[] }> = [];
     let ldaregRegistryRows = 0;
+    let ldaregBasisRows = 0;
+    const branchGateCounts = (): LandAreaSyncCounts => {
+        const counts = gateCounts(ctx.baseScans);
+        counts.basisRows += ldaregBasisRows;
+        return counts;
+    };
     for (const pnu of scannedPnus) {
         const ldareg = await deps.scans.scanLdareg(pnu, signal);
         if (aborted(signal)) return;
@@ -524,11 +555,15 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
         if (aborted(signal)) return;
         const expos = await deps.scans.scanExpos(pnu, signal);
         if (aborted(signal)) return;
+        const basis = await deps.scans.scanBasis(pnu, signal);
+        if (aborted(signal)) return;
+        ldaregBasisRows += rows(basis).length;
 
         for (const [scan, incompleteIssue, failedIssue] of [
             [ldareg, 'PAGINATION_INCOMPLETE', 'LDAREG_PERMISSION_REQUIRED'],
             [ladfrl, 'PAGINATION_INCOMPLETE', 'PROVIDER_PROTOCOL_ERROR'],
             [expos, 'PAGINATION_INCOMPLETE', 'PROVIDER_PROTOCOL_ERROR'],
+            [basis, 'PAGINATION_INCOMPLETE', 'PROVIDER_PROTOCOL_ERROR'],
         ] as const) {
             const st = requiredScanState(scan);
             if (st !== 'OK') {
@@ -537,7 +572,7 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
                     scopeState: 'FAILED',
                     outcome: 'FAILED',
                     issues: [{ code: st === 'INCOMPLETE' ? incompleteIssue : failedIssue, targetPnu: pnu }],
-                    counts: gateCounts(ctx.baseScans),
+                    counts: branchGateCounts(),
                 });
                 return;
             }
@@ -551,6 +586,17 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
             !buildingHubRowsMatchPnu(
                 rows(expos) as Array<Record<string, unknown>>,
                 pnu
+            ) ||
+            rows(basis).some(
+                (row) =>
+                    normalizeRegistryManagementPk(row.mgmBldrgstPk) === null ||
+                    !isOptionalRegistryManagementPkValid(
+                        row.mgmUpBldrgstPk
+                    )
+            ) ||
+            !buildingHubRowsMatchPnu(
+                rows(basis) as Array<Record<string, unknown>>,
+                pnu
             )
         ) {
             await finalizeDiscoveryTerminal(deps, jobId, unionId, {
@@ -558,7 +604,7 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
                 scopeState: 'FAILED',
                 outcome: 'FAILED',
                 issues: [{ code: 'PROVIDER_PROTOCOL_ERROR', targetPnu: pnu }],
-                counts: gateCounts(ctx.baseScans),
+                counts: branchGateCounts(),
             });
             return;
         }
@@ -568,6 +614,7 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
             pnu,
             ldaregRows: rows(ldareg),
             exposRows: rows(expos),
+            basisRows: rows(basis),
         });
     }
 
@@ -585,7 +632,7 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
                     ...(scopeLadfrl.targetPnu ? { targetPnu: scopeLadfrl.targetPnu } : {}),
                 },
             ],
-            counts: gateCounts(ctx.baseScans),
+            counts: branchGateCounts(),
         });
         return;
     }
@@ -598,7 +645,11 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
             ? [...new Set(ctx.dbScope.linkedBasePnus)].sort()
             : [...new Set(ctx.baseScans.map((scan) => scan.pnu))].sort();
     const expectedCanonicalSourcePnu = canonicalBasePnus[0];
-    const canonicalSourcePnu = selectCanonicalExposSourcePnu(canonicalBasePnus, perPnu);
+    const canonicalSourcePnu = selectCanonicalExposSourcePnu(
+        canonicalBasePnus,
+        perPnu,
+        acceptedRootIdentities
+    );
     if (
         !expectedCanonicalSourcePnu ||
         canonicalSourcePnu === null ||
@@ -609,7 +660,7 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
             scopeState: 'REVIEW_REQUIRED',
             outcome: 'REVIEW_REQUIRED',
             issues: [{ code: 'LDAREG_IDENTITY_CONFLICT' }],
-            counts: gateCounts(ctx.baseScans),
+            counts: branchGateCounts(),
         });
         return;
     }
@@ -617,7 +668,7 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
     const assembled = assembleLdaregApply({
         unionId,
         scannedPnus,
-        rootIdentity: ctx.rootPk,
+        rootIdentity,
         perPnu,
         scopeLadfrlAreas: scopeLadfrl.areas,
         scopeLadfrlTotal: scopeLadfrl.totalArea,
@@ -627,7 +678,7 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
     });
 
     const counts: LandAreaSyncCounts = {
-        ...gateCounts(ctx.baseScans),
+        ...branchGateCounts(),
         landRegistryRows: ldaregRegistryRows,
         exposureRows: assembled.counts.exposureRows,
         parsedRows: assembled.counts.parsedRows,

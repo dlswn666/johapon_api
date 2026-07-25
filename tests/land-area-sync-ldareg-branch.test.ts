@@ -46,6 +46,67 @@ function assemble(
     });
 }
 
+function assembleDongFallbackScope(input: {
+    exposDongs: [string, string];
+    ldaregDongs?: [string, string];
+    buildingNames: [string, string];
+    agbldgSns: [string, string];
+}) {
+    const units = [
+        {
+            floor: '1',
+            ho: '101',
+            numerator: '8',
+            propertyId: PROP_ID,
+        },
+        {
+            floor: '2',
+            ho: '201',
+            numerator: '9',
+            propertyId: '22222222-2222-4222-8222-222222222222',
+        },
+    ] as const;
+    return assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                ldaregRows: units.map((unit, index) => ({
+                    pnu: ANCHOR,
+                    agbldgSn: input.agbldgSns[index],
+                    buldNm: input.buildingNames[index],
+                    buldDongNm: input.ldaregDongs?.[index] ?? '',
+                    buldFloorNm: unit.floor,
+                    buldHoNm: unit.ho,
+                    buldRoomNm: unit.ho,
+                    ldaQotaRate: `${unit.numerator}/100`,
+                    clsSeCode: '0',
+                })),
+                exposRows: units.map((unit, index) => ({
+                    mgmBldrgstPk: PK,
+                    dongNm: input.exposDongs[index],
+                    flrNoNm: unit.floor,
+                    hoNm: unit.ho,
+                })),
+            },
+        ],
+        buildingUnits: [],
+        propertyUnits: units.map((unit) => ({
+            id: unit.propertyId,
+            unionId: 'union-1',
+            buildingUnitId: null,
+            pnu: ANCHOR,
+            isDeleted: false,
+            dong: null,
+            ho: unit.ho,
+        })),
+        scopeLadfrlAreas: [{ pnu: ANCHOR, area: '100' }],
+        scopeLadfrlTotal: '100',
+    });
+}
+
 test('LDAREG 매칭 happy path: 문자열 numeratorText/denominatorText 로 component 를 조립한다', () => {
     const result = assemble({
         unionId: 'union-1',
@@ -239,47 +300,50 @@ test('미아7 실응답형: 0000 동 sentinel·숫자 층·ratio 없는 0000 pla
     );
 });
 
-test('미아7 791-2280/2281 실응답형: base·attached에 나뉜 EXPOS와 물건지 4호를 full scope에서 모두 매칭한다', () => {
+test('미아7 791-2280/2281 실응답형: base EXPOS 4+attached zero와 basis child root로 linked 물건 4호를 매칭한다', () => {
     const basePnu = '1130510100107912280';
     const attachedPnu = '1130510100107912281';
+    const exposChildPk = '2003004005006';
+    const buildingId = '33333333-3333-4333-8333-333333333333';
     const units = [
         {
-            serial: '1',
             floor: '4',
             ho: '401',
             numerator: '33.88',
             propertyId: '11111111-1111-4111-8111-111111111401',
-            pnu: basePnu,
+            buildingUnitId:
+                '22222222-2222-4222-8222-222222222401',
         },
         {
-            serial: '2',
             floor: '3',
             ho: '301',
             numerator: '51.02',
             propertyId: '11111111-1111-4111-8111-111111111301',
-            pnu: basePnu,
+            buildingUnitId:
+                '22222222-2222-4222-8222-222222222301',
         },
         {
-            serial: '3',
             floor: '2',
             ho: '201',
             numerator: '51.02',
             propertyId: '11111111-1111-4111-8111-111111111201',
-            pnu: attachedPnu,
+            buildingUnitId:
+                '22222222-2222-4222-8222-222222222201',
         },
         {
-            serial: '4',
             floor: '1',
             ho: '101',
             numerator: '39.08',
             propertyId: '11111111-1111-4111-8111-111111111101',
-            pnu: attachedPnu,
+            buildingUnitId:
+                '22222222-2222-4222-8222-222222222101',
         },
     ];
     const ldaregRows = (pnu: string) => [
         ...units.map((unit) => ({
             pnu,
-            agbldgSn: unit.serial,
+            // 실응답 계열의 동일 집합건물 일련번호. unit identity는 floor/ho로 분리된다.
+            agbldgSn: '1',
             buldNm: '미아동 공동주택',
             buldDongNm: '0000',
             buldFloorNm: unit.floor,
@@ -302,15 +366,32 @@ test('미아7 791-2280/2281 실응답형: base·attached에 나뉜 EXPOS와 물�
             clsSeCodeNm: '현재',
         },
     ];
-    const propertyUnits: PropertyUnitCandidate[] = units.map((unit) => ({
+    const propertyUnits: Array<
+        PropertyUnitCandidate & {
+            landArea: string;
+            landAreaSource: 'MANUAL';
+        }
+    > = units.map((unit) => ({
         id: unit.propertyId,
         unionId: 'union-1',
-        buildingUnitId: null,
-        pnu: unit.pnu,
+        buildingUnitId: unit.buildingUnitId,
+        pnu: basePnu,
         isDeleted: false,
         dong: null,
         ho: unit.ho,
+        // pure assemble 입력의 기존 MANUAL DB 상태는 읽거나 덮어쓰지 않는다.
+        landArea: unit.ho === '101' ? '8.26' : '1.00',
+        landAreaSource: 'MANUAL',
     }));
+    const buildingUnits: BuildingUnitCandidate[] = units.map((unit) => ({
+        id: unit.buildingUnitId,
+        buildingId,
+        registryExternalId: null,
+        dong: null,
+        floor: null,
+        ho: unit.ho,
+    }));
+    const propertyUnitsBefore = structuredClone(propertyUnits);
 
     const result = assemble({
         unionId: 'union-1',
@@ -321,25 +402,33 @@ test('미아7 791-2280/2281 실응답형: base·attached에 나뉜 EXPOS와 물�
             {
                 pnu: basePnu,
                 ldaregRows: ldaregRows(basePnu),
-                exposRows: units.slice(0, 2).map((unit) => ({
-                    mgmBldrgstPk: PK,
-                    dongNm: ' ',
+                exposRows: units.map((unit) => ({
+                    // raw up 누락: same-run basis child→title self로만 root를 보강한다.
+                    mgmBldrgstPk: exposChildPk,
+                    dongNm: '청성주택6차',
                     flrNo: Number(unit.floor),
                     hoNm: unit.ho,
                 })),
+                basisRows: [
+                    {
+                        mgmBldrgstPk: exposChildPk,
+                        mgmUpBldrgstPk: PK,
+                    },
+                ],
             },
             {
                 pnu: attachedPnu,
                 ldaregRows: ldaregRows(attachedPnu),
-                exposRows: units.slice(2).map((unit) => ({
-                    mgmBldrgstPk: PK,
-                    dongNm: ' ',
-                    flrNo: Number(unit.floor),
-                    hoNm: unit.ho,
-                })),
+                exposRows: [],
+                basisRows: [
+                    {
+                        mgmBldrgstPk: exposChildPk,
+                        mgmUpBldrgstPk: PK,
+                    },
+                ],
             },
         ],
-        buildingUnits: [],
+        buildingUnits,
         propertyUnits,
         scopeLadfrlAreas: [
             { pnu: basePnu, area: '73' },
@@ -350,6 +439,19 @@ test('미아7 791-2280/2281 실응답형: base·attached에 나뉜 EXPOS와 물�
 
     assert.equal(result.blocking, false);
     assert.equal(result.items.length, 4);
+    assert.deepEqual(
+        propertyUnits,
+        propertyUnitsBefore,
+        'pure assemble은 MANUAL landArea/source 및 building link를 mutate하지 않는다'
+    );
+    assert.ok(
+        propertyUnits.every(
+            (propertyUnit) =>
+                propertyUnit.pnu === basePnu &&
+                propertyUnit.landAreaSource === 'MANUAL' &&
+                propertyUnit.buildingUnitId !== null
+        )
+    );
     assert.deepEqual(
         result.matchedPropertyUnitIds.slice().sort(),
         units.map((unit) => unit.propertyId).sort()
@@ -377,6 +479,40 @@ test('미아7 791-2280/2281 실응답형: base·attached에 나뉜 EXPOS와 물�
         ).length,
         1
     );
+    const rootDigest = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_ROOT_RESOLUTION'
+    ) as {
+        rows: Array<{
+            queryPnu: string;
+            source: string;
+            selfIdentity: string;
+            rootIdentity: string;
+        }>;
+    };
+    assert.equal(rootDigest.rows.length, 4);
+    assert.ok(
+        rootDigest.rows.every(
+            (row) =>
+                row.queryPnu === basePnu &&
+                row.source === 'BASIS_UNIQUE' &&
+                row.selfIdentity === exposChildPk &&
+                row.rootIdentity === PK
+        )
+    );
+    const fallbackDigest = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_FLOOR_HO_FALLBACK_GATE'
+    ) as {
+        allowed: boolean;
+        exposDongUnique: boolean;
+        ldaregDongUnique: boolean;
+    };
+    assert.equal(fallbackDigest.allowed, true);
+    assert.equal(fallbackDigest.exposDongUnique, true);
+    assert.equal(fallbackDigest.ldaregDongUnique, true);
 
     const itemByProperty = new Map(
         result.items.map((item) => [item.propertyUnitId, item])
@@ -395,7 +531,9 @@ test('미아7 791-2280/2281 실응답형: base·attached에 나뉜 EXPOS와 물�
                 (component) =>
                     component.ratioNumerator === unit.numerator &&
                     component.ratioDenominator === '175' &&
-                    component.matchMethod === 'PNU_DONG_HO'
+                    component.matchMethod === 'BUILDING_UNIT_ID' &&
+                    component.matchedBuildingUnitId ===
+                        unit.buildingUnitId
             )
         );
         assert.equal(
@@ -493,6 +631,12 @@ test('기준·부속 PNU의 동일 EXPOS replica는 한 후보로 축약하지�
                         mgmBldrgstPk: '2003004005006',
                     },
                 ],
+                basisRows: [
+                    {
+                        mgmBldrgstPk: '2003004005006',
+                        mgmUpBldrgstPk: PK,
+                    },
+                ],
             },
             {
                 pnu: sibling,
@@ -502,6 +646,12 @@ test('기준·부속 PNU의 동일 EXPOS replica는 한 후보로 축약하지�
                         ...expos,
                         mgmUpBldrgstPk: PK,
                         mgmBldrgstPk: '2003004005007',
+                    },
+                ],
+                basisRows: [
+                    {
+                        mgmBldrgstPk: '2003004005007',
+                        mgmUpBldrgstPk: PK,
                     },
                 ],
             },
@@ -639,29 +789,378 @@ test('LDAREG 일부 호실만 EXPOS와 매칭되면 정상 component가 있어�
     );
 });
 
-test('C1: 총괄표제부 집합건물(expos mgmUpBldrgstPk ≠ mgmBldrgstPk)도 up-PK 축으로 매칭된다(ROOT_MISMATCH 회귀 가드)', () => {
-    // scope root(계열 up-PK)와 expos self-PK 가 다른 필지. 수정 전에는 expos.rootIdentity 가 self-PK 라
-    // 2단계에서 ROOT_MISMATCH → 전량 NO_CHANGE 였다. 수정 후 두 축 모두 up-PK 우선으로 매칭된다.
+test('§10.4: accepted title self의 EXPOS raw up이 higher lineage면 자동 root로 채택하지 않는다', () => {
+    const titleSelf = '9001002003005';
+    const higherUp = '9001002003004';
     const result = assemble({
         unionId: 'union-1',
         scannedPnus: [ANCHOR],
-        rootIdentity: '9001002003004', // 계열 root(up-PK)
+        rootIdentity: titleSelf,
         perPnu: [
             {
                 pnu: ANCHOR,
                 ldaregRows: [
                     { pnu: ANCHOR, agbldgSn: '1', buldFloorNm: '3층', buldHoNm: '301', ldaQotaRate: '181.7/15622.1', clsSeCode: '0', clsSeCodeNm: '유효' },
                 ],
-                // 동별 self-PK 는 up-PK 와 다르지만 up-PK 는 계열 root 와 일치.
-                exposRows: [{ mgmUpBldrgstPk: 9001002003004, mgmBldrgstPk: '9001002003005', flrNoNm: '3층', hoNm: '301' }],
+                exposRows: [
+                    {
+                        mgmUpBldrgstPk: higherUp,
+                        mgmBldrgstPk: titleSelf,
+                        flrNoNm: '3층',
+                        hoNm: '301',
+                    },
+                ],
+                basisRows: [
+                    {
+                        mgmBldrgstPk: titleSelf,
+                        mgmUpBldrgstPk: higherUp,
+                    },
+                ],
             },
         ],
         buildingUnits: [],
         propertyUnits: [property],
     });
-    assert.equal(result.items.length, 1, 'up-PK 축 일치 → component 생성');
-    assert.equal(result.items[0].components[0].sourceState, 'CURRENT');
-    assert.ok(!result.issues.some((i) => i.code === 'LDAREG_IDENTITY_CONFLICT'), 'ROOT_MISMATCH 없음');
+    assert.equal(result.blocking, true);
+    assert.equal(result.items.length, 0);
+    assert.ok(
+        result.issues.some(
+            (issue) => issue.code === 'LDAREG_IDENTITY_CONFLICT'
+        )
+    );
+});
+
+test('basis exact self→unique root는 raw up이 빠진 EXPOS를 해소하고 provenance를 digest에 고정한다', () => {
+    const childPk = '9001002003005';
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                ldaregRows: [
+                    {
+                        pnu: ANCHOR,
+                        agbldgSn: '1',
+                        buldFloorNm: '3층',
+                        buldHoNm: '301',
+                        ldaQotaRate: '181.7/15622.1',
+                        clsSeCode: '0',
+                    },
+                ],
+                exposRows: [
+                    {
+                        mgmBldrgstPk: childPk,
+                        flrNoNm: '3층',
+                        hoNm: '301',
+                    },
+                ],
+                basisRows: [
+                    {
+                        mgmBldrgstPk: childPk,
+                        mgmUpBldrgstPk: PK,
+                    },
+                ],
+            },
+        ],
+        buildingUnits: [],
+        propertyUnits: [property],
+    });
+
+    assert.equal(result.blocking, false);
+    assert.equal(result.items.length, 1);
+    const rootDigest = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_ROOT_RESOLUTION'
+    ) as { rows: Array<{ source: string; rootIdentity: string }> };
+    assert.deepEqual(
+        rootDigest.rows.map((row) => ({
+            source: row.source,
+            rootIdentity: row.rootIdentity,
+        })),
+        [{ source: 'BASIS_UNIQUE', rootIdentity: PK }]
+    );
+});
+
+test('EXPOS raw up이 basis exact parent와 충돌하면 보강하지 않고 전역 차단한다', () => {
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                ldaregRows: [
+                    {
+                        pnu: ANCHOR,
+                        agbldgSn: '1',
+                        buldFloorNm: '3층',
+                        buldHoNm: '301',
+                        ldaQotaRate: '181.7/15622.1',
+                        clsSeCode: '0',
+                    },
+                ],
+                exposRows: [
+                    {
+                        mgmBldrgstPk: '9001002003005',
+                        mgmUpBldrgstPk: '9001002003999',
+                        flrNoNm: '3층',
+                        hoNm: '301',
+                    },
+                ],
+                basisRows: [
+                    {
+                        mgmBldrgstPk: '9001002003005',
+                        mgmUpBldrgstPk: PK,
+                    },
+                ],
+            },
+        ],
+        buildingUnits: [],
+        propertyUnits: [property],
+    });
+
+    assert.equal(result.blocking, true);
+    assert.equal(result.items.length, 0);
+    assert.ok(
+        result.issues.some(
+            (issue) => issue.code === 'LDAREG_IDENTITY_CONFLICT'
+        )
+    );
+});
+
+test('single-root·양쪽 FH unique·한쪽 dong 누락일 때만 EXPOS floor+ho fallback을 사용한다', () => {
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                ldaregRows: [
+                    {
+                        pnu: ANCHOR,
+                        agbldgSn: '1',
+                        buldNm: '청성주택6차',
+                        buldDongNm: '',
+                        buldFloorNm: '1',
+                        buldHoNm: '101',
+                        buldRoomNm: '101',
+                        ldaQotaRate: '8.26/73',
+                        clsSeCode: '0',
+                    },
+                ],
+                exposRows: [
+                    {
+                        mgmBldrgstPk: PK,
+                        dongNm: '청성주택6차',
+                        flrNoNm: '1',
+                        hoNm: '101',
+                    },
+                ],
+            },
+        ],
+        buildingUnits: [],
+        propertyUnits: [
+            {
+                ...property,
+                ho: '101',
+            },
+        ],
+        scopeLadfrlAreas: [{ pnu: ANCHOR, area: '73' }],
+        scopeLadfrlTotal: '73',
+    });
+
+    assert.equal(result.blocking, false);
+    assert.equal(result.items.length, 1);
+    const fallbackDigest = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_FLOOR_HO_FALLBACK_GATE'
+    ) as { allowed: boolean; fallbackRequiredCount: number };
+    assert.deepEqual(
+        {
+            allowed: fallbackDigest.allowed,
+            fallbackRequiredCount: fallbackDigest.fallbackRequiredCount,
+        },
+        { allowed: true, fallbackRequiredCount: 1 }
+    );
+});
+
+test('scope EXPOS의 normalized dong token이 둘이면 FH가 각각 유일해도 fallback을 닫는다', () => {
+    const result = assembleDongFallbackScope({
+        exposDongs: ['A동', 'B동'],
+        buildingNames: ['청성주택6차', '청성주택6차'],
+        agbldgSns: ['1', '1'],
+    });
+    assert.equal(result.blocking, true);
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_FLOOR_HO_FALLBACK_GATE'
+    ) as { allowed: boolean; exposDongUnique: boolean };
+    assert.equal(gate.exposDongUnique, false);
+    assert.equal(gate.allowed, false);
+});
+
+test('EXPOS dong이 없고 LDAREG가 A/B 두 동이면 역방향 multi-dong fallback을 닫는다', () => {
+    const result = assembleDongFallbackScope({
+        exposDongs: ['', ''],
+        ldaregDongs: ['A동', 'B동'],
+        buildingNames: ['청성주택6차', '청성주택6차'],
+        agbldgSns: ['1', '1'],
+    });
+    assert.equal(result.blocking, true);
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_FLOOR_HO_FALLBACK_GATE'
+    ) as {
+        allowed: boolean;
+        exposDongUnique: boolean;
+        ldaregDongUnique: boolean;
+    };
+    assert.equal(gate.exposDongUnique, true);
+    assert.equal(gate.ldaregDongUnique, false);
+    assert.equal(gate.allowed, false);
+});
+
+test('LDAREG nonempty buildingName 집합이 둘이면 FH가 각각 유일해도 fallback을 닫는다', () => {
+    const result = assembleDongFallbackScope({
+        exposDongs: ['A동', 'A동'],
+        buildingNames: ['청성주택6차', '다른건물'],
+        agbldgSns: ['1', '1'],
+    });
+    assert.equal(result.blocking, true);
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_FLOOR_HO_FALLBACK_GATE'
+    ) as {
+        allowed: boolean;
+        ldaregBuildingNameUnique: boolean;
+        ldaregAgbldgSnUnique: boolean;
+    };
+    assert.equal(gate.ldaregBuildingNameUnique, false);
+    assert.equal(gate.ldaregAgbldgSnUnique, true);
+    assert.equal(gate.allowed, false);
+});
+
+test('LDAREG nonempty agbldgSn 집합이 둘이면 FH가 각각 유일해도 fallback을 닫는다', () => {
+    const result = assembleDongFallbackScope({
+        exposDongs: ['A동', 'A동'],
+        buildingNames: ['청성주택6차', '청성주택6차'],
+        agbldgSns: ['1', '2'],
+    });
+    assert.equal(result.blocking, true);
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_FLOOR_HO_FALLBACK_GATE'
+    ) as {
+        allowed: boolean;
+        ldaregBuildingNameUnique: boolean;
+        ldaregAgbldgSnUnique: boolean;
+    };
+    assert.equal(gate.ldaregBuildingNameUnique, true);
+    assert.equal(gate.ldaregAgbldgSnUnique, false);
+    assert.equal(gate.allowed, false);
+});
+
+test('LDAREG buildingName이 한 건이라도 비어 있으면 FH가 각각 유일해도 fallback을 닫는다', () => {
+    const result = assembleDongFallbackScope({
+        exposDongs: ['A동', 'A동'],
+        buildingNames: ['청성주택6차', ''],
+        agbldgSns: ['1', '1'],
+    });
+    assert.equal(result.blocking, true);
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_FLOOR_HO_FALLBACK_GATE'
+    ) as {
+        allowed: boolean;
+        ldaregBuildingNameUnique: boolean;
+    };
+    assert.equal(gate.ldaregBuildingNameUnique, false);
+    assert.equal(gate.allowed, false);
+});
+
+test('LDAREG agbldgSn이 한 건이라도 비어 있으면 FH가 각각 유일해도 fallback을 닫는다', () => {
+    const result = assembleDongFallbackScope({
+        exposDongs: ['A동', 'A동'],
+        buildingNames: ['청성주택6차', '청성주택6차'],
+        agbldgSns: ['1', ''],
+    });
+    assert.equal(result.blocking, true);
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_FLOOR_HO_FALLBACK_GATE'
+    ) as {
+        allowed: boolean;
+        ldaregAgbldgSnUnique: boolean;
+    };
+    assert.equal(gate.ldaregAgbldgSnUnique, false);
+    assert.equal(gate.allowed, false);
+});
+
+test('같은 floor+ho에 LDAREG building/agbldgSn/room이 충돌하면 dong fallback은 닫힌다', () => {
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                ldaregRows: [
+                    {
+                        pnu: ANCHOR,
+                        agbldgSn: '1',
+                        buldNm: 'A동',
+                        buldFloorNm: '3층',
+                        buldHoNm: '301',
+                        buldRoomNm: '301-A',
+                        ldaQotaRate: '10/100',
+                        clsSeCode: '0',
+                    },
+                    {
+                        pnu: ANCHOR,
+                        agbldgSn: '2',
+                        buldNm: 'B동',
+                        buldFloorNm: '3층',
+                        buldHoNm: '301',
+                        buldRoomNm: '301-B',
+                        ldaQotaRate: '20/100',
+                        clsSeCode: '0',
+                    },
+                ],
+                exposRows: [
+                    {
+                        mgmBldrgstPk: PK,
+                        dongNm: 'A동',
+                        flrNoNm: '3층',
+                        hoNm: '301',
+                    },
+                ],
+            },
+        ],
+        buildingUnits: [],
+        propertyUnits: [property],
+        scopeLadfrlAreas: [{ pnu: ANCHOR, area: '100' }],
+        scopeLadfrlTotal: '100',
+    });
+
+    assert.equal(result.blocking, true);
+    const fallbackDigest = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_FLOOR_HO_FALLBACK_GATE'
+    ) as { allowed: boolean; ldaregMetadataCollision: boolean };
+    assert.equal(fallbackDigest.allowed, false);
+    assert.equal(fallbackDigest.ldaregMetadataCollision, true);
 });
 
 test('I1: FALLBACK identity 는 대표 row 의 정확한 source_record 를 뽑는다(첫 row 오염 회귀 가드)', () => {
@@ -879,10 +1378,20 @@ test('canonical expos source는 linked base의 nonzero exact dataset만 허용�
         },
         { pnu: sibling, ldaregRows: [], exposRows: [] },
     ];
-    assert.equal(selectCanonicalExposSourcePnu([ANCHOR], perPnu), ANCHOR);
-    assert.equal(selectCanonicalExposSourcePnu([sibling], perPnu), null);
     assert.equal(
-        selectCanonicalExposSourcePnu([ANCHOR, sibling], perPnu),
+        selectCanonicalExposSourcePnu([ANCHOR], perPnu, [PK]),
+        ANCHOR
+    );
+    assert.equal(
+        selectCanonicalExposSourcePnu([sibling], perPnu, [PK]),
+        null
+    );
+    assert.equal(
+        selectCanonicalExposSourcePnu(
+            [ANCHOR, sibling],
+            perPnu,
+            [PK]
+        ),
         null,
         '두 번째 base의 expos zero를 attached zero처럼 무시하지 않는다'
     );

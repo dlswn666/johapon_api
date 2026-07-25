@@ -615,8 +615,21 @@ type StrictScan<T> =
   absent로 허용한다. invalid 값을 self-PK fallback이나 문자열 강제 변환으로 숨기지 않는다.
 - basis의 title root row는 `mgmBldrgstPk`가 title root와 exact 일치하면 closure에
   포함된다. 이 row의 별도 `mgmUpBldrgstPk`는 상위 집계 lineage일 수 있으므로
-  root self-PK를 강제하지 않는다. 반면 title root가 아닌 basis/expos child는
-  `mgmUpBldrgstPk`가 title root 중 하나와 exact 일치해야 한다.
+  root self-PK를 강제하지 않는다. title root가 아닌 basis child는
+  `mgmUpBldrgstPk`가 title root 중 하나와 exact 일치해야 한다. EXPOS child의
+  `mgmUpBldrgstPk`가 누락된 경우에는 같은 strict basis 응답에서 exact child self-PK가
+  정확히 하나의 title root를 가리킬 때만 그 root를 보강한다. raw up이 있으면 basis
+  parent와 exact 일치해야 하며 invalid raw up, 복수 parent, closure 밖 parent는 보강하지
+  않고 전체를 차단한다. root 판정 근거(`SELF`, `RAW_UP`, `BASIS_UNIQUE`)와 self/root
+  identity는 immutable scope digest에 포함한다.
+- LDAREG 호실 매칭의 root 축은 연결된 모든 base title의 exact
+  `mgmBldrgstPk` self 집합이다. 이 집합이 정확히 하나가 아니면 적용하지 않는다.
+  scope resolver seed의 `mgmUpBldrgstPk ?? mgmBldrgstPk` 계열 축은 관계 탐색용이며,
+  LDAREG의 title-root self 축과 섞지 않는다.
+- LDAREG 런타임과 Phase 0은 기준·부속 전체 scope PNU마다 basis를 strict하게 정확히
+  1회 조회하고, query PNU와 row PNU가 exact 일치한 응답만 합집합 closure에 넣는다.
+  대표 PNU만의 basis로 부속 PNU child를 추정하지 않으며, scope 합집합에서 같은 child의
+  복수 parent나 closure 밖 parent가 하나라도 관찰되면 전체를 차단한다.
 - 2026-07-10 공식 Swagger에서 `getBrTitleInfo`의 78개 item field와 `getBrBasisOulnInfo`의 32개 item field에는 문자열 `bylotCnt`가 있고, `getBrAtchJibunInfo`의 34개 item field에는 없다.
 - production 1차 원천은 이미 분류에 필수인 `getBrTitleInfo` strict 전체 페이지다. title scan이 `COMPLETE`일 때 각 row의 `mgmBldrgstPk`, raw `bylotCnt`, 정규화 값을 함께 유지하며 PNU의 첫 row를 대표값으로 사용하지 않는다.
 - parser는 Phase 0에서 고정한 실제 JSON 표현을 입력으로 받아 공백을 제거한 0 이상의 safe integer만 허용한다. 빈 값, null, 음수, 소수, 비숫자, overflow는 0으로 변환하지 않는다.
@@ -903,14 +916,21 @@ canonical identity 13/13과 ratio 9/9가 완전히 같았다. query PNU별 응�
 서로 다른 원문이 같은 normalized key로 충돌하면 자동 매칭하지 않는다.
 
 동명이 양쪽 모두 공백/누락 또는 위 `0000` sentinel인 단일 동 실응답에서는
-`층+호` exact tuple을 완전한 unit identity로 허용한다. 한쪽에 실동명이 있거나
-같은 root에서 동일 `층+호`가 중복되면 이 축약형을 사용하지 않고
-`LDAREG_IDENTITY_CONFLICT`로 차단한다.
+`층+호` exact tuple을 완전한 unit identity로 허용한다. 또한 한쪽만 동명이 있고
+다른 쪽은 absent/sentinel인 경우에도 resolved EXPOS 전체가 단일 root이고, EXPOS의
+동 유무와 LDAREG의 동 유무가 scope 전체에서 서로 반대 방향으로 일관되며, 동명이
+있는 쪽의 non-empty normalized 동 label이 정확히 한 종류이고, EXPOS와 LDAREG의
+`층+호` multiset이 각각
+중복 없이 1:1로 일치하고 aggregate building/building-name 충돌이 없을 때만
+`층+호` 보조 상관을 허용한다. 이는 건물명 label을 임의 제거하는 규칙이 아니며,
+서로 다른 동/건물명, 복수 root, 같은 `층+호` 중복, valid와 ratio-missing 행의
+`층+호` 겹침이 하나라도 있으면 축약형을 사용하지 않고 전체를 차단한다.
 
 ### 12.4 매칭 순서
 
-1. LDAREG ↔ complete Building HUB 전유부의 동·층·호 exact match. 양쪽 동명이
-   모두 absent/sentinel이고 같은 root에서 유일할 때만 층·호 exact match 허용
+1. LDAREG ↔ complete Building HUB 전유부의 동·층·호 exact match. exact 후보가
+   없을 때만 §12.3의 단일 root·단일 dong label·양쪽 `층+호` 1:1 무충돌 근거가
+   완전한 경우 제한적으로 층·호 보조 상관 허용
 2. 전유부 root identity와 scope root identity 일치
 3. `registry_external_id`로 기존 `building_unit` exact match
 4. 외부 ID가 없을 때만 같은 root 범위에서 normalized tuple exact match
@@ -1478,6 +1498,12 @@ writer 없이 다음 실응답 계약을 확인했다.
 
 이 실행 자체는 구 capture schema의 잘못된 unit/root 판정 때문에 FAIL이었다.
 교정 schema의 동일 보호 환경 재실행이 PASS하기 전에는 dev apply를 열지 않는다.
+
+2026-07-25 Supabase 읽기 전용 집계에서는 개발·운영 모두
+`property_unit_land_rights=0`, `property_units.land_area_source='LDAREG'=0`이었다.
+따라서 LDAREG title self root 계약 교정이 기존 자동 component identity를 중복시키는
+이력은 관찰되지 않았다. 이 확인은 aggregate `SELECT`만 사용했고 DDL/DML·동기화
+apply는 실행하지 않았다.
 
 Exit:
 

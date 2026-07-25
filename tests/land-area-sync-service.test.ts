@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { runLandAreaSyncJob, type LandAreaSyncDeps } from '../src/services/land-area-sync/service';
+import {
+    runLandAreaSyncJob,
+    selectSingleLdaregRootIdentity,
+    type LandAreaSyncDeps,
+} from '../src/services/land-area-sync/service';
 import type { LandAreaSyncJobRow } from '../src/services/land-area-sync/repository';
 import { HOUSING_PURPOSE_ALLOWLIST } from '../src/services/land-area-sync/housing-purpose-allowlist.fixture';
 import type {
+    BrBasisOulnRow,
     BrExposRow,
     BrTitleRow,
     LadfrlRow,
@@ -348,20 +353,156 @@ test('분류 conflict property_unit에 호 identity가 있으면 기존 REVIEW_R
 
 test('LDAREG LINKED discovery 는 snapshot 을 1회 고정하고 apply RPC 를 정확히 1회 호출한다', async () => {
     const spy = emptySpy();
+    let ldaregBasisCalls = 0;
     const deps = makeDeps({
         resolver: linked(MEMBER),
-        scans: { scanTitle: async () => titleComplete(MULTIPLEX) },
+        scans: {
+            scanTitle: async () => titleComplete(MULTIPLEX),
+            scanBasis: async () => {
+                ldaregBasisCalls += 1;
+                return {
+                    state: 'COMPLETE',
+                    rows: [
+                        {
+                            pnu: ANCHOR,
+                            mgmBldrgstPk: PK,
+                        },
+                    ],
+                    totalCount: 1,
+                    pagesFetched: 1,
+                };
+            },
+        },
         applyResult: { data: { outcome: 'NO_DATA', issues: [] }, error: null },
         spy,
     });
     await runLandAreaSyncJob({ jobId: 'job-1', unionId: 'union-1', deps });
     assert.equal(spy.freezeCalls, 1, 'CAS 는 1회');
     assert.equal(spy.applyCalls, 1, 'apply 는 정확히 1회');
+    assert.equal(
+        ldaregBasisCalls,
+        1,
+        'bylot evidence와 별도로 LDAREG branch basis를 same-run scan한다'
+    );
     const params = spy.lastApplyParams as {
-        p_result_summary: { extraIssues: LandAreaSyncIssue[] };
+        p_result_summary: {
+            extraIssues: LandAreaSyncIssue[];
+            counts: { basisRows: number };
+        };
     };
     assert.deepEqual(params.p_result_summary.extraIssues, []);
+    assert.equal(
+        params.p_result_summary.counts.basisRows,
+        1,
+        'branch 전용 basis row가 audit count에 포함된다'
+    );
     assert.equal(spy.failedCalls.length, 0);
+});
+
+test('LDAREG base+attached는 branch basis를 PNU별 정확히 1회 scan하고 합산 count에 반영한다', async () => {
+    const attachedPnu = '1168010100107360025';
+    const spy = emptySpy();
+    const basisCalls = new Map<string, number>();
+    const deps = makeDeps({
+        resolver: {
+            dbState: 'LINKED',
+            rootBuildingIdentities: [PK],
+            componentPnus: [ANCHOR, attachedPnu],
+            linkedBasePnus: [ANCHOR],
+            linkedPnus: [ANCHOR, attachedPnu],
+            linkedEvidenceKeys: ['k1'],
+            pendingEvidenceKeys: [],
+            blockingEvidence: [],
+            openUnresolvedEvidenceKeys: [],
+            componentTruncated: false,
+            propertyMembership: MEMBER,
+            dbScopeHash: 'db-hash-linked-attached',
+        },
+        scans: {
+            scanTitle: async () => ({
+                ...titleComplete(MULTIPLEX),
+                rows: [
+                    {
+                        ...titleComplete(MULTIPLEX).rows[0],
+                        bylotCnt: '1',
+                    },
+                ],
+            }),
+            scanAttached: async () => ({
+                state: 'COMPLETE',
+                rows: [
+                    {
+                        mgmBldrgstPk: PK,
+                        sigunguCd: '11680',
+                        bjdongCd: '10100',
+                        platGbCd: '0',
+                        bun: '0736',
+                        ji: '0024',
+                        atchSigunguCd: '11680',
+                        atchBjdongCd: '10100',
+                        atchPlatGbCd: '0',
+                        atchBun: '0736',
+                        atchJi: '0025',
+                    },
+                ],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+            scanBasis: async (pnu) => {
+                basisCalls.set(pnu, (basisCalls.get(pnu) ?? 0) + 1);
+                return {
+                    state: 'COMPLETE',
+                    rows: [{ pnu, mgmBldrgstPk: PK }],
+                    totalCount: 1,
+                    pagesFetched: 1,
+                };
+            },
+            scanExpos: async (pnu) =>
+                pnu === ANCHOR ? exposComplete() : zero<BrExposRow>(),
+            scanLadfrl: async (pnu) => ({
+                state: 'COMPLETE',
+                rows: [{ pnu, lndpclAr: '50.25' }],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+            scanLdareg: async () => zero<LdaregRow>(),
+        },
+        propertyUnits: [
+            {
+                id: PROP_ID,
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: null,
+                ho: null,
+            },
+        ],
+        applyResult: {
+            data: { outcome: 'NO_DATA', issues: [] },
+            error: null,
+        },
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps,
+    });
+
+    assert.deepEqual(
+        [...basisCalls.entries()].sort(),
+        [
+            [ANCHOR, 1],
+            [attachedPnu, 1],
+        ]
+    );
+    assert.equal(spy.applyCalls, 1);
+    const params = spy.lastApplyParams as {
+        p_result_summary: { counts: { basisRows: number } };
+    };
+    assert.equal(params.p_result_summary.counts.basisRows, 2);
 });
 
 test('LDAREG LINKED discovery는 resolved scope allowlist 거부 시 apply 0회 + FAILED로 수렴한다', async () => {
@@ -397,6 +538,190 @@ test('LDAREG 필수 scan(ldareg) FAILED 는 write barrier 로 apply 0회 + FAILE
     await runLandAreaSyncJob({ jobId: 'job-1', unionId: 'union-1', deps });
     assert.equal(spy.applyCalls, 0);
     assert.equal(spy.terminalCalls[0].status, 'FAILED');
+});
+
+test('LDAREG 전용 basis scan이 FAILED면 apply 0회 + FAILED로 닫는다', async () => {
+    const spy = emptySpy();
+    const deps = makeDeps({
+        resolver: linked(MEMBER),
+        scans: {
+            scanTitle: async () => titleComplete(MULTIPLEX),
+            scanBasis: async () => failed<BrBasisOulnRow>(),
+        },
+        spy,
+    });
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps,
+    });
+    assert.equal(spy.applyCalls, 0);
+    assert.equal(spy.terminalCalls[0].status, 'FAILED');
+    assert.ok(
+        spy.terminalIssues[0].some(
+            (issue) => issue.code === 'PROVIDER_PROTOCOL_ERROR'
+        )
+    );
+});
+
+test('LDAREG basis row가 query PNU에 exact 귀속되지 않으면 apply 0회 + FAILED다', async () => {
+    const spy = emptySpy();
+    const deps = makeDeps({
+        resolver: linked(MEMBER),
+        scans: {
+            scanTitle: async () => titleComplete(MULTIPLEX),
+            scanBasis: async () => ({
+                state: 'COMPLETE',
+                rows: [
+                    {
+                        pnu: '1168010100107360999',
+                        mgmBldrgstPk: PK,
+                    },
+                ],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+        },
+        spy,
+    });
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps,
+    });
+    assert.equal(spy.applyCalls, 0);
+    assert.equal(spy.terminalCalls[0].status, 'FAILED');
+    assert.ok(
+        spy.terminalIssues[0].some(
+            (issue) => issue.code === 'PROVIDER_PROTOCOL_ERROR'
+        )
+    );
+});
+
+test('LDAREG root selector는 전 base title self가 정확히 하나일 때만 값을 낸다', () => {
+    const attached = zero();
+    const sharedHigherUp = '9001002003999';
+    const oneRoot = [
+        {
+            pnu: ANCHOR,
+            title: {
+                ...titleComplete(MULTIPLEX),
+                rows: [
+                    {
+                        ...titleComplete(MULTIPLEX).rows[0],
+                        mgmUpBldrgstPk: sharedHigherUp,
+                    },
+                ],
+            },
+            attached,
+        },
+    ];
+    assert.equal(selectSingleLdaregRootIdentity(oneRoot), PK);
+
+    const otherRoot = '9001002003004';
+    const twoRoots = [
+        ...oneRoot,
+        {
+            pnu: '1168010100107360025',
+            title: {
+                ...titleComplete(MULTIPLEX),
+                rows: [
+                    {
+                        ...titleComplete(MULTIPLEX).rows[0],
+                        mgmBldrgstPk: otherRoot,
+                        mgmUpBldrgstPk: sharedHigherUp,
+                    },
+                ],
+            },
+            attached,
+        },
+    ];
+    assert.equal(selectSingleLdaregRootIdentity(twoRoots), null);
+
+    const repeatedSelf = [
+        ...oneRoot,
+        {
+            pnu: '1168010100107360025',
+            title: {
+                ...titleComplete(MULTIPLEX),
+                rows: [
+                    {
+                        ...titleComplete(MULTIPLEX).rows[0],
+                        mgmUpBldrgstPk: sharedHigherUp,
+                    },
+                ],
+            },
+            attached,
+        },
+    ];
+    assert.equal(
+        selectSingleLdaregRootIdentity(repeatedSelf),
+        PK,
+        '여러 base에서 같은 title self 반복은 dedup한다'
+    );
+});
+
+test('같은 higher up을 공유하는 복수 title self도 REVIEW로 닫고 branch scan/apply를 하지 않는다', async () => {
+    const sibling = '1168010100107360025';
+    const otherRoot = '9001002003004';
+    const spy = emptySpy();
+    let ldaregCalls = 0;
+    const deps = makeDeps({
+        resolver: {
+            dbState: 'LINKED',
+            rootBuildingIdentities: [PK, otherRoot],
+            componentPnus: [ANCHOR, sibling],
+            linkedBasePnus: [ANCHOR, sibling],
+            linkedPnus: [ANCHOR, sibling],
+            linkedEvidenceKeys: ['k1'],
+            pendingEvidenceKeys: [],
+            blockingEvidence: [],
+            openUnresolvedEvidenceKeys: [],
+            componentTruncated: false,
+            propertyMembership: [
+                ...MEMBER,
+                {
+                    propertyUnitId:
+                        '22222222-2222-4222-8222-222222222222',
+                    pnu: sibling,
+                    buildingUnitId: null,
+                },
+            ],
+            dbScopeHash: 'db-hash-multi-root',
+        },
+        scans: {
+            scanTitle: async (pnu) => ({
+                state: 'COMPLETE',
+                rows: [
+                    {
+                        mgmBldrgstPk:
+                            pnu === ANCHOR ? PK : otherRoot,
+                        mgmUpBldrgstPk: '9001002003999',
+                        bylotCnt: '0',
+                        regstrGbCd: MULTIPLEX.regstrGbCd,
+                        mainPurpsCd: MULTIPLEX.mainPurpsCd,
+                        mainPurpsCdNm: MULTIPLEX.mainPurpsCdNm,
+                    },
+                ],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+            scanLdareg: async () => {
+                ldaregCalls += 1;
+                return zero<LdaregRow>();
+            },
+        },
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps,
+    });
+    assert.equal(spy.applyCalls, 0);
+    assert.equal(ldaregCalls, 0);
+    assert.equal(spy.terminalCalls[0].scopeState, 'REVIEW_REQUIRED');
 });
 
 test('apply RPC EXCEPTION(rollback)은 job 을 FAILED 로 기록한다', async () => {
@@ -595,6 +920,85 @@ test('C1: mgmUpBldrgstPk ≠ mgmBldrgstPk 일 때 resolver 는 up-PK 로 호출�
     assert.equal(spy.freezeCalls, 1);
     assert.deepEqual(spy.frozenSnapshots[0].resolverRootPks, spy.resolverParams[0].p_root_mgm_bldrgst_pks);
     assert.deepEqual(spy.frozenSnapshots[0].resolverRootPks, ['9001002003004']);
+});
+
+test('§10.4 LDAREG: title self를 branch root로 쓰고 basis title-row의 higher up은 resolver 축에만 남긴다', async () => {
+    const higherUp = '9001002003004';
+    const spy = emptySpy();
+    const deps = makeDeps({
+        resolver: linked(MEMBER),
+        scans: {
+            scanTitle: async () =>
+                titleUpVsSelf(MULTIPLEX, higherUp, PK),
+            scanBasis: async () => ({
+                state: 'COMPLETE',
+                rows: [
+                    {
+                        pnu: ANCHOR,
+                        mgmBldrgstPk: PK,
+                        mgmUpBldrgstPk: higherUp,
+                    },
+                ],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+            // accepted title self와 같은 EXPOS self, raw up은 없음 → SELF.
+            scanExpos: async () => exposComplete(),
+            scanLdareg: async () => ldaregCurrent(),
+        },
+        propertyUnits: [
+            {
+                id: PROP_ID,
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: '101',
+                ho: '301',
+            },
+        ],
+        applyResult: {
+            data: { outcome: 'NO_DATA', issues: [] },
+            error: null,
+        },
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps,
+    });
+
+    assert.equal(
+        selectSingleLdaregRootIdentity([
+            {
+                pnu: ANCHOR,
+                title: titleUpVsSelf(MULTIPLEX, higherUp, PK),
+                attached: zero(),
+            },
+        ]),
+        PK,
+        'branch root는 up이 아닌 title self다'
+    );
+    assert.deepEqual(
+        spy.resolverParams[0].p_root_mgm_bldrgst_pks,
+        [higherUp],
+        'resolver root는 기존 up-preferred 축을 유지한다'
+    );
+    assert.equal(spy.applyCalls, 1);
+    const params = spy.lastApplyParams as {
+        p_result_summary: {
+            counts: { basisRows: number };
+            extraIssues: LandAreaSyncIssue[];
+        };
+    };
+    assert.equal(params.p_result_summary.counts.basisRows, 1);
+    assert.ok(
+        !params.p_result_summary.extraIssues.some(
+            (issue) => issue.code === 'LDAREG_IDENTITY_CONFLICT'
+        )
+    );
 });
 
 // ── LADFRL manual-overwrite apply atomic terminal ───────────────────
