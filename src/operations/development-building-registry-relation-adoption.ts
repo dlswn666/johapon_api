@@ -606,11 +606,21 @@ export async function scanAndValidateDevelopmentOfficialRelation(input: {
     serviceKey: string;
 }): Promise<SanitizedOfficialScan> {
     const auth = { serviceKey: input.serviceKey };
-    const [titleScan, basisScan, attachedScan] = await Promise.all([
-        input.adapter.scanTitle(input.target.basePnu, auth),
-        input.adapter.scanBasis(input.target.basePnu, auth),
-        input.adapter.scanAttached(input.target.basePnu, auth),
-    ]);
+    // 공공데이터포털 Building HUB는 같은 키의 동시 요청을 간헐적으로
+    // 오류 envelope로 반환한다. Phase 0과 동일하게 직렬 조회해 각 strict
+    // scan의 자체 재시도 정책과 완전성 판정을 보존한다.
+    const titleScan = await input.adapter.scanTitle(
+        input.target.basePnu,
+        auth
+    );
+    const basisScan = await input.adapter.scanBasis(
+        input.target.basePnu,
+        auth
+    );
+    const attachedScan = await input.adapter.scanAttached(
+        input.target.basePnu,
+        auth
+    );
     const title = completeRows(titleScan, 'OFFICIAL_TITLE_NOT_COMPLETE');
     const basis = completeRows(basisScan, 'OFFICIAL_BASIS_NOT_COMPLETE');
     const attached = completeRows(
