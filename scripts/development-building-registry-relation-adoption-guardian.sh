@@ -206,7 +206,9 @@ verify_health() {
                 health?.status !== "ok"
                 || health?.gitSha !== process.env.EXPECTED_GIT_SHA
                 || health?.imageTag !== process.env.EXPECTED_IMAGE_TAG
-                || health?.landAreaSyncEnabled !== false
+                || health?.features?.landAreaSyncEnabled !== false
+                || health?.features?.landAreaSyncAllowedTargetCount !== 0
+                || health?.features?.landAreaSyncAllowedTargetsDigest !== ""
               ) return reject();
               process.exit(0);
             } catch {
