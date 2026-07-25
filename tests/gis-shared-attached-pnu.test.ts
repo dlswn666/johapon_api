@@ -3,6 +3,8 @@ import test from 'node:test';
 import {
     convertPlatGbCdToLandGbn,
     buildBuildingHubPnu,
+    buildingHubRowPnu,
+    buildingHubRowsMatchPnu,
     assembleAttachedPnus,
     type AtchJibunRowInput,
 } from '../src/services/gis-shared/pnu';
@@ -99,6 +101,66 @@ test('buildBuildingHubPnu: 빈 필드는 MISSING_FIELD', () => {
         ji: '0024',
     });
     assert.deepEqual(r, { ok: false, reason: 'MISSING_FIELD' });
+});
+
+// ── Building HUB 응답 row exact-PNU 귀속 검증
+
+test('buildingHubRowPnu: direct PNU와 5필드 복원을 모두 지원한다', () => {
+    const expected = '1168010100107360024';
+    assert.equal(buildingHubRowPnu({ pnu: expected }), expected);
+    assert.equal(
+        buildingHubRowPnu({
+            sigunguCd: '11680',
+            bjdongCd: '10100',
+            platGbCd: '0',
+            bun: '736',
+            ji: '24',
+        }),
+        expected
+    );
+});
+
+test('buildingHubRowPnu: direct와 복원 PNU가 다르거나 direct 형식이 잘못되면 null이다', () => {
+    assert.equal(
+        buildingHubRowPnu({
+            pnu: '1168010100107360024',
+            sigunguCd: '11680',
+            bjdongCd: '10100',
+            platGbCd: '0',
+            bun: '736',
+            ji: '25',
+        }),
+        null
+    );
+    assert.equal(buildingHubRowPnu({ pnu: 'not-a-pnu' }), null);
+});
+
+test('buildingHubRowsMatchPnu: 빈 결과는 허용하되 모든 nonzero row는 요청 PNU에 exact 귀속돼야 한다', () => {
+    const expected = '1168010100107360024';
+    assert.equal(buildingHubRowsMatchPnu([], expected), true);
+    assert.equal(
+        buildingHubRowsMatchPnu(
+            [
+                { pnu: expected },
+                {
+                    sigunguCd: '11680',
+                    bjdongCd: '10100',
+                    platGbCd: '0',
+                    bun: '736',
+                    ji: '24',
+                },
+            ],
+            expected
+        ),
+        true
+    );
+    assert.equal(
+        buildingHubRowsMatchPnu(
+            [{ pnu: '1168010100107360025' }],
+            expected
+        ),
+        false
+    );
 });
 
 // ── assembleAttachedPnus: 부속지번 row → (기준 PNU, 부속 PNU) 쌍

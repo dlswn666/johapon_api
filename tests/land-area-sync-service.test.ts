@@ -37,7 +37,13 @@ function ladfrlComplete(): StrictScan<LadfrlRow> {
 }
 function exposComplete(
     rows: BrExposRow[] = [
-        { mgmBldrgstPk: PK, dongNm: '101', flrNoNm: '3', hoNm: '301' },
+        {
+            pnu: ANCHOR,
+            mgmBldrgstPk: PK,
+            dongNm: '101',
+            flrNoNm: '3',
+            hoNm: '301',
+        },
     ]
 ): StrictScan<BrExposRow> {
     return { state: 'COMPLETE', rows, totalCount: rows.length, pagesFetched: 1 };

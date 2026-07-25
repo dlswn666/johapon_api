@@ -103,6 +103,55 @@ export function buildBuildingHubPnu(parts: BuildingHubPnuParts): PnuBuildResult 
     };
 }
 
+/**
+ * Building HUB row의 direct `pnu` 또는 5개 지번 필드에서 exact PNU를 복원한다.
+ * 두 표현이 함께 있으면 서로 같아야 하며, 일부 필드만 있거나 형식이 틀리면 null이다.
+ */
+export function buildingHubRowPnu(
+    row: Record<string, unknown>
+): string | null {
+    const string = (value: unknown): string =>
+        typeof value === 'string' ? value.trim() : '';
+    const directRaw = string(row.pnu);
+    const direct = /^\d{10}[12]\d{8}$/.test(directRaw)
+        ? directRaw
+        : null;
+    if (directRaw && !direct) return null;
+
+    const parcelParts = [
+        row.sigunguCd,
+        row.bjdongCd,
+        row.platGbCd,
+        row.bun,
+        row.ji,
+    ];
+    const hasParcelParts = parcelParts.some(
+        (value) => value !== undefined && value !== null && value !== ''
+    );
+    let reconstructed: string | null = null;
+    if (hasParcelParts) {
+        const built = buildBuildingHubPnu({
+            sigunguCd: string(row.sigunguCd),
+            bjdongCd: string(row.bjdongCd),
+            platGbCd: string(row.platGbCd),
+            bun: string(row.bun),
+            ji: string(row.ji),
+        });
+        if (!built.ok) return null;
+        reconstructed = built.pnu;
+    }
+    if (direct && reconstructed && direct !== reconstructed) return null;
+    return direct ?? reconstructed;
+}
+
+/** 모든 Building HUB row가 요청 PNU에 exact 귀속되는지 확인한다. */
+export function buildingHubRowsMatchPnu(
+    rows: Array<Record<string, unknown>>,
+    expectedPnu: string
+): boolean {
+    return rows.every((row) => buildingHubRowPnu(row) === expectedPnu);
+}
+
 /** 부속지번 조립 입력 (getBrAtchJibunInfo row에서 필요한 필드만) */
 export interface AtchJibunRowInput {
     mgmBldrgstPk?: string;

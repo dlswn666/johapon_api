@@ -141,7 +141,13 @@ export interface LandAreaSyncApiJob {
         branch?: LandAreaSyncStrategy | null;
         outcome?: LandAreaSyncOutcome | null;
         counts?: Partial<LandAreaSyncCounts>;
-        issues?: Array<{ code?: string }>;
+        issues?: Array<{
+            code?: string;
+            propertyUnitId?: string;
+            targetPnu?: string;
+            dong?: string;
+            ho?: string;
+        }>;
         issuesTotal?: number;
         issuesTruncated?: boolean;
     } | null;
@@ -1142,11 +1148,61 @@ function issueCodes(job: LandAreaSyncApiJob): string[] {
     return [...new Set(codes)].sort();
 }
 
+/**
+ * 서비스 분기에서 이미 blocking 여부를 판정한 뒤 APPLIED까지 도달할 수 있는 정보성 issue.
+ *
+ * `RATIO_PARSE_FAILED`는 일반적으로 차단 사유지만, 현재 LDAREG 계약은 실측으로 확인된
+ * 비적용 placeholder 정확히 1행만 같은 code로 기록하면서 유효 행 적용을 허용한다.
+ * 따라서 worker finalization까지 끝난 APPLIED terminal에서만 이 exact code를 예외로
+ * 인정한다. REVIEW_REQUIRED discovery나 다른 issue에는 이 예외를 적용하지 않는다.
+ */
+const APPLIED_TERMINAL_INFORMATIONAL_ISSUE_CODES =
+    new Set<string>(['RATIO_PARSE_FAILED']);
+
+function isSoleAppliedPlaceholderRatioIssue(
+    job: LandAreaSyncApiJob
+): boolean {
+    const issues = job.landAreaSync?.issues;
+    if (
+        job.status !== 'COMPLETED' ||
+        !hasWorkerFinalization(job) ||
+        job.landAreaSync?.branch !== 'LDAREG' ||
+        job.landAreaSync.outcome !== 'APPLIED' ||
+        !Array.isArray(issues) ||
+        issues.length !== 1 ||
+        job.landAreaSync.issuesTotal !== 1 ||
+        job.landAreaSync.issuesTruncated !== false
+    ) {
+        return false;
+    }
+
+    const issue = issues[0];
+    return (
+        issue.code === 'RATIO_PARSE_FAILED' &&
+        typeof issue.targetPnu === 'string' &&
+        PNU_RE.test(issue.targetPnu) &&
+        Object.keys(issue).every(
+            (key) => key === 'code' || key === 'targetPnu'
+        ) &&
+        !Object.hasOwn(issue, 'propertyUnitId') &&
+        !Object.hasOwn(issue, 'dong') &&
+        !Object.hasOwn(issue, 'ho')
+    );
+}
+
 function hasBlockingIssue(job: LandAreaSyncApiJob): boolean {
     const codes = issueCodes(job);
     const blockingPattern =
         /CACHE|CONFLICT|REVIEW|PENDING|UNRESOLVED|BLOCKING|MISMATCH|INCOMPLETE|ERROR|FAILED|AMBIGUOUS|NOT_FOUND|CHANGED|DENIED/;
-    return codes.some((code) => blockingPattern.test(code));
+    const hasSoleAppliedInformationalIssue =
+        isSoleAppliedPlaceholderRatioIssue(job);
+    return codes.some(
+        (code) =>
+            !(
+                hasSoleAppliedInformationalIssue &&
+                APPLIED_TERMINAL_INFORMATIONAL_ISSUE_CODES.has(code)
+            ) && blockingPattern.test(code)
+    );
 }
 
 function isAmbiguousAdmissionError(error: unknown): boolean {

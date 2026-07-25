@@ -297,6 +297,63 @@ function pickRootIdentity(up: unknown, self: unknown): string {
 }
 
 /**
+ * resolved scope 전체의 EXPOS 후보를 합친다.
+ *
+ * Building HUB는 같은 호실을 기준·부속 PNU 양쪽에서 반복할 수 있고, 반대로 일부 호실을
+ * 한쪽 PNU에서만 반환할 수도 있다. 서로 다른 PNU 사이의 동일 normalized 후보는 query
+ * replica로 1건만 사용한다. 다만 한 PNU 안의 중복은 provider ambiguity이므로 숨기지
+ * 않도록 PNU별 최대 multiplicity를 보존한다.
+ */
+function collectScopeExposUnits(
+    perPnu: LdaregPnuScan[]
+): ExposUnitCandidate[] {
+    const representativeByKey = new Map<string, ExposUnitCandidate>();
+    const maxMultiplicityByKey = new Map<string, number>();
+
+    for (const scan of perPnu) {
+        const localMultiplicity = new Map<string, number>();
+        for (const row of scan.exposRows) {
+            const raw = row as Record<string, unknown>;
+            const candidate = toExposCandidate(row);
+            const normalized = normalizeUnitTuple(candidate);
+            const key = JSON.stringify({
+                rootIdentity: candidate.rootIdentity,
+                selfIdentity:
+                    normalizeRegistryManagementPk(
+                        raw.mgmBldrgstPk
+                    ) ?? '',
+                dong: normalized.dong,
+                floor: normalized.floor,
+                ho: normalized.ho,
+            });
+            representativeByKey.set(
+                key,
+                representativeByKey.get(key) ?? candidate
+            );
+            localMultiplicity.set(
+                key,
+                (localMultiplicity.get(key) ?? 0) + 1
+            );
+        }
+        for (const [key, count] of localMultiplicity) {
+            maxMultiplicityByKey.set(
+                key,
+                Math.max(maxMultiplicityByKey.get(key) ?? 0, count)
+            );
+        }
+    }
+
+    return [...representativeByKey.keys()]
+        .sort()
+        .flatMap((key) =>
+            Array.from(
+                { length: maxMultiplicityByKey.get(key) ?? 0 },
+                () => representativeByKey.get(key)!
+            )
+        );
+}
+
+/**
  * match에 사용할 canonical Building HUB 전유부 dataset을 고른다. scanned base 중 strict
  * COMPLETE nonzero expos를 가진 PNU만 후보이며, 후보가 여러 개면 match에 쓰이는 canonical
  * expos multiset이 exact 같아야 한다.
@@ -317,10 +374,17 @@ export function selectCanonicalExposSourcePnu(
     const digestFor = (pnu: string): string =>
         JSON.stringify(
             (scansByPnu.get(pnu)?.exposRows ?? [])
-                .map((row) => toExposCandidate(row))
-                .map((row) => ({
-                    rootIdentity: row.rootIdentity,
-                    normalized: normalizeUnitTuple(row),
+                .map((rawRow) => ({
+                    raw: rawRow as Record<string, unknown>,
+                    candidate: toExposCandidate(rawRow),
+                }))
+                .map(({ raw, candidate }) => ({
+                    rootIdentity: candidate.rootIdentity,
+                    selfIdentity:
+                        normalizeRegistryManagementPk(
+                            raw.mgmBldrgstPk
+                        ) ?? '',
+                    normalized: normalizeUnitTuple(candidate),
                 }))
                 .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
         );
@@ -351,7 +415,8 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         input.canonicalSourcePnu
     );
     const canonicalScan = perPnu.find((scan) => scan.pnu === input.canonicalSourcePnu);
-    if (!replication.ok || !canonicalScan || canonicalScan.exposRows.length === 0) {
+    const scopeExposUnits = collectScopeExposUnits(perPnu);
+    if (!replication.ok || !canonicalScan || scopeExposUnits.length === 0) {
         return {
             items: [],
             issues: [{ code: 'LDAREG_IDENTITY_CONFLICT' }],
@@ -377,6 +442,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
     let parsedRows = 0;
     let denominatorMismatch = false;
     let ratioParseFailed = false;
+    let unitMatchIncomplete = false;
 
     // property_unit_id → component 목록.
     const byProperty = new Map<string, LandAreaSyncApplyLdaregComponent[]>();
@@ -392,9 +458,10 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         },
     ];
 
-    // canonical base LDAREG를 한 번만 dedup/match한다. attached PNU의 expos COMPLETE_ZERO는
-    // 정상일 수 있으므로 per-PNU expos match equality를 요구하지 않는다.
-    const exposUnits = canonicalScan.exposRows.map(toExposCandidate);
+    // canonical base LDAREG를 한 번만 dedup/match한다. EXPOS는 scope 전체에서 합친
+    // normalized 후보를 사용하므로 호실이 기준 또는 부속 PNU 한쪽에만 있어도 매칭한다.
+    // attached PNU의 expos COMPLETE_ZERO도 정상이다.
+    const exposUnits = scopeExposUnits;
     const placeholderIndexes = new Set(
         canonicalScan.ldaregRows
             .map((row, index) =>
@@ -491,6 +558,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             unionId,
         });
         if (decision.kind === 'NO_CHANGE') {
+            unitMatchIncomplete = true;
             issues.push({ code: decision.issue, targetPnu: canonicalScan.pnu });
             continue;
         }
@@ -685,6 +753,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             componentReplicaMismatch ||
             ambiguousPropertyIdentity ||
             nonzeroWithoutMatchedItem ||
+            unitMatchIncomplete ||
             dedupConflict,
     };
 }

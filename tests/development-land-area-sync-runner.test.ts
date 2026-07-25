@@ -475,6 +475,7 @@ test('개발 GIS JWT는 kid/dev claims와 정확한 10분 TTL을 고정하고 au
         algorithms: ['HS256'],
         issuer: 'tonghari-web-dev',
         audience: 'tonghari-api',
+        clockTimestamp: Math.floor(now.getTime() / 1000),
         complete: true,
     });
     assert.equal(decoded.header.kid, 'dev');
@@ -933,6 +934,159 @@ test('latest DB COMPLETED라도 receipt 전에는 terminal로 보지 않고 fina
     assert.equal(artifact.results[0].admission, 'RESUMED_LATEST');
     assert.equal(admissions, 0);
     assert.equal(exactReads, 1);
+});
+
+test('APPLIED terminal의 단일 RATIO_PARSE_FAILED만 허용하고 REVIEW_REQUIRED에서는 계속 차단한다', async () => {
+    const targetManifest = target();
+    const ldaregEntry: DevelopmentEvidenceEntry = {
+        ...evidenceEntry(),
+        expectedStrategy: 'LDAREG',
+        landOwnershipEvidence: null,
+        allowedPrestates: [
+            {
+                propertyUnitId: PROPERTY_UNIT_ID,
+                landArea: null,
+                landAreaSource: 'LEGACY_UNKNOWN',
+            },
+            {
+                propertyUnitId: PROPERTY_UNIT_ID,
+                landArea: '161',
+                landAreaSource: 'LDAREG',
+            },
+        ],
+    };
+    const evidenceManifest = evidence(targetManifest, [ldaregEntry]);
+    const ldaregSnapshot: LandAreaSyncScopeSnapshot = {
+        ...snapshot(),
+        strategy: 'LDAREG',
+    };
+    const runWithTerminal = async (terminal: LandAreaSyncApiJob) =>
+        runDevelopmentLandAreaSync({
+            target: targetManifest,
+            dbApproval: approval(targetManifest),
+            evidence: evidenceManifest,
+            client: {
+                async getLatest() {
+                    return terminal;
+                },
+                async getJob() {
+                    throw new Error('호출되면 안 됨');
+                },
+                async admitDiscovery() {
+                    throw new Error('호출되면 안 됨');
+                },
+                async confirmDiscovery() {
+                    throw new Error('호출되면 안 됨');
+                },
+            },
+            preflightReader: preflightReader(
+                evidenceManifest.entries,
+                true
+            ),
+        });
+
+    const applied = job(APPLY_JOB_ID, {
+        status: 'COMPLETED',
+        scopeState: 'LINKED_SCOPE_RESOLVED',
+        outcome: 'APPLIED',
+        scopeSnapshot: ldaregSnapshot,
+        issueCodes: ['RATIO_PARSE_FAILED'],
+    });
+    applied.landAreaSync!.branch = 'LDAREG';
+    applied.landAreaSync!.issues = [
+        { code: 'RATIO_PARSE_FAILED', targetPnu: PNU },
+    ];
+    const passArtifact = await runWithTerminal(applied);
+    assert.equal(
+        passArtifact.gate.status,
+        'PASS',
+        passArtifact.gate.failureCode ?? undefined
+    );
+    assert.deepEqual(passArtifact.results[0].issueCodes, [
+        'RATIO_PARSE_FAILED',
+    ]);
+
+    const repeatedPlaceholder = job(APPLY_JOB_ID, {
+        status: 'COMPLETED',
+        scopeState: 'LINKED_SCOPE_RESOLVED',
+        outcome: 'APPLIED',
+        scopeSnapshot: ldaregSnapshot,
+        issueCodes: [
+            'RATIO_PARSE_FAILED',
+            'RATIO_PARSE_FAILED',
+        ],
+    });
+    repeatedPlaceholder.landAreaSync!.branch = 'LDAREG';
+    repeatedPlaceholder.landAreaSync!.issues = [
+        { code: 'RATIO_PARSE_FAILED', targetPnu: PNU },
+        { code: 'RATIO_PARSE_FAILED', targetPnu: PNU },
+    ];
+    const repeatedFailArtifact =
+        await runWithTerminal(repeatedPlaceholder);
+    assert.equal(repeatedFailArtifact.gate.status, 'FAIL');
+    assert.equal(
+        repeatedFailArtifact.gate.failureCode,
+        'APPLY_TERMINAL_NOT_PASS'
+    );
+
+    const currentUnitRatioFailure = job(APPLY_JOB_ID, {
+        status: 'COMPLETED',
+        scopeState: 'LINKED_SCOPE_RESOLVED',
+        outcome: 'APPLIED',
+        scopeSnapshot: ldaregSnapshot,
+        issueCodes: ['RATIO_PARSE_FAILED'],
+    });
+    currentUnitRatioFailure.landAreaSync!.branch = 'LDAREG';
+    currentUnitRatioFailure.landAreaSync!.issues = [
+        {
+            code: 'RATIO_PARSE_FAILED',
+            targetPnu: PNU,
+            propertyUnitId: PROPERTY_UNIT_ID,
+        },
+    ];
+    const currentUnitFailArtifact = await runWithTerminal(
+        currentUnitRatioFailure
+    );
+    assert.equal(currentUnitFailArtifact.gate.status, 'FAIL');
+    assert.equal(
+        currentUnitFailArtifact.gate.failureCode,
+        'APPLY_TERMINAL_NOT_PASS'
+    );
+
+    const ladfrlRatioFailure = job(APPLY_JOB_ID, {
+        status: 'COMPLETED',
+        scopeState: 'LINKED_SCOPE_RESOLVED',
+        outcome: 'APPLIED',
+        scopeSnapshot: ldaregSnapshot,
+        issueCodes: ['RATIO_PARSE_FAILED'],
+    });
+    ladfrlRatioFailure.landAreaSync!.issues = [
+        { code: 'RATIO_PARSE_FAILED', targetPnu: PNU },
+    ];
+    const ladfrlFailArtifact = await runWithTerminal(ladfrlRatioFailure);
+    assert.equal(ladfrlFailArtifact.gate.status, 'FAIL');
+    assert.equal(
+        ladfrlFailArtifact.gate.failureCode,
+        'APPLY_TERMINAL_NOT_PASS'
+    );
+
+    const malformedReview = job(DISCOVERY_JOB_ID, {
+        status: 'COMPLETED',
+        scopeState: 'REVIEW_REQUIRED',
+        outcome: 'REVIEW_REQUIRED',
+        scopeSnapshot: ldaregSnapshot,
+        issueCodes: ['RATIO_PARSE_FAILED'],
+    });
+    malformedReview.landAreaSync!.branch = 'LDAREG';
+    malformedReview.landAreaSync!.issues = [
+        { code: 'RATIO_PARSE_FAILED', targetPnu: PNU },
+    ];
+    const failArtifact = await runWithTerminal(malformedReview);
+    assert.equal(failArtifact.gate.status, 'FAIL');
+    assert.equal(
+        failArtifact.gate.failureCode,
+        'APPLY_TERMINAL_NOT_PASS'
+    );
 });
 
 test('latest APPLIED도 issues truncation 또는 total 불일치면 PASS하지 않는다', async () => {

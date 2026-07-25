@@ -151,8 +151,13 @@ export function ldaregRow(
 }
 
 /** 전유부 raw row */
-export function exposRow(pk = PK, floor = '3층', ho = '301'): Record<string, unknown> {
-    return { mgmBldrgstPk: pk, flrNoNm: floor, hoNm: ho };
+export function exposRow(
+    pk = PK,
+    floor = '3층',
+    ho = '301',
+    pnu = ANCHOR
+): Record<string, unknown> {
+    return { pnu, mgmBldrgstPk: pk, flrNoNm: floor, hoNm: ho };
 }
 
 /** 토지대장 raw row */
@@ -236,6 +241,11 @@ export interface Spy {
     frozenSnapshots: Array<{ scopeSnapshot: LandAreaSyncScopeSnapshot; scopeEvidence: LandAreaSyncScopeEvidence }>;
     /** read-model 호출 흔적(쓰기 경로 부재 검증용). */
     reads: string[];
+    /** 각 후보 reader가 실제로 받은 resolved scope PNU. */
+    readScopes: Array<{
+        reader: 'buildingUnits' | 'propertyUnits';
+        pnus: string[];
+    }>;
 }
 
 export function emptySpy(): Spy {
@@ -248,6 +258,7 @@ export function emptySpy(): Spy {
         lastApplyParams: null,
         frozenSnapshots: [],
         reads: [],
+        readScopes: [],
     };
 }
 
@@ -343,8 +354,22 @@ export function buildIntegrationDeps(config: IntegrationConfig): {
                 return true;
             },
             markScopedFailed: async (_j, _u, m) => { spy.failedCalls.push(m); return true; },
-            readBuildingUnits: async () => { spy.reads.push('readBuildingUnits'); return (config.buildingUnits ?? []) as never; },
-            readPropertyUnits: async () => { spy.reads.push('readPropertyUnits'); return (config.propertyUnits ?? []) as never; },
+            readBuildingUnits: async (_unionId, scopePnus) => {
+                spy.reads.push('readBuildingUnits');
+                spy.readScopes.push({
+                    reader: 'buildingUnits',
+                    pnus: [...scopePnus],
+                });
+                return (config.buildingUnits ?? []) as never;
+            },
+            readPropertyUnits: async (_unionId, scopePnus) => {
+                spy.reads.push('readPropertyUnits');
+                spy.readScopes.push({
+                    reader: 'propertyUnits',
+                    pnus: [...scopePnus],
+                });
+                return (config.propertyUnits ?? []) as never;
+            },
             readCurrentLandTuples: async () => { spy.reads.push('readCurrentLandTuples'); return (config.currentLandTuples ?? []) as never; },
         },
     };

@@ -832,11 +832,260 @@ function validateBylotEvidence(value: unknown, path: string): void {
     validateBoundedRecordEnvelope(value, value.records, path);
 }
 
+function validateScopeExposEvidence(value: unknown, path: string): void {
+    assertRecord(value, path);
+    assertExactKeys(
+        value,
+        [
+            'status',
+            'queries',
+            'records',
+            'totalRecords',
+            'truncated',
+            'sanitizedDigest',
+        ],
+        [],
+        path
+    );
+    assertEnum(value.status, ['PASS', 'FAIL'], `${path}.status`);
+    assertArray(value.queries, `${path}.queries`);
+    if (
+        value.queries.length === 0 ||
+        value.queries.length > MAX_INVENTORY_RECORDS + 1
+    ) {
+        reject(`${path}.queries is outside the approved bound`);
+    }
+    const queryStates = new Map<
+        string,
+        {
+            state: 'COMPLETE' | 'COMPLETE_ZERO' | 'FAILED' | 'INCOMPLETE';
+            totalCount: number;
+        }
+    >();
+    value.queries.forEach((query, index) => {
+        const queryPath = `${path}.queries[${index}]`;
+        assertRecord(query, queryPath);
+        assertEnum(
+            query.state,
+            ['COMPLETE', 'COMPLETE_ZERO', 'FAILED', 'INCOMPLETE'],
+            `${queryPath}.state`
+        );
+        if (query.state === 'COMPLETE' || query.state === 'COMPLETE_ZERO') {
+            assertExactKeys(
+                query,
+                ['pnuHash', 'state', 'totalCount', 'pagesFetched'],
+                [],
+                queryPath
+            );
+            assertNonNegativeInteger(
+                query.totalCount,
+                `${queryPath}.totalCount`
+            );
+            assertNonNegativeInteger(
+                query.pagesFetched,
+                `${queryPath}.pagesFetched`
+            );
+            if (
+                query.pagesFetched === 0 ||
+                (query.state === 'COMPLETE_ZERO') !==
+                    (query.totalCount === 0)
+            ) {
+                reject(`${queryPath} successful state is inconsistent`);
+            }
+        } else {
+            assertExactKeys(
+                query,
+                ['pnuHash', 'state', 'issue'],
+                [],
+                queryPath
+            );
+            validateIssue(query.issue, `${queryPath}.issue`);
+        }
+        assertHash(query.pnuHash, `${queryPath}.pnuHash`);
+        if (queryStates.has(query.pnuHash)) {
+            reject(`${path}.queries contains duplicate PNU hashes`);
+        }
+        queryStates.set(query.pnuHash, {
+            state: query.state as
+                | 'COMPLETE'
+                | 'COMPLETE_ZERO'
+                | 'FAILED'
+                | 'INCOMPLETE',
+            totalCount:
+                typeof query.totalCount === 'number'
+                    ? query.totalCount
+                    : 0,
+        });
+    });
+    assertCanonicalOrder(value.queries, `${path}.queries`);
+
+    assertArray(value.records, `${path}.records`);
+    const observedCounts = new Map<string, number>();
+    let exactIdentifiers = true;
+    value.records.forEach((record, index) => {
+        const recordPath = `${path}.records[${index}]`;
+        assertRecord(record, recordPath);
+        assertExactKeys(
+            record,
+            ['queryPnuHash', 'unitIdentityShape'],
+            [
+                'rowPnuHash',
+                'selfManagementPkHash',
+                'rootManagementPkHash',
+                'unitIdentityHash',
+            ],
+            recordPath
+        );
+        for (const field of [
+            'queryPnuHash',
+            'rowPnuHash',
+            'selfManagementPkHash',
+            'rootManagementPkHash',
+            'unitIdentityHash',
+        ] as const) {
+            if (record[field] !== undefined) {
+                assertHash(record[field], `${recordPath}.${field}`);
+            }
+        }
+        assertEnum(
+            record.unitIdentityShape,
+            ['DONG_FLOOR_HO', 'FLOOR_HO', 'INCOMPLETE'],
+            `${recordPath}.unitIdentityShape`
+        );
+        if (
+            (record.unitIdentityShape !== 'INCOMPLETE') !==
+            (record.unitIdentityHash !== undefined)
+        ) {
+            reject(`${recordPath}.unitIdentityShape conflicts with hash`);
+        }
+        const query = queryStates.get(record.queryPnuHash as string);
+        if (
+            !query ||
+            (query.state !== 'COMPLETE' &&
+                query.state !== 'COMPLETE_ZERO')
+        ) {
+            reject(`${recordPath} is not bound to a successful query`);
+        }
+        observedCounts.set(
+            record.queryPnuHash as string,
+            (observedCounts.get(record.queryPnuHash as string) ?? 0) + 1
+        );
+        if (
+            record.rowPnuHash !== record.queryPnuHash ||
+            typeof record.selfManagementPkHash !== 'string' ||
+            typeof record.rootManagementPkHash !== 'string'
+        ) {
+            exactIdentifiers = false;
+        }
+    });
+    assertCanonicalOrder(value.records, `${path}.records`);
+    validateBoundedRecordEnvelope(value, value.records, path);
+    if (
+        value.totalRecords !==
+        [...queryStates.values()].reduce(
+            (sum, query) => sum + query.totalCount,
+            0
+        )
+    ) {
+        reject(`${path}.totalRecords does not match query totals`);
+    }
+    if (
+        !value.truncated &&
+        value.sanitizedDigest !== sanitizedDigest(value.records)
+    ) {
+        reject(`${path}.sanitizedDigest does not match producer contract`);
+    }
+    const allQueriesSuccessful = [...queryStates.values()].every(
+        (query) =>
+            query.state === 'COMPLETE' ||
+            query.state === 'COMPLETE_ZERO'
+    );
+    const countsExact =
+        !value.truncated &&
+        [...queryStates].every(
+            ([pnuHash, query]) =>
+                (observedCounts.get(pnuHash) ?? 0) === query.totalCount
+        );
+    const shouldPass =
+        allQueriesSuccessful &&
+        countsExact &&
+        exactIdentifiers &&
+        value.truncated === false;
+    if ((value.status === 'PASS') !== shouldPass) {
+        reject(`${path}.status is inconsistent`);
+    }
+}
+
+function resolvedScopeExposUnitHashes(
+    value: JsonRecord
+): string[] | null {
+    if (value.status !== 'PASS' || value.truncated !== false) {
+        return null;
+    }
+    const records = value.records as JsonRecord[];
+    const representativeByKey = new Map<string, string>();
+    const maxMultiplicityByKey = new Map<string, number>();
+    const localMultiplicityByPnu = new Map<
+        string,
+        Map<string, number>
+    >();
+
+    for (const record of records) {
+        if (
+            record.rowPnuHash !== record.queryPnuHash ||
+            typeof record.selfManagementPkHash !== 'string' ||
+            typeof record.rootManagementPkHash !== 'string' ||
+            record.unitIdentityShape === 'INCOMPLETE' ||
+            typeof record.unitIdentityHash !== 'string'
+        ) {
+            return null;
+        }
+        const key = stableStringify({
+            rootManagementPkHash: record.rootManagementPkHash,
+            selfManagementPkHash: record.selfManagementPkHash,
+            unitIdentityShape: record.unitIdentityShape,
+            unitIdentityHash: record.unitIdentityHash,
+        });
+        representativeByKey.set(
+            key,
+            representativeByKey.get(key) ??
+                (record.unitIdentityHash as string)
+        );
+        const queryPnuHash = record.queryPnuHash as string;
+        const local =
+            localMultiplicityByPnu.get(queryPnuHash) ??
+            new Map<string, number>();
+        local.set(key, (local.get(key) ?? 0) + 1);
+        localMultiplicityByPnu.set(queryPnuHash, local);
+    }
+    for (const local of localMultiplicityByPnu.values()) {
+        for (const [key, count] of local) {
+            maxMultiplicityByKey.set(
+                key,
+                Math.max(maxMultiplicityByKey.get(key) ?? 0, count)
+            );
+        }
+    }
+    return [...representativeByKey.keys()]
+        .sort()
+        .flatMap((key) =>
+            Array.from(
+                { length: maxMultiplicityByKey.get(key) ?? 0 },
+                () => representativeByKey.get(key)!
+            )
+        );
+}
+
 function validateEvidence(value: unknown, path: string): void {
     assertRecord(value, path);
     assertExactKeys(
         value,
-        ['bylotByManagementPk', 'scopeLadfrl', 'ldaregReplication'],
+        [
+            'bylotByManagementPk',
+            'scopeLadfrl',
+            'scopeExpos',
+            'ldaregReplication',
+        ],
         [],
         path
     );
@@ -875,6 +1124,11 @@ function validateEvidence(value: unknown, path: string): void {
     ) {
         reject(`${path}.scopeLadfrl status is inconsistent`);
     }
+
+    validateScopeExposEvidence(
+        value.scopeExpos,
+        `${path}.scopeExpos`
+    );
 
     assertRecord(value.ldaregReplication, `${path}.ldaregReplication`);
     assertExactKeys(
@@ -1053,6 +1307,7 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     const evidence = sample.evidence as JsonRecord;
     const bylotEvidence = evidence.bylotByManagementPk as JsonRecord;
     const scopeLadfrl = evidence.scopeLadfrl as JsonRecord;
+    const scopeExpos = evidence.scopeExpos as JsonRecord;
     const ldaregReplication = evidence.ldaregReplication as JsonRecord;
     const checks = sample.checks as JsonRecord;
     const titleBasis = checks.titleBasis as JsonRecord;
@@ -1068,9 +1323,50 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     ) {
         reject(`${path}.ldaregReplication applicability is inconsistent`);
     }
+    const scopeExposQueryHashes = (
+        scopeExpos.queries as JsonRecord[]
+    ).map((query) => query.pnuHash as string);
+    const comparedPnuHashes =
+        ldaregReplication.comparedPnuHashes as string[];
+    if (
+        new Set(scopeExposQueryHashes).size !==
+            scopeExposQueryHashes.length ||
+        scopeExposQueryHashes.length !== comparedPnuHashes.length ||
+        scopeExposQueryHashes.some(
+            (hash) => !comparedPnuHashes.includes(hash)
+        )
+    ) {
+        reject(`${path}.scopeExpos does not bind to the LDAREG scope`);
+    }
 
     if (bylotEvidence.truncated === true || matchedHashes.truncated === true) {
         required.add('CAPTURE_INVENTORY_TRUNCATED');
+    }
+    if (scopeExpos.truncated === true) {
+        required.add('CAPTURE_INVENTORY_TRUNCATED');
+    }
+    for (const query of scopeExpos.queries as JsonRecord[]) {
+        if (query.state === 'FAILED') required.add('SCAN_FAILED');
+        if (query.state === 'INCOMPLETE')
+            required.add('SCAN_INCOMPLETE');
+    }
+    const scopeExposRecords = scopeExpos.records as JsonRecord[];
+    if (
+        scopeExposRecords.some(
+            (record) =>
+                typeof record.selfManagementPkHash !== 'string' ||
+                typeof record.rootManagementPkHash !== 'string'
+        )
+    ) {
+        required.add('EXPOS_PK_INVALID');
+    }
+    if (
+        scopeExposRecords.some(
+            (record) =>
+                record.rowPnuHash !== record.queryPnuHash
+        )
+    ) {
+        required.add('EXPOS_PNU_EXACT_MISMATCH');
     }
     if (scopeLadfrl.status === 'FAIL') {
         required.add('LADFRL_SCOPE_AREA_INVALID');
@@ -1124,12 +1420,8 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     }
 
     if (sample.expectedBylot === 'POSITIVE') {
-        const exposInventory = endpointByName('getBrExposInfo')
-            .inventory as JsonRecord;
-        const exposRecords = exposInventory.records as JsonRecord[];
-        const exposHashes = exposRecords
-            .map((record) => record.unitIdentityHash)
-            .filter((hash): hash is string => typeof hash === 'string');
+        const exposHashes =
+            resolvedScopeExposUnitHashes(scopeExpos) ?? [];
         const validLdaregHashes = ldaregRecords
             .filter((record) => record.quotaRatioState === 'VALID')
             .map((record) => record.unitIdentityHash)
@@ -1145,7 +1437,7 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
         const exposSet = new Set(exposHashes);
         const ldaregSet = new Set(validLdaregHashes);
         if (
-            exposHashes.length !== exposRecords.length ||
+            resolvedScopeExposUnitHashes(scopeExpos) === null ||
             validLdaregHashes.length !==
                 ldaregRecords.filter(
                     (record) => record.quotaRatioState === 'VALID'
@@ -1154,10 +1446,6 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
                 ldaregRecords.filter(
                     (record) => record.quotaRatioState === 'MISSING'
                 ).length ||
-            exposRecords.some(
-                (record) =>
-                    record.unitIdentityShape === 'INCOMPLETE'
-            ) ||
             ldaregRecords
                 .filter(
                     (record) =>
@@ -1387,6 +1675,7 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     }
 
     const evidence = sample.evidence as JsonRecord;
+    const scopeExpos = evidence.scopeExpos as JsonRecord;
     const bylotEnvelope = evidence.bylotByManagementPk as JsonRecord;
     const bylotRecords = bylotEnvelope.records as JsonRecord[];
     const titleEvidence = bylotRecords.filter(
@@ -1541,7 +1830,27 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     const exposEndpoint = endpoint('getBrExposInfo');
     const exposInventory = exposEndpoint.inventory as JsonRecord;
     const exposRecords = exposInventory.records as JsonRecord[];
-    const exposManagementHashes = new Set<string>();
+    const scopeExposRecords = scopeExpos.records as JsonRecord[];
+    const scopeExposManagementHashes = new Set<string>();
+    for (const [index, record] of scopeExposRecords.entries()) {
+        const selfHash = record.selfManagementPkHash;
+        const expectedRoot =
+            typeof selfHash === 'string' && titleHashes.has(selfHash)
+                ? selfHash
+                : typeof selfHash === 'string'
+                  ? basisParentByChildHash.get(selfHash)
+                  : undefined;
+        if (
+            typeof selfHash !== 'string' ||
+            typeof expectedRoot !== 'string' ||
+            record.rootManagementPkHash !== expectedRoot
+        ) {
+            reject(
+                `${path}.evidence.scopeExpos.records[${index}] is outside title/basis PK closure`
+            );
+        }
+        scopeExposManagementHashes.add(selfHash);
+    }
     for (const [index, record] of exposRecords.entries()) {
         if (typeof record.managementPkHash !== 'string') {
             reject(
@@ -1560,14 +1869,36 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
                 `${path}.exposInventory.records[${index}] is outside basis PK closure`
             );
         }
-        exposManagementHashes.add(record.managementPkHash);
+        const unitHash =
+            typeof record.unitIdentityHash === 'string'
+                ? record.unitIdentityHash
+                : undefined;
+        if (
+            !scopeExposRecords.some(
+                (scopeRecord) =>
+                    scopeRecord.queryPnuHash === sample.pnuHash &&
+                    scopeRecord.rowPnuHash === sample.pnuHash &&
+                    scopeRecord.selfManagementPkHash ===
+                        record.managementPkHash &&
+                    scopeRecord.rootManagementPkHash === expectedRoot &&
+                    scopeRecord.unitIdentityShape ===
+                        record.unitIdentityShape &&
+                    scopeRecord.unitIdentityHash === unitHash
+            )
+        ) {
+            reject(
+                `${path}.exposInventory.records[${index}] is not bound to base scope evidence`
+            );
+        }
     }
     if (
         [...basisChildHashes].some(
-            (hash) => !exposManagementHashes.has(hash)
+            (hash) => !scopeExposManagementHashes.has(hash)
         )
     ) {
-        reject(`${path}.exposInventory does not cover every basis child PK`);
+        reject(
+            `${path}.evidence.scopeExpos does not cover every basis child PK`
+        );
     }
 
     const scope = evidence.scopeLadfrl as JsonRecord;
@@ -1575,6 +1906,9 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     const scopeHashes = scopeRecords.map(
         (record) => record.pnuHash as string
     );
+    const scopeExposQueryHashes = (
+        scopeExpos.queries as JsonRecord[]
+    ).map((query) => query.pnuHash as string);
     const totalMicrounits =
         typeof scope.totalArea === 'string'
             ? decimalToMicrounits(scope.totalArea, `${path}.scopeLadfrl.totalArea`)
@@ -1590,8 +1924,15 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     );
     if (
         scope.status !== 'PASS' ||
+        scopeExpos.status !== 'PASS' ||
         scopeRecords.length === 0 ||
         new Set(scopeHashes).size !== scopeHashes.length ||
+        new Set(scopeExposQueryHashes).size !==
+            scopeExposQueryHashes.length ||
+        scopeHashes.length !== scopeExposQueryHashes.length ||
+        scopeHashes.some(
+            (hash) => !scopeExposQueryHashes.includes(hash)
+        ) ||
         scopeRecords.some(
             (record, index) =>
                 decimalToMicrounits(
@@ -1609,7 +1950,19 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     const attached = attachedEndpoint.inventory as JsonRecord;
     const attachedPairs = attached.pairs as JsonRecord[];
     const attachedCounts = new Map<string, number>();
+    const expectedParcelScopeHashes = new Set<string>([
+        sample.pnuHash as string,
+    ]);
     for (const [index, pair] of attachedPairs.entries()) {
+        if (
+            pair.basePnuHash !== sample.pnuHash ||
+            pair.attachedPnuHash === sample.pnuHash
+        ) {
+            reject(
+                `${path}.attachedInventory.pairs[${index}] is not bound to the sample base PNU`
+            );
+        }
+        expectedParcelScopeHashes.add(pair.attachedPnuHash as string);
         if (
             typeof pair.managementPkHash !== 'string' ||
             !titleHashes.has(pair.managementPkHash)
@@ -1621,6 +1974,16 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
         attachedCounts.set(
             pair.managementPkHash,
             (attachedCounts.get(pair.managementPkHash) ?? 0) + 1
+        );
+    }
+    if (
+        scopeHashes.length !== expectedParcelScopeHashes.size ||
+        scopeHashes.some(
+            (hash) => !expectedParcelScopeHashes.has(hash)
+        )
+    ) {
+        reject(
+            `${path}.attachedInventory does not exactly bind the captured parcel scope`
         );
     }
     for (const [hash, record] of evidenceByHash) {
@@ -1662,17 +2025,13 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
         const missingLdaregRecords = ldaregRecords.filter(
             (record) => record.quotaRatioState === 'MISSING'
         );
-        const exposUnitHashes = exposRecords.map((record, index) => {
-            if (
-                record.unitIdentityShape === 'INCOMPLETE' ||
-                typeof record.unitIdentityHash !== 'string'
-            ) {
-                reject(
-                    `${path}.exposInventory.records[${index}] lacks unit identity`
-                );
-            }
-            return record.unitIdentityHash;
-        });
+        const exposUnitHashes =
+            resolvedScopeExposUnitHashes(scopeExpos);
+        if (exposUnitHashes === null) {
+            reject(
+                `${path}.evidence.scopeExpos lacks exact unit identities`
+            );
+        }
         const validLdaregUnitHashes = validLdaregRecords.map(
             (record, index) => {
                 if (

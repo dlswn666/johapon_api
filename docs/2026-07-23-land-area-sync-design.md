@@ -856,9 +856,16 @@ canonical identity 13/13과 ratio 9/9가 완전히 같았다. query PNU별 응�
   `lastUpdtDt` 등 공개 allowlist의 차이도 불일치다.
 - resolver의 `linkedBasePnus` 중 정렬 첫 base PNU가 strict COMPLETE nonzero expos
   dataset을 가져야 한다. base 후보가 여러 개면 canonical expos multiset이 서로 같아야 한다.
-- canonical base의 LDAREG+expos로 unit/property match를 한 번 수행하고, exact LDAREG
-  multiset의 대응 raw row를 사용해 같은 logical component를 모든 target PNU에 복제한다.
-  attached PNU의 expos `COMPLETE_ZERO`는 이 경로에서 정상이다.
+- canonical base의 LDAREG를 기준으로 삼되 unit/property match의 EXPOS 후보는 resolved
+  scope의 **모든 기준·부속 PNU**에서 수집한다. 같은
+  `rootIdentity + self management identity + normalized dong/floor/ho`가 서로 다른 PNU에서
+  반복되면 query replica로 한 번만 사용하고, 같은 PNU 안에서 2건 이상이면 provider 중복을
+  숨기지 않고 ambiguity로 차단한다. self identity가 다른 행을 query replica로 합치지 않는다.
+  따라서 일부 호실이 기준 PNU에만, 다른 호실이 부속 PNU에만 존재해도 exact tuple로 매칭할
+  수 있다.
+- exact LDAREG multiset의 대응 raw row를 사용해 같은 logical component를 모든 target PNU에
+  복제한다. attached PNU의 expos `COMPLETE_ZERO`와 기준·부속 간 EXPOS 부분집합 분산은
+  모두 정상이며, scope 전체 후보가 비거나 tuple/root가 모호하면 전체를 차단한다.
 - exact replica이면 `(propertyUnitId, targetPnu)`별 component와 각
   `sourceRecord.pnu`를 모두 보존하되 같은 logical row에는 target PNU 비의존
   source identity v2를 부여한다.

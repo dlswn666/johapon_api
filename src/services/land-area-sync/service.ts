@@ -17,7 +17,11 @@ import {
     type BasePnuScan,
 } from './scope';
 import { BYLOT_SOURCE_POLICY, bylotBasisFallbackPlan } from './bylot';
-import { assembleAttachedPnus, type AtchJibunRowInput } from '../gis-shared/pnu';
+import {
+    assembleAttachedPnus,
+    buildingHubRowsMatchPnu,
+    type AtchJibunRowInput,
+} from '../gis-shared/pnu';
 import { buildScopeEvidence, buildScopeSnapshot, capIssues, sanitizeIssue, emptyCounts } from './preview';
 import {
     assembleLdaregApply,
@@ -543,6 +547,10 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
                 (row) =>
                     normalizeRegistryManagementPk(row.mgmBldrgstPk) === null ||
                     !isOptionalRegistryManagementPkValid(row.mgmUpBldrgstPk)
+            ) ||
+            !buildingHubRowsMatchPnu(
+                rows(expos) as Array<Record<string, unknown>>,
+                pnu
             )
         ) {
             await finalizeDiscoveryTerminal(deps, jobId, unionId, {

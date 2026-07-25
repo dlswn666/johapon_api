@@ -208,10 +208,27 @@ test('LDAREG LINKED 다세대: 한 PNU 의 ldareg page 실패 시 전체 FAILED,
     assert.ok(calls.some((c) => c.endpoint === 'ldaregList' && c.keyPnu === SIBLING), '비앵커 PNU 의 ldareg 도 조회');
 });
 
-test('실측형 LINKED: base만 title/expos nonzero, full scope LDAREG replica와 LADFRL 합계를 identity별 1회 투영한다', async () => {
+test('실측형 LINKED: base·attached에 나뉜 EXPOS와 property를 full scope에서 읽고 LDAREG identity별 1회 투영한다', async () => {
     const spy = emptySpy();
+    const attachedProperty = {
+        ...LDAREG_PROPERTY,
+        id: '22222222-2222-4222-8222-222222222222',
+        pnu: SIBLING,
+        ho: '201',
+    };
     const { calls } = await run({
-        resolver: linked([ANCHOR, SIBLING]),
+        resolver: linked([ANCHOR, SIBLING], [
+            {
+                propertyUnitId: LDAREG_PROPERTY.id,
+                pnu: ANCHOR,
+                buildingUnitId: null,
+            },
+            {
+                propertyUnitId: attachedProperty.id,
+                pnu: SIBLING,
+                buildingUnitId: null,
+            },
+        ]),
         routes: {
             // linkedBasePnus=[ANCHOR]이므로 title/bylot/attached gate scan은 base만 수행한다.
             getBrTitleInfo: () => hubEnv([titleRow(PK, '1', MULTIPLEX)]),
@@ -222,15 +239,25 @@ test('실측형 LINKED: base만 title/expos nonzero, full scope LDAREG replica�
                     ldaregRow(pnu, {
                         ldaQotaRate: '24.6/364.6',
                     }),
+                    ldaregRow(pnu, {
+                        agbldgSn: '2',
+                        buldFloorNm: '2층',
+                        buldHoNm: '201',
+                        ldaQotaRate: '10/364.6',
+                    }),
                 ]),
             ladfrlList: (pnu) =>
                 ladfrlEnv([
                     ladfrlRow(pnu, pnu === ANCHOR ? '177.6' : '187'),
                 ]),
             getBrExposInfo: (keyPnu) =>
-                keyPnu === hubKey(ANCHOR) ? hubEnv([exposRow()]) : hubEnv([]),
+                keyPnu === hubKey(ANCHOR)
+                    ? hubEnv([exposRow()])
+                    : hubEnv([
+                          exposRow(PK, '2층', '201', SIBLING),
+                      ]),
         },
-        propertyUnits: [LDAREG_PROPERTY],
+        propertyUnits: [LDAREG_PROPERTY, attachedProperty],
         applyResult: { data: { outcome: 'APPLIED', issues: [] }, error: null },
         spy,
     });
@@ -253,8 +280,18 @@ test('실측형 LINKED: base만 title/expos nonzero, full scope LDAREG replica�
         calls.some(
             (call) => call.endpoint === 'getBrExposInfo' && call.keyPnu === hubKey(SIBLING)
         ),
-        'attached expos COMPLETE_ZERO도 strict 조회'
+        'attached expos도 strict 조회'
     );
+    assert.deepEqual(spy.readScopes, [
+        {
+            reader: 'buildingUnits',
+            pnus: [ANCHOR, SIBLING],
+        },
+        {
+            reader: 'propertyUnits',
+            pnus: [ANCHOR, SIBLING],
+        },
+    ]);
     assert.equal(spy.applyCalls, 1);
 
     const params = spy.lastApplyParams as {
@@ -268,23 +305,47 @@ test('실측형 LINKED: base만 title/expos nonzero, full scope LDAREG replica�
             }>;
         }>;
     };
-    assert.equal(params.p_items.length, 1);
-    assert.deepEqual(params.p_items[0].expectedTargetPnus, [ANCHOR, SIBLING].sort());
-    assert.equal(params.p_items[0].components.length, 2, 'PNU별 provenance 보존');
-    assert.equal(
-        new Set(params.p_items[0].components.map((component) => component.sourceIdentity)).size,
-        1,
-        'target PNU 독립 identity'
-    );
-    assert.deepEqual(
-        params.p_items[0].components.map((component) => component.sourceRecord.pnu).sort(),
-        [ANCHOR, SIBLING].sort()
-    );
+    assert.equal(params.p_items.length, 2);
+    for (const item of params.p_items) {
+        assert.deepEqual(item.expectedTargetPnus, [ANCHOR, SIBLING].sort());
+        assert.equal(item.components.length, 2, 'PNU별 provenance 보존');
+        assert.equal(
+            new Set(
+                item.components.map(
+                    (component) => component.sourceIdentity
+                )
+            ).size,
+            1,
+            'target PNU 독립 identity'
+        );
+        assert.deepEqual(
+            item.components
+                .map((component) => component.sourceRecord.pnu)
+                .sort(),
+            [ANCHOR, SIBLING].sort()
+        );
+    }
 
     const snapshot = spy.frozenSnapshots[0].scopeSnapshot;
-    assert.deepEqual(snapshot.proposedLandAreas, [
-        { propertyUnitId: LDAREG_PROPERTY.id, landArea: '24.6' },
-    ]);
+    assert.deepEqual(
+        snapshot.proposedLandAreas
+            .slice()
+            .sort((left, right) =>
+                left.propertyUnitId.localeCompare(right.propertyUnitId)
+            ),
+        [
+            {
+                propertyUnitId: LDAREG_PROPERTY.id,
+                landArea: '24.6',
+            },
+            {
+                propertyUnitId: attachedProperty.id,
+                landArea: '10',
+            },
+        ].sort((left, right) =>
+            left.propertyUnitId.localeCompare(right.propertyUnitId)
+        )
+    );
     assert.deepEqual(snapshot.ladfrlAreaEvidence, {
         version: 'land-area-sync.ladfrl-scope.v1',
         parcels: [
@@ -294,8 +355,48 @@ test('실측형 LINKED: base만 title/expos nonzero, full scope LDAREG replica�
         totalArea: '364.6',
     });
     assert.equal(snapshot.replicationEvidence?.canonicalSourcePnu, ANCHOR);
-    assert.equal(snapshot.replicationEvidence?.rowCount, 1);
+    assert.equal(snapshot.replicationEvidence?.rowCount, 2);
     assert.equal(snapshot.replicationEvidence?.exactReplica, true);
+});
+
+test('LDAREG scope의 attached EXPOS가 다른 PNU row를 반환하면 apply 없이 FAILED로 닫는다', async () => {
+    const spy = emptySpy();
+    await run({
+        resolver: linked([ANCHOR, SIBLING]),
+        routes: {
+            getBrTitleInfo: () =>
+                hubEnv([titleRow(PK, '1', MULTIPLEX)]),
+            getBrAtchJibunInfo: (keyPnu) =>
+                keyPnu === hubKey(ANCHOR)
+                    ? hubEnv([attachedRow(ANCHOR, SIBLING)])
+                    : hubEnv([]),
+            ldaregList: (pnu) =>
+                ldaregEnv([ldaregRow(pnu)]),
+            ladfrlList: (pnu) =>
+                ladfrlEnv([
+                    ladfrlRow(
+                        pnu,
+                        pnu === ANCHOR ? '177.6' : '187'
+                    ),
+                ]),
+            getBrExposInfo: () =>
+                hubEnv([
+                    exposRow(PK, '3층', '301', ANCHOR),
+                ]),
+        },
+        propertyUnits: [LDAREG_PROPERTY],
+        spy,
+    });
+
+    assert.equal(spy.applyCalls, 0);
+    assert.equal(spy.terminalCalls[0].status, 'FAILED');
+    assert.equal(spy.terminalCalls[0].scopeState, 'FAILED');
+    assert.deepEqual(spy.terminalIssues[0], [
+        {
+            code: 'PROVIDER_PROTOCOL_ERROR',
+            targetPnu: SIBLING,
+        },
+    ]);
 });
 
 // ── 6. COMPLETE_ZERO 5종 outcome 분리 (§10.7·§14.2) ────────────────
