@@ -103,6 +103,45 @@ artifact는 `manifestDigest`에 결합한다. 따라서 같은 대표·부속 al
 이 target은 read-only evidence workflow에만 등록한다. live evidence와 별도 DB approval
 bundle이 저장소에 승인되기 전에는 write workflow 선택지로 승격하지 않는다.
 
+### `791-2280 → 791-2281` 공식 관계 채택 runner
+
+Phase 0에서 확인한 공식 건축물대장 관계를 개발 DB에 채택하는 작업은 대지권 면적
+apply와 분리한다. 저장소 승인 target은 기준 PNU `1130510100107912280`, 부속 PNU
+`1130510100107912281`, 관리번호 `10101100184244`, 활성 물건 4건으로 exact 고정한다.
+이 runner는 수동 대지권 값을 source, blocker, fallback 어느 용도로도 읽지 않으며 공개
+artifact의 `manualDataUsage` 세 카운터가 모두 0일 때만 PASS할 수 있다.
+
+실행 전에 pin한 Phase 0 run `30146538770`의 artifact 파일 SHA-256
+`c386a5dc44cb50beb876a0e3713803c0d6b812938844214037d5e22b65c8b4fe`와 schema,
+관리번호·기준·부속 PNU hash 및 pair digest를 저장소 manifest와 다시 대조한다. 이어서
+Building HUB 표제부, 총괄표제부, 부속지번 3개 endpoint를 새로 strict 조회하여 모두
+`COMPLETE`, root 관리번호 exact-one, `bylotCnt=1`, 기준·부속 pair exact-one,
+reject 0을 요구한다. 총괄표제부 root record의 `mgmUpBldrgstPk='0'`은 sentinel로
+해석하고 자기 `mgmBldrgstPk`를 root로 사용한다.
+
+DB write 직전 inspector가 반환한 활성 물건 membership digest를 실행 target digest에
+결합한다. 기존 land-area approval은 pre/post 모두 disabled이고 stable digest가
+불변이어야 한다. relation 전용 15분 TTL approval은 DB owner/Supabase admin이 실행
+revision과 exact target digest에 맞춰 별도 설치한다. API service-role runner에는 approval
+설치·교체 권한을 부여하지 않는다. runner는 inspector에서 사전 설치된 approval이
+exact-one, enabled, 미소비, unexpired 상태이며 runtime target digest와 일치하는지만
+검증한 뒤 `adopt_development_verified_building_registry_relation_v1`이 transaction 안에서
+원자 소비하도록 한다. 기존 `replace_land_area_sync_approval_manifest_v1`과 relation
+approval replace RPC는 이 경로에서 모두 호출하지 않는다.
+
+adoption 응답이 commit 뒤 유실될 수 있으므로 동일한 `syncJobId`와 동일한 exact RPC
+인자를 최대 3회까지만 재호출한다. RPC는 첫 commit의 durable operation을 찾아 `REUSED`
+receipt를 반환해야 하며, 다른 인자 또는 다른 target digest로의 재사용은 거부한다.
+postflight는 approval이 consumed 상태로 바뀌었는지도 exact 검증한다.
+
+postflight는 target relation이 exact-one `ACTIVE/LINKED`, property membership 불변,
+비대상 relation과 land-area 관련 canonical digest 불변을 요구한다. inspector의
+operation attribution은 sync job, operation, base input PNU, command, observation,
+observation pair, group state, relation이 각각 1건이고 projection status가 `LINKED`여야
+한다. target·Phase 0 manifest·Phase 0 artifact는 배포 컨테이너의 mode 700 비공개
+디렉터리로만 전달하고 종료 시 삭제한다. 업로드 artifact에는 원 PNU, 관리번호, property
+ID를 넣지 않는다.
+
 부분 wave가 실패해도 runner는 postflight를 생략하지 않는다. 성공 terminal이 확정된
 anchor만 expected tuple과 writer attribution을 검사하고, 실패·미실행 anchor는 prestate
 불변을 요구한다. 타 조합·비대상 write, non-target tuple 변화, 미확정 anchor 변화는 기존

@@ -1,0 +1,501 @@
+name: Development Building Registry Relation Adoption
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Repository-approved development relation target
+        required: true
+        type: choice
+        default: mia-seven-791-2280-2281-20260725
+        options:
+          - mia-seven-791-2280-2281-20260725
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  adopt:
+    name: Adopt verified API relation in development
+    runs-on: ubuntu-latest
+    environment: land-area-sync-development-write
+    timeout-minutes: 65
+    steps:
+      - name: Require approved main revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Relation adoption must run from refs/heads/main."
+            exit 1
+          fi
+          if [[ ! "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::GitHub revision is invalid."
+            exit 1
+          fi
+
+      - name: Checkout exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Compile and verify guarded runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          node --import tsx --test \
+            tests/development-building-registry-relation-adoption.test.ts \
+            tests/development-building-registry-relation-adoption-workflow.test.ts \
+            tests/property-building-link-writer-guard.test.ts
+          node scripts/check-property-building-link-writers.mjs
+          bash -n \
+            scripts/development-building-registry-relation-adoption-guardian.sh
+
+      - name: Resolve repository-approved target
+        id: target
+        shell: bash
+        env:
+          TARGET_NAME: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          case "${TARGET_NAME}" in
+            mia-seven-791-2280-2281-20260725)
+              target_path="development-building-registry-relation-adoption-manifests/mia-seven-791-2280-2281-target-20260725.json"
+              phase0_manifest_path="phase0-manifests/mia-seven-791-2280-base-attached-first-observation-20260725.json"
+              phase0_run_id="30146538770"
+              phase0_artifact_name="land-area-phase0-mia-seven-791-2280-base-attached-first-observation-20260725-30146538770"
+              ;;
+            *)
+              echo "::error::Target is not repository-approved."
+              exit 1
+              ;;
+          esac
+          if [[ ! -f "${target_path}" || -L "${target_path}" ]]; then
+            echo "::error::Target must be a regular repository file."
+            exit 1
+          fi
+          if [[ ! -f "${phase0_manifest_path}" || -L "${phase0_manifest_path}" ]]; then
+            echo "::error::Phase 0 manifest must be a regular repository file."
+            exit 1
+          fi
+          node - "${target_path}" "${phase0_run_id}" <<'NODE'
+          const fs = require("node:fs");
+          const {
+            parseDevelopmentRelationAdoptionTarget,
+          } = require("./dist/operations/development-building-registry-relation-adoption.js");
+          const target = parseDevelopmentRelationAdoptionTarget(
+            JSON.parse(fs.readFileSync(process.argv[2], "utf8"))
+          );
+          if (target.phase0.runId !== process.argv[3]) process.exit(1);
+          NODE
+          {
+            echo "target_path=${target_path}"
+            echo "phase0_manifest_path=${phase0_manifest_path}"
+            echo "phase0_run_id=${phase0_run_id}"
+            echo "phase0_artifact_name=${phase0_artifact_name}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Download and pin the prior Phase 0 artifact
+        id: phase0
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PHASE0_RUN_ID: ${{ steps.target.outputs.phase0_run_id }}
+          PHASE0_ARTIFACT_NAME: ${{ steps.target.outputs.phase0_artifact_name }}
+          TARGET_PATH: ${{ steps.target.outputs.target_path }}
+        run: |
+          set -euo pipefail
+          run_json="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${PHASE0_RUN_ID}"
+          )"
+          if [[
+            "$(jq -r '.status' <<< "${run_json}")" != "completed"
+            || "$(jq -r '.conclusion' <<< "${run_json}")" != "success"
+          ]]; then
+            echo "::error::Pinned Phase 0 run is not successful."
+            exit 1
+          fi
+          artifacts_json="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${PHASE0_RUN_ID}/artifacts?per_page=100"
+          )"
+          artifact_count="$(
+            jq --arg name "${PHASE0_ARTIFACT_NAME}" \
+              '[.artifacts[] | select(.name == $name and .expired == false)] | length' \
+              <<< "${artifacts_json}"
+          )"
+          if [[ "${artifact_count}" != "1" ]]; then
+            echo "::error::Pinned Phase 0 artifact is missing or ambiguous."
+            exit 1
+          fi
+          artifact_id="$(
+            jq -r --arg name "${PHASE0_ARTIFACT_NAME}" \
+              '.artifacts[] | select(.name == $name and .expired == false) | .id' \
+              <<< "${artifacts_json}"
+          )"
+          download_root="$(mktemp -d)"
+          cleanup_download() {
+            rm -f -- "${download_root}/artifact.zip"
+            find "${download_root}/unzipped" -type f -delete 2>/dev/null || true
+            find "${download_root}/unzipped" -depth -type d -empty -delete 2>/dev/null || true
+            rmdir -- "${download_root}" 2>/dev/null || true
+          }
+          trap cleanup_download EXIT
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            > "${download_root}/artifact.zip"
+          mkdir -m 700 -- "${download_root}/unzipped"
+          unzip -qq "${download_root}/artifact.zip" \
+            -d "${download_root}/unzipped"
+          mapfile -t artifact_files < <(
+            find "${download_root}/unzipped" \
+              -type f -name artifact.json -print
+          )
+          if [[ "${#artifact_files[@]}" -ne 1 ]]; then
+            echo "::error::Phase 0 artifact payload is ambiguous."
+            exit 1
+          fi
+          phase0_source="${artifact_files[0]}"
+          if [[ -L "${phase0_source}" ]]; then
+            echo "::error::Phase 0 artifact cannot be a symlink."
+            exit 1
+          fi
+          expected_sha="$(
+            node -e '
+              const fs = require("node:fs");
+              const target = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              process.stdout.write(target.phase0.artifactSha256);
+            ' "${TARGET_PATH}"
+          )"
+          actual_sha="$(sha256sum "${phase0_source}" | awk '{print $1}')"
+          if [[ "${actual_sha}" != "${expected_sha}" ]]; then
+            echo "::error::Pinned Phase 0 artifact SHA256 mismatch."
+            exit 1
+          fi
+          if [[ -e phase0-download || -L phase0-download ]]; then
+            echo "::error::Local Phase 0 staging path must not pre-exist."
+            exit 1
+          fi
+          mkdir -m 700 -- phase0-download
+          install -m 600 "${phase0_source}" \
+            phase0-download/artifact.json
+          echo "phase0_path=phase0-download/artifact.json" \
+            >> "${GITHUB_OUTPUT}"
+          cleanup_download
+          trap - EXIT
+
+      - name: Configure pinned EC2 SSH identity
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_FINGERPRINT: ${{ secrets.EC2_SSH_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          for variable_name in \
+            EC2_HOST \
+            EC2_USERNAME \
+            EC2_SSH_KEY \
+            EC2_SSH_FINGERPRINT
+          do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "::error::Missing required EC2 connection secret."
+              exit 1
+            fi
+          done
+          if [[ ! "${EC2_USERNAME}" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+            echo "::error::EC2 username format is invalid."
+            exit 1
+          fi
+          if [[
+            ${#EC2_HOST} -gt 253
+            || ! "${EC2_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$
+          ]]; then
+            echo "::error::EC2 host format is invalid."
+            exit 1
+          fi
+          install -d -m 700 "${HOME}/.ssh"
+          install -m 600 /dev/null "${HOME}/.ssh/id_ed25519"
+          printf '%s\n' "${EC2_SSH_KEY}" > "${HOME}/.ssh/id_ed25519"
+          host_keys="$(
+            ssh-keyscan -T 10 -t ed25519,ecdsa,rsa \
+              "${EC2_HOST}" 2>/dev/null
+          )"
+          matched_host_key=""
+          while IFS= read -r host_key; do
+            fingerprint="$(
+              printf '%s\n' "${host_key}" \
+                | ssh-keygen -lf - -E sha256 \
+                | awk '{print $2}'
+            )"
+            if [[ "${fingerprint}" == "${EC2_SSH_FINGERPRINT}" ]]; then
+              matched_host_key="${host_key}"
+              break
+            fi
+          done <<< "${host_keys}"
+          if [[ -z "${matched_host_key}" ]]; then
+            echo "::error::EC2 SSH fingerprint mismatch."
+            exit 1
+          fi
+          printf '%s\n' "${matched_host_key}" \
+            > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/known_hosts"
+
+      - name: Run exact deployed guarded adoption
+        id: remote
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          TARGET_PATH: ${{ steps.target.outputs.target_path }}
+          PHASE0_MANIFEST_PATH: ${{ steps.target.outputs.phase0_manifest_path }}
+          PHASE0_PATH: ${{ steps.phase0.outputs.phase0_path }}
+          GUARDIAN_PATH: scripts/development-building-registry-relation-adoption-guardian.sh
+          RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+          EXPECTED_GIT_SHA: ${{ github.sha }}
+          EXPECTED_IMAGE_TAG: ghcr.io/dlswn666/alimtalk-proxy:${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          if [[ ! "${RUN_KEY}" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "::error::Invalid run key."
+            exit 1
+          fi
+          ssh_options=(
+            -i "${HOME}/.ssh/id_ed25519"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=40
+            -o "UserKnownHostsFile=${HOME}/.ssh/known_hosts"
+          )
+          remote_root="alimtalk-proxy/.development-building-relation-adoption-workflow/${RUN_KEY}"
+          cleanup_finished=0
+
+          cleanup_remote() {
+            ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+              "RUN_KEY='${RUN_KEY}' bash -s" <<'REMOTE_CLEANUP'
+          set -euo pipefail
+          run_root="${HOME}/alimtalk-proxy/.development-building-relation-adoption-workflow/${RUN_KEY}"
+          operation_lock="${HOME}/alimtalk-proxy/.land-area-sync-operation.lock"
+          test -f "${operation_lock}"
+          test ! -L "${operation_lock}"
+          exec 9>>"${operation_lock}"
+          flock -w 30 9
+          test -d "${run_root}"
+          test ! -L "${run_root}"
+          rm -f -- \
+            "${run_root}/target.json" \
+            "${run_root}/phase0-manifest.json" \
+            "${run_root}/phase0-artifact.json" \
+            "${run_root}/guardian.sh" \
+            "${run_root}/guardian.log" \
+            "${run_root}/guardian.pid" \
+            "${run_root}/guardian-started" \
+            "${run_root}/artifact.json" \
+            "${run_root}/status" \
+            "${run_root}/validated"
+          rmdir -- "${run_root}"
+          REMOTE_CLEANUP
+          }
+
+          finish_step() {
+            local prior_status="$?"
+            trap - EXIT
+            if [[ "${cleanup_finished}" -ne 1 ]]; then
+              cleanup_remote || true
+            fi
+            exit "${prior_status}"
+          }
+          trap finish_step EXIT
+
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "RUN_KEY='${RUN_KEY}' bash -s" <<'REMOTE_PREPARE'
+          set -euo pipefail
+          application_root="${HOME}/alimtalk-proxy"
+          parent="${application_root}/.development-building-relation-adoption-workflow"
+          run_root="${parent}/${RUN_KEY}"
+          test -d "${application_root}"
+          test ! -L "${application_root}"
+          if [[ -e "${parent}" || -L "${parent}" ]]; then
+            test -d "${parent}"
+            test ! -L "${parent}"
+          else
+            mkdir -m 700 -- "${parent}"
+          fi
+          test ! -e "${run_root}"
+          test ! -L "${run_root}"
+          mkdir -m 700 -- "${run_root}"
+          REMOTE_PREPARE
+
+          scp "${ssh_options[@]}" "${TARGET_PATH}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/target.json"
+          scp "${ssh_options[@]}" "${PHASE0_MANIFEST_PATH}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/phase0-manifest.json"
+          scp "${ssh_options[@]}" "${PHASE0_PATH}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/phase0-artifact.json"
+          scp "${ssh_options[@]}" "${GUARDIAN_PATH}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/guardian.sh"
+
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "RUN_KEY='${RUN_KEY}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' EXPECTED_IMAGE_TAG='${EXPECTED_IMAGE_TAG}' bash -s" <<'REMOTE_START'
+          set -euo pipefail
+          run_root="${HOME}/alimtalk-proxy/.development-building-relation-adoption-workflow/${RUN_KEY}"
+          chmod 600 \
+            "${run_root}/target.json" \
+            "${run_root}/phase0-manifest.json" \
+            "${run_root}/phase0-artifact.json" \
+            "${run_root}/guardian.sh"
+          nohup setsid env \
+            RUN_KEY="${RUN_KEY}" \
+            EXPECTED_GIT_SHA="${EXPECTED_GIT_SHA}" \
+            EXPECTED_IMAGE_TAG="${EXPECTED_IMAGE_TAG}" \
+            bash "${run_root}/guardian.sh" \
+            > "${run_root}/guardian.log" 2>&1 < /dev/null &
+          guardian_pid="$!"
+          printf '%s\n' "${guardian_pid}" > "${run_root}/guardian.pid"
+          chmod 600 "${run_root}/guardian.pid" "${run_root}/guardian.log"
+          REMOTE_START
+
+          completed=0
+          for _attempt in $(seq 1 390); do
+            if ssh "${ssh_options[@]}" \
+              "${EC2_USERNAME}@${EC2_HOST}" \
+              "test -f '${remote_root}/status'"
+            then
+              completed=1
+              break
+            fi
+            sleep 10
+          done
+          if [[ "${completed}" -ne 1 ]]; then
+            echo "::error::Guardian did not publish terminal status."
+            exit 1
+          fi
+
+          if [[ -e development-building-relation-output || -L development-building-relation-output ]]; then
+            echo "::error::Local output directory must not pre-exist."
+            exit 1
+          fi
+          mkdir -m 700 -- development-building-relation-output
+          scp "${ssh_options[@]}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/status" \
+            development-building-relation-output/status
+          runner_status="$(
+            tr -d '[:space:]' \
+              < development-building-relation-output/status
+          )"
+          if [[ "${runner_status}" == "0" || "${runner_status}" == "1" ]]; then
+            scp "${ssh_options[@]}" \
+              "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/artifact.json" \
+              development-building-relation-output/artifact.json
+            scp "${ssh_options[@]}" \
+              "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/validated" \
+              development-building-relation-output/validated
+          fi
+          cleanup_remote
+          cleanup_finished=1
+          trap - EXIT
+
+      - name: Revalidate private sanitized artifact
+        id: validate
+        if: always() && hashFiles('development-building-relation-output/artifact.json') != '' && hashFiles('development-building-relation-output/validated') != ''
+        shell: bash
+        env:
+          TARGET_PATH: ${{ steps.target.outputs.target_path }}
+          SOURCE_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          artifact="development-building-relation-output/artifact.json"
+          validated="development-building-relation-output/validated"
+          artifact_sha="$(sha256sum "${artifact}" | awk '{print $1}')"
+          expected="DEVELOPMENT_BUILDING_REGISTRY_RELATION_ADOPTION_ARTIFACT_VALIDATED:${artifact_sha}"
+          if [[ "$(tr -d '\r\n' < "${validated}")" != "${expected}" ]]; then
+            echo "::error::Remote artifact attestation mismatch."
+            exit 1
+          fi
+          validation_root="$(mktemp -d)"
+          private_root="${validation_root}/.development-building-registry-relation-adoption"
+          mkdir -m 700 -- "${private_root}"
+          cleanup_validation() {
+            rm -f -- "${private_root}/target.json" "${private_root}/artifact.json"
+            rmdir -- "${private_root}" "${validation_root}"
+          }
+          trap cleanup_validation EXIT
+          install -m 600 "${TARGET_PATH}" "${private_root}/target.json"
+          install -m 600 "${artifact}" "${private_root}/artifact.json"
+          validation_output="$(
+            cd "${validation_root}"
+            node "${GITHUB_WORKSPACE}/dist/cli/development-building-registry-relation-adoption-validate.js" \
+              --target ".development-building-registry-relation-adoption/target.json" \
+              --artifact ".development-building-registry-relation-adoption/artifact.json" \
+              --source-release-sha "${SOURCE_RELEASE_SHA}"
+          )"
+          if [[ "${validation_output}" != "DEVELOPMENT_BUILDING_REGISTRY_RELATION_ADOPTION_ARTIFACT_VALIDATED" ]]; then
+            echo "::error::Repository validator rejected artifact."
+            exit 1
+          fi
+          printf '%s\n' "${expected}" \
+            > development-building-relation-output/validated-runner
+          chmod 600 \
+            development-building-relation-output/validated-runner \
+            "${artifact}"
+
+      - name: Upload private sanitized artifact
+        if: always() && steps.validate.outcome == 'success' && hashFiles('development-building-relation-output/validated-runner') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: development-building-relation-${{ inputs.target }}-${{ github.run_id }}
+          path: development-building-relation-output/artifact.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce adoption gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status_file="development-building-relation-output/status"
+          artifact_file="development-building-relation-output/artifact.json"
+          validation_file="development-building-relation-output/validated-runner"
+          if [[
+            ! -f "${status_file}"
+            || ! -f "${artifact_file}"
+            || ! -f "${validation_file}"
+            || -L "${status_file}"
+            || -L "${artifact_file}"
+            || -L "${validation_file}"
+          ]]; then
+            echo "::error::Validated adoption output is incomplete."
+            exit 1
+          fi
+          runner_status="$(tr -d '[:space:]' < "${status_file}")"
+          gate_status="$(
+            node -e '
+              const fs = require("node:fs");
+              const artifact = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              process.stdout.write(String(artifact?.gate?.status ?? ""));
+            ' "${artifact_file}"
+          )"
+          {
+            echo "### Development building relation adoption"
+            echo
+            echo "- Target: \`${{ inputs.target }}\`"
+            echo "- Gate: \`${gate_status}\`"
+            echo "- Approval: preinstalled DB-owner approval consumed only"
+            echo "- Production writes: \`0 (development client pin boundary)\`"
+            echo "- Artifact: private sanitized JSON uploaded"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [[ "${runner_status}" != "0" || "${gate_status}" != "PASS" ]]; then
+            echo "::error::Development relation adoption gate did not pass."
+            exit 1
+          fi
