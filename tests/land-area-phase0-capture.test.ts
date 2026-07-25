@@ -24,6 +24,7 @@ import type {
 import {
     LAND_AREA_PHASE0_ARTIFACT_SCHEMA_HASH,
     LAND_AREA_PHASE0_MANIFEST_VERSION,
+    LAND_AREA_PHASE0_MANIFEST_VERSION_V2,
     buildLandAreaPhase0CapturePlan,
     captureLandAreaPhase0,
     parseLandAreaPhase0Manifest,
@@ -272,6 +273,56 @@ test('manifest: version+samples와 ZERO/POSITIVE 최소 1개만 허용한다', (
                 samples: [{ alias: 'zero-only', expectedBylot: 'ZERO', pnu: ZERO_PNU }],
             }),
         /ZERO와 POSITIVE/
+    );
+});
+
+test('manifest v2는 expectedBylot과 expectedFamily를 독립적으로 exact 검증한다', () => {
+    const v2 = {
+        version: LAND_AREA_PHASE0_MANIFEST_VERSION_V2,
+        samples: [
+            {
+                alias: 'zero-ldareg',
+                expectedBylot: 'ZERO',
+                expectedFamily: 'LDAREG',
+                pnu: ZERO_PNU,
+            },
+            {
+                alias: 'positive-ladfrl',
+                expectedBylot: 'POSITIVE',
+                expectedFamily: 'LADFRL',
+                pnu: POSITIVE_PNU,
+            },
+        ],
+    } as const;
+    assert.deepEqual(parseLandAreaPhase0Manifest(v2), v2);
+    assert.throws(
+        () =>
+            parseLandAreaPhase0Manifest({
+                ...v2,
+                samples: v2.samples.map(
+                    ({ expectedFamily: _omitted, ...sample }) => sample
+                ),
+            }),
+        /expectedFamily/
+    );
+    assert.throws(
+        () =>
+            parseLandAreaPhase0Manifest({
+                ...v2,
+                samples: [
+                    { ...v2.samples[0], expectedFamily: 'MANUAL' },
+                    v2.samples[1],
+                ],
+            }),
+        /expectedFamily/
+    );
+    assert.throws(
+        () =>
+            parseLandAreaPhase0Manifest({
+                version: LAND_AREA_PHASE0_MANIFEST_VERSION,
+                samples: v2.samples,
+            }),
+        /허용되지 않은 키/
     );
 });
 
@@ -530,19 +581,29 @@ test('부속지번 0개 다세대는 expectedBylot과 무관하게 공식 분류
             ]);
         },
     });
-    const approvedManifest = manifest([
-        { alias: 'zero-control', expectedBylot: 'ZERO', pnu: ZERO_PNU },
-        {
-            alias: 'positive-control',
-            expectedBylot: 'POSITIVE',
-            pnu: POSITIVE_PNU,
-        },
-        {
-            alias: 'single-parcel-multiplex',
-            expectedBylot: 'ZERO',
-            pnu: SINGLE_PARCEL_MULTIPLEX_PNU,
-        },
-    ]);
+    const approvedManifest: LandAreaPhase0CaptureManifest = {
+        version: LAND_AREA_PHASE0_MANIFEST_VERSION_V2,
+        samples: [
+            {
+                alias: 'zero-control',
+                expectedBylot: 'ZERO',
+                expectedFamily: 'LADFRL',
+                pnu: ZERO_PNU,
+            },
+            {
+                alias: 'positive-control',
+                expectedBylot: 'POSITIVE',
+                expectedFamily: 'LDAREG',
+                pnu: POSITIVE_PNU,
+            },
+            {
+                alias: 'single-parcel-multiplex',
+                expectedBylot: 'ZERO',
+                expectedFamily: 'LDAREG',
+                pnu: SINGLE_PARCEL_MULTIPLEX_PNU,
+            },
+        ],
+    };
 
     const artifact = await captureLandAreaPhase0({
         manifest: approvedManifest,
@@ -569,6 +630,22 @@ test('부속지번 0개 다세대는 expectedBylot과 무관하게 공식 분류
             artifact
         ),
         artifact
+    );
+    const wrongFamilyManifest: LandAreaPhase0CaptureManifest = {
+        ...approvedManifest,
+        samples: approvedManifest.samples.map((sample) =>
+            sample.pnu === SINGLE_PARCEL_MULTIPLEX_PNU
+                ? { ...sample, expectedFamily: 'LADFRL' }
+                : sample
+        ),
+    };
+    assert.throws(
+        () =>
+            validateLandAreaPhase0CaptureArtifact(
+                wrongFamilyManifest,
+                artifact
+            ),
+        /manifest housing family/
     );
 });
 
@@ -3454,16 +3531,18 @@ test('미아7 중복 없는 다세대 6개 Phase 0 manifest는 단일필지 가�
     );
     const manifestRaw = await readFile(manifestPath, 'utf8');
     const expectedManifest = {
-        version: LAND_AREA_PHASE0_MANIFEST_VERSION,
+        version: LAND_AREA_PHASE0_MANIFEST_VERSION_V2,
         samples: [
             {
                 alias: 'mia7-zero-control',
                 expectedBylot: 'ZERO',
+                expectedFamily: 'LADFRL',
                 pnu: '1130510100107912166',
             },
             {
                 alias: 'mia7-positive-control',
                 expectedBylot: 'POSITIVE',
+                expectedFamily: 'LDAREG',
                 pnu: '1130510100107450049',
             },
             ...[
@@ -3476,6 +3555,7 @@ test('미아7 중복 없는 다세대 6개 Phase 0 manifest는 단일필지 가�
             ].map((pnu) => ({
                 alias: `mia7-mf-791-${pnu.slice(-4)}`,
                 expectedBylot: 'ZERO' as const,
+                expectedFamily: 'LDAREG' as const,
                 pnu,
             })),
         ],
@@ -3488,7 +3568,7 @@ test('미아7 중복 없는 다세대 6개 Phase 0 manifest는 단일필지 가�
     );
     assert.equal(
         createHash('sha256').update(manifestRaw).digest('hex'),
-        '462295b3021ba8c00807225d52cc12a4124ca69f8c70c8cf2a604a430c152dc6'
+        'a70c4c226cbcf9145c77647c55fab255a9764725a44336af15180a2beb088589'
     );
 
     const workflow = await readFile(
