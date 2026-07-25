@@ -2229,12 +2229,10 @@ function buildSampleArtifact(
         failureCodes.add('EXPOS_PK_INVALID');
     }
     const reviewCodes = new Set<string>();
-    const expectedFamily =
-        raw.sample.expectedBylot === 'POSITIVE' ? 'LDAREG' : 'LADFRL';
-    if (
-        classification.kind !== 'CLASSIFIED' ||
-        classification.family !== expectedFamily
-    ) {
+    // expectedBylot은 부속지번 개수에 대한 가설일 뿐 주택 유형이나
+    // 대지권 자료군을 뜻하지 않는다. 단일 필지(0개 부속지번)인
+    // 다세대주택도 공식 표제부 분류가 LDAREG이면 그대로 허용한다.
+    if (classification.kind !== 'CLASSIFIED') {
         failureCodes.add('HOUSING_CLASSIFICATION_ALLOWLIST_MISMATCH');
     }
     if (titleCounts.hasInvalidPk || titlePkInvalid)
@@ -2455,7 +2453,7 @@ function buildSampleArtifact(
         }
     }
 
-    if (raw.sample.expectedBylot === 'POSITIVE') {
+    if (ldaregRequired) {
         const validLdaregRecords = ldaregResult.records.filter(
             (record) => record.quotaRatioState === 'VALID'
         );
@@ -2584,6 +2582,36 @@ function hasPositiveLdaregEvidence(
             }
         )
     );
+}
+
+function captureHousingFamily(
+    raw: SampleRawCapture
+): 'LADFRL' | 'LDAREG' | null {
+    const titleRows = rowsOf(raw.title);
+    const rootIdentities = [
+        ...new Set(
+            titleRows
+                .map((row) =>
+                    normalizeRegistryManagementPk(row.mgmBldrgstPk)
+                )
+                .filter((value): value is string => value !== null)
+        ),
+    ];
+    const classification = classifyHousingType({
+        titleRows: titleRows.map((row) => ({
+            regstrGbCd: row.regstrGbCd,
+            mainPurpsCd: row.mainPurpsCd,
+            mainPurpsCdNm: row.mainPurpsCdNm,
+            etcPurps:
+                typeof row.etcPurps === 'string'
+                    ? row.etcPurps
+                    : undefined,
+        })),
+        rootIdentities,
+    });
+    return classification.kind === 'CLASSIFIED'
+        ? classification.family
+        : null;
 }
 
 async function safeScan<T>(
@@ -2743,30 +2771,31 @@ export async function captureLandAreaPhase0(input: {
         )
     ) {
         for (const sample of artifacts) {
-            if (sample.expectedBylot === 'POSITIVE') {
-                sample.failureCodes = [
-                    ...new Set([
-                        ...sample.failureCodes,
-                        'LADFRL_POSITIVE_EVIDENCE_MISSING',
-                    ]),
-                ].sort();
-            }
+            sample.failureCodes = [
+                ...new Set([
+                    ...sample.failureCodes,
+                    'LADFRL_POSITIVE_EVIDENCE_MISSING',
+                ]),
+            ].sort();
         }
     }
+    const ldaregCaptureIndexes = rawCaptures
+        .map((raw, index) => ({ raw, index }))
+        .filter(({ raw }) => captureHousingFamily(raw) === 'LDAREG');
     if (
-        !rawCaptures.some((raw) =>
+        ldaregCaptureIndexes.length > 0 &&
+        !ldaregCaptureIndexes.some(({ raw }) =>
             hasPositiveLdaregEvidence(raw, isSensitive)
         )
     ) {
-        for (const sample of artifacts) {
-            if (sample.expectedBylot === 'POSITIVE') {
-                sample.failureCodes = [
-                    ...new Set([
-                        ...sample.failureCodes,
-                        'LDAREG_POSITIVE_EVIDENCE_MISSING',
-                    ]),
-                ].sort();
-            }
+        for (const { index } of ldaregCaptureIndexes) {
+            const sample = artifacts[index];
+            sample.failureCodes = [
+                ...new Set([
+                    ...sample.failureCodes,
+                    'LDAREG_POSITIVE_EVIDENCE_MISSING',
+                ]),
+            ].sort();
         }
     }
     const failureCodes = new Set(
