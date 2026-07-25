@@ -395,6 +395,42 @@ test('fresh strict scan은 COMPLETE 3종, exact base/root/bylot/pair와 Phase0 h
     );
 });
 
+test('fresh Building HUB 3종은 같은 service key로 동시에 호출하지 않는다', async () => {
+    let activeRequests = 0;
+    let maximumActiveRequests = 0;
+    const starts: string[] = [];
+    const guardedScan = async <T>(
+        name: string,
+        rows: T[]
+    ): Promise<StrictScan<T>> => {
+        starts.push(name);
+        activeRequests += 1;
+        maximumActiveRequests = Math.max(
+            maximumActiveRequests,
+            activeRequests
+        );
+        await Promise.resolve();
+        activeRequests -= 1;
+        return complete(rows);
+    };
+
+    await scanAndValidateDevelopmentOfficialRelation({
+        target: makeTarget(),
+        adapter: {
+            scanTitle: async () =>
+                guardedScan('title', titleRows),
+            scanBasis: async () =>
+                guardedScan('basis', basisRows),
+            scanAttached: async () =>
+                guardedScan('attached', attachedRows),
+        },
+        serviceKey: 'secret',
+    });
+
+    assert.equal(maximumActiveRequests, 1);
+    assert.deepEqual(starts, ['title', 'basis', 'attached']);
+});
+
 test('부속 pair가 달라지면 DB 승인 이전에 fail-close한다', async () => {
     await assert.rejects(
         scanAndValidateDevelopmentOfficialRelation({
