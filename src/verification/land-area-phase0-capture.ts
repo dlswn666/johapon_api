@@ -919,7 +919,8 @@ function unitIdentity(
                     .map((value) => {
                         const scalar = String(value);
                         return options.floor
-                            ? evidenceOptions.allowPhase0V2LdaregEvidence
+                            ? evidenceOptions.allowPhase0V2LdaregEvidence &&
+                              kind === 'LDAREG_UNIT'
                                 ? normalizePhase0FloorLabel(scalar)
                                 : normalizeFloorLabel(scalar)
                             : normalizeUnitSegment(scalar);
@@ -1001,7 +1002,7 @@ function normalizePhase0FloorLabel(
     const compact = String(raw)
         .normalize('NFKC')
         .replace(/\s+/g, '');
-    const above = /^지상([1-9]\d*)층?$/u.exec(compact);
+    const above = /^지상([1-9]\d*)층$/u.exec(compact);
     return above
         ? normalizeUnitSegment(above[1])
         : normalizeFloorLabel(compact);
@@ -1037,7 +1038,7 @@ function exactAliasScalar(
 }
 
 function positiveAboveFloorToken(value: string): string | null {
-    const match = /^([1-9]\d*)층?$/u.exec(value);
+    const match = /^([1-9]\d*)$/u.exec(value);
     if (!match) return null;
     return `ABOVE:${normalizeUnitSegment(match[1])}`;
 }
@@ -1059,7 +1060,7 @@ function phase0FloorAsUnitWitness(
 
     if (kind === 'LDAREG_UNIT') {
         const rawHo = exactAliasScalar(row, ['buldHoNm', 'hoNm']);
-        if (rawHo === null || !/^0+$/u.test(rawHo)) return null;
+        if (rawHo !== '0000') return null;
         const rawFloor = exactAliasScalar(row, [
             'buldFloorNm',
             'flrNoNm',
@@ -1079,6 +1080,8 @@ function phase0FloorAsUnitWitness(
         const above = /^([1-9]\d*)층$/u.exec(rawHo);
         if (
             above &&
+            exactAliasScalar(row, ['flrNo']) ===
+                normalizeUnitSegment(above[1]) &&
             tuple.floor === normalizeUnitSegment(above[1]) &&
             exactAliasScalar(row, ['flrGbCd']) === '20'
         ) {
@@ -1086,7 +1089,9 @@ function phase0FloorAsUnitWitness(
             shape = PHASE0_FLOOR_AS_UNIT_ABOVE_SHAPE;
         } else if (
             rawHo === '지층' &&
-            exactAliasScalar(row, ['flrGbCd']) === '10'
+            exactAliasScalar(row, ['flrGbCd']) === '10' &&
+            exactAliasScalar(row, ['flrNo']) === '1' &&
+            tuple.floor === '1'
         ) {
             token = 'BASEMENT:GENERIC';
             shape = PHASE0_FLOOR_AS_UNIT_BASEMENT_SHAPE;
@@ -2191,6 +2196,10 @@ function phase0HousingFamilyFromTitleRows(
             registryTypeCode:
                 typeof row.regstrGbCd === 'string'
                     ? row.regstrGbCd.trim()
+                    : undefined,
+            registryTypeLabel:
+                typeof row.regstrGbCdNm === 'string'
+                    ? row.regstrGbCdNm.trim()
                     : undefined,
             mainPurposeCode:
                 typeof row.mainPurpsCd === 'string'

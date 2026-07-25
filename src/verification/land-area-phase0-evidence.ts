@@ -9,6 +9,7 @@ import type { HousingOtherPurposeSignal } from '../services/land-area-sync/housi
 export function hasPhase0GenericLdaregTitleEvidence(
     rows: Array<{
         registryTypeCode?: unknown;
+        registryTypeLabel?: unknown;
         mainPurposeCode?: unknown;
         mainPurposeLabel?: unknown;
         otherPurposeSignals?: unknown;
@@ -21,6 +22,7 @@ export function hasPhase0GenericLdaregTitleEvidence(
         rows.every(
             (row) =>
                 row.registryTypeCode === '2' &&
+                row.registryTypeLabel === '집합' &&
                 row.mainPurposeCode === '02000' &&
                 row.mainPurposeLabel === '공동주택' &&
                 Array.isArray(row.otherPurposeSignals) &&

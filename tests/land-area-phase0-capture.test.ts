@@ -296,6 +296,7 @@ function singleParcelTargetAdapter(input: {
     ldareg: LdaregRow[];
     landArea: string;
     duplicateTitle?: boolean;
+    registryTypeLabel?: string;
 }) {
     const target = adapter({
         async scanTitle(pnu) {
@@ -306,7 +307,8 @@ function singleParcelTargetAdapter(input: {
                 mgmBldrgstPk: input.rootPk,
                 bylotCnt: '0',
                 regstrGbCd: '2',
-                regstrGbCdNm: '집합',
+                regstrGbCdNm:
+                    input.registryTypeLabel ?? '집합',
                 mainPurpsCd: '02000',
                 mainPurpsCdNm: '공동주택',
                 ...(input.etcPurps !== undefined
@@ -959,6 +961,64 @@ test('generic 공동주택 fallback은 동일 title 중복 2건도 자동 인정
     );
 });
 
+test('generic 공동주택 fallback은 집합 코드의 label 불일치를 fail-closed한다', async () => {
+    const targetAdapter = singleParcelTargetAdapter({
+        pnu: MIA7_2188_PNU,
+        rootPk: '3010101010121',
+        registryTypeLabel: '일반',
+        landArea: '96',
+        expos: [
+            {
+                flrGbCd: '20',
+                flrNo: 1,
+                hoNm: '101',
+            },
+        ],
+        ldareg: [
+            {
+                agbldgSn: 'REGISTRY-LABEL-MISMATCH',
+                buldNm: 'REGISTRY-LABEL-MISMATCH',
+                ldaQotaRate: '24/96',
+                clsSeCode: '0',
+                clsSeCodeNm: '현재',
+                buldFloorNm: '1',
+                buldHoNm: '101',
+            },
+        ],
+    });
+    const approvedManifest = v2TargetManifest(
+        'generic-registry-label',
+        MIA7_2188_PNU
+    );
+    const artifact = await captureLandAreaPhase0({
+        manifest: approvedManifest,
+        adapter: targetAdapter.implementation,
+        buildingHubAuth: HUB_AUTH,
+        vworldAuth: VWORLD_AUTH,
+    });
+    const targetSample = artifact.samples.find(
+        (sample) =>
+            sample.pnuHash ===
+            createHash('sha256')
+                .update(`PNU\u0000${MIA7_2188_PNU}`)
+                .digest('hex')
+    )!;
+
+    assert.equal(artifact.gate.status, 'FAIL');
+    assert.ok(
+        targetSample.failureCodes.includes(
+            'HOUSING_CLASSIFICATION_ALLOWLIST_MISMATCH'
+        )
+    );
+    assert.equal(
+        validateLandAreaPhase0CaptureArtifact(
+            approvedManifest,
+            artifact
+        ),
+        artifact
+    );
+});
+
 test('791-2172: Phase 0 v2는 LDAREG 지상#층과 EXPOS 숫자 층을 exact 정규화한다', async () => {
     const units = [
         { floor: '2', ho: '201', numerator: '27.5' },
@@ -1026,6 +1086,124 @@ test('791-2172: Phase 0 v2는 LDAREG 지상#층과 EXPOS 숫자 층을 exact 정
     assert.ok(
         ldareg.records.every(
             (record) => record.floorShape === '지상#층'
+        )
+    );
+    assert.equal(
+        validateLandAreaPhase0CaptureArtifact(
+            approvedManifest,
+            artifact
+        ),
+        artifact
+    );
+});
+
+test('791-2172: 층 접미사가 없는 LDAREG 지상# 표기는 fail-closed한다', async () => {
+    const targetAdapter = singleParcelTargetAdapter({
+        pnu: MIA7_2172_PNU,
+        rootPk: '3010101010201',
+        etcPurps: '다세대주택',
+        landArea: '121',
+        expos: [
+            {
+                dongNm: '월드빌라',
+                flrGbCd: '20',
+                flrNo: 2,
+                hoNm: '201',
+            },
+        ],
+        ldareg: [
+            {
+                agbldgSn: 'MIA7-2172-NO-FLOOR-SUFFIX',
+                buldNm: '월드빌라',
+                ldaQotaRate: '27.5/121',
+                clsSeCode: '0',
+                clsSeCodeNm: '현재',
+                buldFloorNm: '지상2',
+                buldHoNm: '201',
+            },
+        ],
+    });
+    const approvedManifest = v2TargetManifest(
+        'mia7-2172-floor-suffix-required',
+        MIA7_2172_PNU
+    );
+    const artifact = await captureLandAreaPhase0({
+        manifest: approvedManifest,
+        adapter: targetAdapter.implementation,
+        buildingHubAuth: HUB_AUTH,
+        vworldAuth: VWORLD_AUTH,
+    });
+    const targetSample = artifact.samples.find(
+        (sample) =>
+            sample.pnuHash ===
+            createHash('sha256')
+                .update(`PNU\u0000${MIA7_2172_PNU}`)
+                .digest('hex')
+    )!;
+
+    assert.equal(artifact.gate.status, 'FAIL');
+    assert.ok(
+        targetSample.failureCodes.includes(
+            'LDAREG_EXPOS_UNIT_CORRELATION_MISMATCH'
+        )
+    );
+    assert.equal(
+        validateLandAreaPhase0CaptureArtifact(
+            approvedManifest,
+            artifact
+        ),
+        artifact
+    );
+});
+
+test('791-2172: EXPOS 지상#층과 LDAREG 숫자 층의 역방향 표기는 접지 않는다', async () => {
+    const targetAdapter = singleParcelTargetAdapter({
+        pnu: MIA7_2172_PNU,
+        rootPk: '3010101010202',
+        etcPurps: '다세대주택',
+        landArea: '121',
+        expos: [
+            {
+                dongNm: '월드빌라',
+                flrGbCd: '20',
+                flrNoNm: '지상2층',
+                hoNm: '201',
+            },
+        ],
+        ldareg: [
+            {
+                agbldgSn: 'MIA7-2172-REVERSED-FLOOR-SHAPE',
+                buldNm: '월드빌라',
+                ldaQotaRate: '27.5/121',
+                clsSeCode: '0',
+                clsSeCodeNm: '현재',
+                buldFloorNm: '2',
+                buldHoNm: '201',
+            },
+        ],
+    });
+    const approvedManifest = v2TargetManifest(
+        'mia7-2172-shape-direction',
+        MIA7_2172_PNU
+    );
+    const artifact = await captureLandAreaPhase0({
+        manifest: approvedManifest,
+        adapter: targetAdapter.implementation,
+        buildingHubAuth: HUB_AUTH,
+        vworldAuth: VWORLD_AUTH,
+    });
+    const targetSample = artifact.samples.find(
+        (sample) =>
+            sample.pnuHash ===
+            createHash('sha256')
+                .update(`PNU\u0000${MIA7_2172_PNU}`)
+                .digest('hex')
+    )!;
+
+    assert.equal(artifact.gate.status, 'FAIL');
+    assert.ok(
+        targetSample.failureCodes.includes(
+            'LDAREG_EXPOS_UNIT_CORRELATION_MISMATCH'
         )
     );
     assert.equal(
@@ -1286,6 +1464,34 @@ for (const invalidCase of [
         name: 'EXPOS 실제 층과 ho 층 라벨이 불일치',
         mutate: (rows: ReturnType<typeof mia72191FloorAsUnitRows>) => {
             rows.expos[1] = { ...rows.expos[1], hoNm: '2층' };
+        },
+    },
+    {
+        name: 'EXPOS 지상 flrNo가 없고 이름 alias만 있음',
+        mutate: (rows: ReturnType<typeof mia72191FloorAsUnitRows>) => {
+            const { flrNo: _omitted, ...rest } = rows.expos[1];
+            rows.expos[1] = { ...rest, flrNoNm: '1' };
+        },
+    },
+    {
+        name: 'EXPOS 지층의 실제 층이 지하 1층이 아님',
+        mutate: (rows: ReturnType<typeof mia72191FloorAsUnitRows>) => {
+            rows.expos[0] = { ...rows.expos[0], flrNo: 2 };
+        },
+    },
+    {
+        name: 'LDAREG ho가 exact 0000이 아님',
+        mutate: (rows: ReturnType<typeof mia72191FloorAsUnitRows>) => {
+            rows.ldareg[2] = { ...rows.ldareg[2], buldHoNm: '0' };
+        },
+    },
+    {
+        name: 'LDAREG 지상 floor에 층 접미사가 붙음',
+        mutate: (rows: ReturnType<typeof mia72191FloorAsUnitRows>) => {
+            rows.ldareg[2] = {
+                ...rows.ldareg[2],
+                buldFloorNm: '1층',
+            };
         },
     },
 ] as const) {
