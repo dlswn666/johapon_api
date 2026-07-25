@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import type { DatabaseTarget } from '../types/database.types';
 import { parseExactTrueFeatureFlag } from './feature-flags';
 import { createLandAreaSyncAllowedTargetsManifest } from '../security/land-area-sync-canary-policy';
+import { parseVworldRequestIntervalMs } from '../utils/vworld-request-interval';
 
 // .env 파일 로드
 dotenv.config();
@@ -149,7 +150,9 @@ export const env = {
     // GIS & Public Data API
     VWORLD_API_KEY: process.env.VWORLD_API_KEY || '',
     VWORLD_API_DOMAIN: process.env.VWORLD_API_DOMAIN || process.env.VWORLD_DOMAIN || 'www.tonghari.kr',
-    VWORLD_ATTR_REQUEST_INTERVAL_MS: getEnvNumber('VWORLD_ATTR_REQUEST_INTERVAL_MS', 300),
+    VWORLD_ATTR_REQUEST_INTERVAL_MS: parseVworldRequestIntervalMs(
+        process.env.VWORLD_ATTR_REQUEST_INTERVAL_MS
+    ),
     DATA_PORTAL_API_KEY: process.env.DATA_PORTAL_API_KEY || '',
     LAND_AREA_SYNC_ENABLED: parseExactTrueFeatureFlag(process.env.LAND_AREA_SYNC_ENABLED),
     LAND_AREA_SYNC_ALLOWED_TARGETS:

@@ -222,7 +222,10 @@ export async function runDevelopmentLandAreaEvidenceCaptureCli(
         );
         const database = getSupabaseService('development');
         const client = database.getClient();
-        const adapter = new LandAreaSyncAdapter();
+        const adapter = new LandAreaSyncAdapter({
+            vworldRequestIntervalMs:
+                env.VWORLD_ATTR_REQUEST_INTERVAL_MS,
+        });
         const hubAuth = buildingHubAuthFromEnv();
         const vworldAuth = vworldAuthFromEnv();
         let lastReported = 0;

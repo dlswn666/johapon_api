@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
     LandAreaSyncAdapter,
@@ -352,6 +353,408 @@ test('retry: HTTP 503 최대 3회 소진 후 FAILED', async () => {
     if (res.state === 'FAILED') assert.equal(res.issue.kind, 'HTTP_ERROR');
     assert.equal(calls.length, 3);
     assert.equal(sleeps.length, 2);
+});
+
+test('V-World 요청은 동일 adapter에서 직렬화되고 주입된 최소 시작 간격을 지킨다', async () => {
+    let nowMs = 0;
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstRequest = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+    });
+    const firstStartedPromise = new Promise<void>((resolve) => {
+        firstStarted = resolve;
+    });
+    const starts: Array<{ url: string; at: number }> = [];
+    const sleeps: number[] = [];
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    const httpClient = async (req: HttpRequest): Promise<HttpResponse> => {
+        starts.push({ url: req.url, at: nowMs });
+        activeRequests += 1;
+        maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+        if (starts.length === 1) {
+            firstStarted();
+            await firstRequest;
+        }
+        activeRequests -= 1;
+        return req.url.includes('ladfrlList')
+            ? ok(vworldBody('ladfrlVOList', 0, []))
+            : ok(vworldBody('ldaregVOList', 0, []));
+    };
+    const adapter = new LandAreaSyncAdapter({
+        httpClient,
+        vworldRequestIntervalMs: 300,
+        now: () => nowMs,
+        sleep: async (ms) => {
+            sleeps.push(ms);
+            nowMs += ms;
+        },
+        random: () => 0,
+    });
+
+    const ladfrl = adapter.scanLadfrl(PNU, VWORLD_AUTH);
+    await firstStartedPromise;
+    const ldareg = adapter.scanLdareg(PNU, VWORLD_AUTH);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(starts.length, 1, '첫 요청이 끝나기 전 두 번째 V-World 요청을 시작하면 안 된다');
+
+    releaseFirst();
+    const [ladfrlResult, ldaregResult] = await Promise.all([ladfrl, ldareg]);
+
+    assert.equal(ladfrlResult.state, 'COMPLETE_ZERO');
+    assert.equal(ldaregResult.state, 'COMPLETE_ZERO');
+    assert.equal(maxActiveRequests, 1);
+    assert.deepEqual(
+        starts.map((entry) => entry.at),
+        [0, 300]
+    );
+    assert.deepEqual(sleeps, [300]);
+});
+
+test('V-World 요청 간격 미지정 시 adapter 기본값 300ms를 적용한다', async () => {
+    let nowMs = 0;
+    const starts: number[] = [];
+    const sleeps: number[] = [];
+    const httpClient = async (req: HttpRequest): Promise<HttpResponse> => {
+        starts.push(nowMs);
+        return req.url.includes('ladfrlList')
+            ? ok(vworldBody('ladfrlVOList', 0, []))
+            : ok(vworldBody('ldaregVOList', 0, []));
+    };
+    const adapter = new LandAreaSyncAdapter({
+        httpClient,
+        now: () => nowMs,
+        sleep: async (ms) => {
+            sleeps.push(ms);
+            nowMs += ms;
+        },
+        random: () => 0,
+    });
+
+    await adapter.scanLadfrl(PNU, VWORLD_AUTH);
+    await adapter.scanLdareg(PNU, VWORLD_AUTH);
+
+    assert.deepEqual(starts, [0, 300]);
+    assert.deepEqual(sleeps, [300]);
+});
+
+test('V-World 재시도의 각 실제 HTTP 요청에도 최소 시작 간격을 적용한다', async () => {
+    let nowMs = 0;
+    const starts: number[] = [];
+    const sleeps: number[] = [];
+    let attempts = 0;
+    const httpClient = async (): Promise<HttpResponse> => {
+        attempts += 1;
+        starts.push(nowMs);
+        return attempts === 1
+            ? { status: 503, data: {}, headers: {} }
+            : ok(vworldBody('ladfrlVOList', 0, []));
+    };
+    const adapter = new LandAreaSyncAdapter({
+        httpClient,
+        vworldRequestIntervalMs: 1_000,
+        now: () => nowMs,
+        sleep: async (ms) => {
+            sleeps.push(ms);
+            nowMs += ms;
+        },
+        random: () => 0,
+    });
+
+    const result = await adapter.scanLadfrl(PNU, VWORLD_AUTH);
+
+    assert.equal(result.state, 'COMPLETE_ZERO');
+    assert.deepEqual(starts, [0, 1_000]);
+    assert.deepEqual(sleeps, [500, 500]);
+});
+
+test('V-World 429 Retry-After cooldown은 slot 해제 전에 등록되어 대기 중인 다른 scan에도 적용된다', async () => {
+    let nowMs = 0;
+    let releaseFirstResponse!: () => void;
+    let firstStarted!: () => void;
+    const firstResponseGate = new Promise<void>((resolve) => {
+        releaseFirstResponse = resolve;
+    });
+    const firstStartedPromise = new Promise<void>((resolve) => {
+        firstStarted = resolve;
+    });
+    const calls: string[] = [];
+    const pendingSleeps: Array<{ ms: number; resolve: () => void }> = [];
+    let firstLadfrlAttempt = true;
+    const httpClient = async (req: HttpRequest): Promise<HttpResponse> => {
+        const endpoint = req.url.includes('ladfrlList')
+            ? 'ladfrlList'
+            : 'ldaregList';
+        calls.push(endpoint);
+        if (endpoint === 'ladfrlList' && firstLadfrlAttempt) {
+            firstLadfrlAttempt = false;
+            firstStarted();
+            await firstResponseGate;
+            return {
+                status: 429,
+                data: {},
+                headers: { 'retry-after': '1' },
+            };
+        }
+        return endpoint === 'ladfrlList'
+            ? ok(vworldBody('ladfrlVOList', 0, []))
+            : ok(vworldBody('ldaregVOList', 0, []));
+    };
+    const adapter = new LandAreaSyncAdapter({
+        httpClient,
+        vworldRequestIntervalMs: 0,
+        now: () => nowMs,
+        sleep: (ms) =>
+            new Promise<void>((resolve) => {
+                pendingSleeps.push({ ms, resolve });
+            }),
+        random: () => 0,
+    });
+
+    const first = adapter.scanLadfrl(PNU, VWORLD_AUTH);
+    await firstStartedPromise;
+    const otherScan = adapter.scanLdareg(PNU, VWORLD_AUTH);
+    releaseFirstResponse();
+
+    for (
+        let turn = 0;
+        turn < 20 && pendingSleeps.length < 2;
+        turn += 1
+    ) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    assert.equal(
+        calls.length,
+        1,
+        'Retry-After cooldown이 등록되기 전에 대기 scan이 HTTP를 시작하면 안 된다'
+    );
+    assert.deepEqual(
+        pendingSleeps.map((entry) => entry.ms),
+        [1_000, 1_000]
+    );
+
+    nowMs = 1_000;
+    for (const pending of pendingSleeps.splice(0)) pending.resolve();
+    const [firstResult, otherResult] = await Promise.all([first, otherScan]);
+
+    assert.equal(firstResult.state, 'COMPLETE_ZERO');
+    assert.equal(otherResult.state, 'COMPLETE_ZERO');
+    assert.deepEqual(calls, ['ladfrlList', 'ldaregList', 'ladfrlList']);
+});
+
+test('V-World slot 대기 중 abort되면 선행 HTTP 해제 전 즉시 ABORTED이고 FIFO tail을 보존한다', async () => {
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstRequest = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+    });
+    const firstStartedPromise = new Promise<void>((resolve) => {
+        firstStarted = resolve;
+    });
+    let calls = 0;
+    const httpClient = async (req: HttpRequest): Promise<HttpResponse> => {
+        calls += 1;
+        if (calls === 1) {
+            firstStarted();
+            await firstRequest;
+        }
+        return req.url.includes('ladfrlList')
+            ? ok(vworldBody('ladfrlVOList', 0, []))
+            : ok(vworldBody('ldaregVOList', 0, []));
+    };
+    const adapter = new LandAreaSyncAdapter({
+        httpClient,
+        vworldRequestIntervalMs: 0,
+        sleep: async () => undefined,
+        random: () => 0,
+    });
+    const controller = new AbortController();
+
+    const first = adapter.scanLadfrl(PNU, VWORLD_AUTH);
+    await firstStartedPromise;
+    const waiting = adapter.scanLdareg(PNU, VWORLD_AUTH, {
+        signal: controller.signal,
+    });
+    const third = adapter.scanLdareg(PNU, VWORLD_AUTH);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    controller.abort();
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let waitingResult: Awaited<typeof waiting>;
+    try {
+        waitingResult = await Promise.race([
+            waiting,
+            new Promise<never>((_, reject) => {
+                timeout = setTimeout(
+                    () =>
+                        reject(
+                            new Error(
+                                'slot 대기 중 abort가 선행 HTTP 해제 전에 종결되지 않았습니다.'
+                            )
+                        ),
+                    100
+                );
+            }),
+        ]);
+        assert.equal(
+            calls,
+            1,
+            'abort된 caller와 그 뒤 caller는 선행 slot을 우회하면 안 된다'
+        );
+    } finally {
+        if (timeout) clearTimeout(timeout);
+        releaseFirst();
+    }
+
+    const [firstResult, thirdResult] = await Promise.all([first, third]);
+    assert.equal(firstResult.state, 'COMPLETE_ZERO');
+    assert.equal(waitingResult.state, 'FAILED');
+    if (waitingResult.state === 'FAILED') {
+        assert.equal(waitingResult.issue.kind, 'ABORTED');
+    }
+    assert.equal(thirdResult.state, 'COMPLETE_ZERO');
+    assert.equal(calls, 2);
+});
+
+test('default sleep은 정상 timer 완료 시 AbortSignal listener를 제거한다', async () => {
+    let addCount = 0;
+    let removeCount = 0;
+    const listeners = new Set<EventListenerOrEventListenerObject>();
+    const trackingSignal = {
+        aborted: false,
+        addEventListener: (
+            type: string,
+            listener: EventListenerOrEventListenerObject
+        ) => {
+            if (type === 'abort') {
+                addCount += 1;
+                listeners.add(listener);
+            }
+        },
+        removeEventListener: (
+            type: string,
+            listener: EventListenerOrEventListenerObject
+        ) => {
+            if (type === 'abort') {
+                removeCount += 1;
+                listeners.delete(listener);
+            }
+        },
+    } as unknown as AbortSignal;
+    const httpClient = async (req: HttpRequest): Promise<HttpResponse> =>
+        req.url.includes('ladfrlList')
+            ? ok(vworldBody('ladfrlVOList', 0, []))
+            : ok(vworldBody('ldaregVOList', 0, []));
+    const adapter = new LandAreaSyncAdapter({
+        httpClient,
+        vworldRequestIntervalMs: 5,
+        now: () => 0,
+        random: () => 0,
+    });
+
+    await adapter.scanLadfrl(PNU, VWORLD_AUTH);
+    const result = await adapter.scanLdareg(PNU, VWORLD_AUTH, {
+        signal: trackingSignal,
+    });
+
+    assert.equal(result.state, 'COMPLETE_ZERO');
+    assert.equal(addCount, 2);
+    assert.equal(removeCount, addCount);
+    assert.equal(listeners.size, 0);
+});
+
+test('Building HUB 요청은 V-World pacing으로 직렬화하거나 지연하지 않는다', async () => {
+    let releaseRequests!: () => void;
+    const pending = new Promise<void>((resolve) => {
+        releaseRequests = resolve;
+    });
+    let calls = 0;
+    const sleeps: number[] = [];
+    const httpClient = async (): Promise<HttpResponse> => {
+        calls += 1;
+        await pending;
+        return ok(hubBody(0, []));
+    };
+    const adapter = new LandAreaSyncAdapter({
+        httpClient,
+        vworldRequestIntervalMs: 30_000,
+        sleep: async (ms) => {
+            sleeps.push(ms);
+        },
+        random: () => 0,
+    });
+
+    const title = adapter.scanTitle(PNU, HUB_AUTH);
+    const attached = adapter.scanAttached(PNU, HUB_AUTH);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const callsBeforeRelease = calls;
+    releaseRequests();
+    const [titleResult, attachedResult] = await Promise.all([
+        title,
+        attached,
+    ]);
+
+    assert.equal(callsBeforeRelease, 2);
+    assert.equal(titleResult.state, 'COMPLETE_ZERO');
+    assert.equal(attachedResult.state, 'COMPLETE_ZERO');
+    assert.deepEqual(sleeps, []);
+});
+
+test('config env·adapter·queue·두 read-only capture는 shared V-World 요청 간격 정책을 사용한다', async () => {
+    const [
+        envSource,
+        adapterSource,
+        queueSource,
+        developmentCaptureSource,
+        phase0CaptureSource,
+        policySource,
+    ] =
+        await Promise.all([
+            readFile('src/config/env.ts', 'utf8'),
+            readFile('src/services/land-area-sync/adapter.ts', 'utf8'),
+            readFile('src/services/land-area-sync/queue.ts', 'utf8'),
+            readFile(
+                'src/cli/development-land-area-evidence-capture.ts',
+                'utf8'
+            ),
+            readFile('src/cli/phase0-land-area-capture.ts', 'utf8'),
+            readFile('src/utils/vworld-request-interval.ts', 'utf8'),
+        ]);
+
+    assert.match(
+        envSource,
+        /VWORLD_ATTR_REQUEST_INTERVAL_MS:\s*parseVworldRequestIntervalMs\([\s\S]*process\.env\.VWORLD_ATTR_REQUEST_INTERVAL_MS/
+    );
+    assert.match(
+        adapterSource,
+        /this\.vworldRequestIntervalMs\s*=\s*parseVworldRequestIntervalMs\([\s\S]*deps\.vworldRequestIntervalMs/
+    );
+    assert.match(
+        adapterSource,
+        /this\.now\s*=\s*deps\.now\s*\?\?\s*\(\(\)\s*=>\s*performance\.now\(\)\)/
+    );
+    assert.match(
+        adapterSource,
+        /export const landAreaSyncAdapter\s*=\s*new LandAreaSyncAdapter\(\)/
+    );
+    assert.match(
+        queueSource,
+        /vworldRequestIntervalMs:\s*[\r\n\s]*env\.VWORLD_ATTR_REQUEST_INTERVAL_MS/
+    );
+    assert.match(
+        developmentCaptureSource,
+        /vworldRequestIntervalMs:\s*[\r\n\s]*env\.VWORLD_ATTR_REQUEST_INTERVAL_MS/
+    );
+    assert.match(
+        phase0CaptureSource,
+        /vworldRequestIntervalMs:\s*[\r\n\s]*parseVworldRequestIntervalMs\([\s\S]*env\.VWORLD_ATTR_REQUEST_INTERVAL_MS/
+    );
+    assert.match(
+        policySource,
+        /DEFAULT_VWORLD_ATTR_REQUEST_INTERVAL_MS\s*=\s*300/
+    );
 });
 
 test('no-retry: HTTP 401 즉시 FAILED (재시도 없음)', async () => {

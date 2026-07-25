@@ -12,6 +12,7 @@
  */
 
 import axios from 'axios';
+import { performance } from 'node:perf_hooks';
 import { GIS_SHARED_ENDPOINTS, type GisSharedEndpointName } from '../gis-shared/endpoints';
 import type {
     BrAtchJibunRow,
@@ -31,6 +32,7 @@ import type {
     ProviderSchemaErrorCode,
     StrictScan,
 } from '../../types/land-area-sync.types';
+import { parseVworldRequestIntervalMs } from '../../utils/vworld-request-interval';
 import { convertPlatGbCdToLandGbn } from '../gis-shared/pnu';
 
 /** 모든 strict scan은 numOfRows=1000으로 페이지네이션한다 (표제부 포함, DESIGN §10.2) */
@@ -63,6 +65,10 @@ export interface StrictScanDeps {
     sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
     /** jitter 난수(0~1). 테스트는 () => 0 로 주입 */
     random?: () => number;
+    /** 동일 adapter 인스턴스의 V-World 요청 시작 최소 간격(ms). Building HUB에는 적용하지 않는다. */
+    vworldRequestIntervalMs?: number;
+    /** V-World 요청 간격 계산용 monotonic 시각. 테스트는 가짜 시계를 주입한다. */
+    now?: () => number;
 }
 
 export interface StrictScanOptions {
@@ -84,15 +90,22 @@ const defaultHttpClient: HttpClient = async ({ url, params, timeout, signal }) =
 const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     new Promise((resolve) => {
         if (signal?.aborted) return resolve();
-        const timer = setTimeout(resolve, ms);
-        signal?.addEventListener(
-            'abort',
-            () => {
-                clearTimeout(timer);
-                resolve();
-            },
-            { once: true }
-        );
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+        };
+        const onAbort = () => {
+            if (timer) clearTimeout(timer);
+            finish();
+        };
+        timer = setTimeout(finish, ms);
+        signal?.addEventListener('abort', onAbort, { once: true });
+        // 초기 확인과 listener 등록 사이의 abort race도 놓치지 않는다.
+        if (signal?.aborted) onAbort();
     });
 
 // ── 순수 헬퍼 ────────────────────────────────────────────────────
@@ -285,11 +298,20 @@ export class LandAreaSyncAdapter {
     private readonly httpClient: HttpClient;
     private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
     private readonly random: () => number;
+    private readonly vworldRequestIntervalMs: number;
+    private readonly now: () => number;
+    private vworldRequestChain: Promise<void> = Promise.resolve();
+    private lastVworldRequestStartedAt: number | null = null;
+    private vworldRequestNotBeforeAt = 0;
 
     constructor(deps: StrictScanDeps = {}) {
         this.httpClient = deps.httpClient ?? defaultHttpClient;
         this.sleep = deps.sleep ?? defaultSleep;
         this.random = deps.random ?? Math.random;
+        this.vworldRequestIntervalMs = parseVworldRequestIntervalMs(
+            deps.vworldRequestIntervalMs
+        );
+        this.now = deps.now ?? (() => performance.now());
     }
 
     // ── 6 endpoint adapter ──────────────────────────────────────
@@ -525,7 +547,11 @@ export class LandAreaSyncAdapter {
 
             let res: HttpResponse;
             try {
-                res = await this.httpClient({ url, params, timeout: REQUEST_TIMEOUT_MS, signal });
+                res = await this.requestPage(
+                    endpoint,
+                    { url, params, timeout: REQUEST_TIMEOUT_MS, signal },
+                    signal
+                );
             } catch (err) {
                 if (isAbortError(err, signal)) {
                     return { ok: false, issue: this.abortIssue(endpoint) };
@@ -607,6 +633,124 @@ export class LandAreaSyncAdapter {
     }
 
     /**
+     * V-World 요청만 동일 adapter 인스턴스 안에서 직렬화한다.
+     *
+     * slot은 실제 HTTP 요청이 끝날 때까지 보유한다. 다음 요청은 직전 요청의 시작 시각에서
+     * 주입된 최소 간격이 지난 뒤 시작하며, retry로 발생한 실제 HTTP 요청도 같은 경로를 탄다.
+     * Building HUB 요청은 이 slot을 사용하지 않는다.
+     */
+    private async requestPage(
+        endpoint: GisSharedEndpointName,
+        request: HttpRequest,
+        signal?: AbortSignal
+    ): Promise<HttpResponse> {
+        if (endpoint !== 'ladfrlList' && endpoint !== 'ldaregList') {
+            return this.httpClient(request);
+        }
+
+        const previous = this.vworldRequestChain;
+        let release!: () => void;
+        this.vworldRequestChain = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+
+        let acquired = false;
+        try {
+            await this.waitForVworldTurn(previous, signal);
+            acquired = true;
+
+            if (signal?.aborted) {
+                throw this.abortError();
+            }
+
+            const now = this.now();
+            const intervalNotBefore =
+                this.lastVworldRequestStartedAt === null
+                    ? 0
+                    : this.lastVworldRequestStartedAt +
+                      this.vworldRequestIntervalMs;
+            const notBefore = Math.max(
+                intervalNotBefore,
+                this.vworldRequestNotBeforeAt
+            );
+            const remaining = notBefore - now;
+            if (remaining > 0) {
+                await this.sleep(remaining, signal);
+                if (signal?.aborted) {
+                    throw this.abortError();
+                }
+            }
+
+            if (signal?.aborted) {
+                throw this.abortError();
+            }
+            this.lastVworldRequestStartedAt = this.now();
+            const response = await this.httpClient(request);
+            // 429 cooldown은 다음 FIFO ticket을 release하기 전에 등록해야 한다.
+            this.registerVworldRetryAfter(response);
+            return response;
+        } finally {
+            if (acquired) {
+                release();
+            } else {
+                // abort된 ticket도 predecessor 완료 뒤에만 tail을 넘겨 FIFO를 보존한다.
+                void previous.then(release, release);
+            }
+        }
+    }
+
+    /** predecessor slot과 abort를 race한다. abort는 slot을 획득하지 않고 즉시 반환한다. */
+    private waitForVworldTurn(
+        previous: Promise<void>,
+        signal?: AbortSignal
+    ): Promise<void> {
+        if (!signal) return previous;
+        if (signal.aborted) return Promise.reject(this.abortError());
+
+        return new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const cleanup = () => {
+                signal.removeEventListener('abort', onAbort);
+            };
+            const onAbort = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(this.abortError());
+            };
+            const onReady = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve();
+            };
+
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) {
+                onAbort();
+                return;
+            }
+            previous.then(onReady, onReady);
+        });
+    }
+
+    /** 429 Retry-After를 adapter 전체 V-World not-before 시각으로 등록한다. */
+    private registerVworldRetryAfter(response: HttpResponse): void {
+        if (response.status !== 429) return;
+        const retryAfterMs = parseRetryAfterMs(
+            response.headers['retry-after'],
+            Date.now()
+        );
+        if (retryAfterMs === null) return;
+
+        const cooldownMs = Math.min(retryAfterMs, RETRY_AFTER_CAP_MS);
+        this.vworldRequestNotBeforeAt = Math.max(
+            this.vworldRequestNotBeforeAt,
+            this.now() + cooldownMs
+        );
+    }
+
+    /**
      * 재시도 지연을 수행한다. Retry-After가 있으면 상한 내에서 준수하고,
      * 없으면 exponential backoff + jitter를 적용한다. 지연 전후로 AbortSignal을 확인한다.
      * @returns 계속 진행 가능하면 true, 취소되었으면 false
@@ -650,6 +794,12 @@ export class LandAreaSyncAdapter {
 
     private abortIssue(endpoint: GisSharedEndpointName): ProviderIssue {
         return this.issue('ABORTED', endpoint, '요청이 취소되었습니다.');
+    }
+
+    private abortError(): Error {
+        const error = new Error('요청이 취소되었습니다.');
+        error.name = 'AbortError';
+        return error;
     }
 
     private abortedFailure<T>(endpoint: GisSharedEndpointName, pagesFetched: number): StrictScan<T> {

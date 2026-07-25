@@ -21,10 +21,9 @@ import { getSupabaseService } from '../supabase.service';
 import { persistSyncJobOrThrow } from '../sync-job-admission';
 import { createLogger } from '../../utils/logger';
 import {
-    landAreaSyncAdapter,
     buildingHubAuthFromEnv,
     vworldAuthFromEnv,
-    type LandAreaSyncAdapter,
+    LandAreaSyncAdapter,
 } from './adapter';
 import {
     insertDiscoveryJob,
@@ -64,10 +63,15 @@ class LandAreaSyncQueueService {
     private jobs: Map<string, JobHandle>;
     private readonly adapter: LandAreaSyncAdapter;
 
-    constructor(adapter: LandAreaSyncAdapter = landAreaSyncAdapter) {
+    constructor(adapter?: LandAreaSyncAdapter) {
         this.queue = new PQueue({ concurrency: 2, timeout: 600000 });
         this.jobs = new Map();
-        this.adapter = adapter;
+        this.adapter =
+            adapter ??
+            new LandAreaSyncAdapter({
+                vworldRequestIntervalMs:
+                    env.VWORLD_ATTR_REQUEST_INTERVAL_MS,
+            });
     }
 
     private key(databaseTarget: DatabaseTarget, jobId: string): string {

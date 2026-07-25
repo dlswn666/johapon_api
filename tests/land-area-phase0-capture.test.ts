@@ -1479,7 +1479,14 @@ test('capture 경로는 DB/queue/동기화 service/config env에 정적으로 �
         'utf8'
     );
     const cli = await readFile(path.join(process.cwd(), 'src/cli/phase0-land-area-capture.ts'), 'utf8');
-    const combined = `${verification}\n${cli}`;
+    const requestIntervalPolicy = await readFile(
+        path.join(
+            process.cwd(),
+            'src/utils/vworld-request-interval.ts'
+        ),
+        'utf8'
+    );
+    const combined = `${verification}\n${cli}\n${requestIntervalPolicy}`;
 
     assert.doesNotMatch(combined, /from ['"][^'"]*\/(?:repository|service|queue)['"]/);
     assert.doesNotMatch(combined, /from ['"][^'"]*config\/env['"]/);

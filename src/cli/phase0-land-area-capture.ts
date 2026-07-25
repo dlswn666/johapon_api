@@ -14,6 +14,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import { LandAreaSyncAdapter } from '../services/land-area-sync/adapter';
+import { parseVworldRequestIntervalMs } from '../utils/vworld-request-interval';
 import {
     LAND_AREA_PHASE0_OUTPUT_DIRECTORY,
     LAND_AREA_PHASE0_MAX_ARTIFACT_BYTES,
@@ -32,6 +33,7 @@ interface CliEnvironment {
     VWORLD_API_KEY?: string;
     VWORLD_API_DOMAIN?: string;
     VWORLD_DOMAIN?: string;
+    VWORLD_ATTR_REQUEST_INTERVAL_MS?: string;
     [key: string]: string | undefined;
 }
 
@@ -240,7 +242,14 @@ export async function runLandAreaPhase0CaptureCli(
         };
         const artifact = await captureLandAreaPhase0({
             manifest,
-            adapter: dependencies.adapter ?? new LandAreaSyncAdapter(),
+            adapter:
+                dependencies.adapter ??
+                new LandAreaSyncAdapter({
+                    vworldRequestIntervalMs:
+                        parseVworldRequestIntervalMs(
+                            env.VWORLD_ATTR_REQUEST_INTERVAL_MS
+                        ),
+                }),
             buildingHubAuth,
             vworldAuth,
         });
