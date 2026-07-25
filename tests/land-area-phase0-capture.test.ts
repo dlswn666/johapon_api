@@ -44,10 +44,12 @@ import {
 const ZERO_PNU = '1168010100107000000';
 const POSITIVE_PNU = '1168010100107360024';
 const ATTACHED_PNU = '1168010100107360025';
+const SINGLE_PARCEL_MULTIPLEX_PNU = '1168010100107360030';
 const ZERO_PK = '1001001001001';
 const ZERO_UP_PK = '1001001001002';
 const POSITIVE_PK = '2002002002001';
 const POSITIVE_UP_PK = '2002002002002';
+const SINGLE_PARCEL_MULTIPLEX_PK = '3003003003001';
 const SECRET = 'SECRET-CANARY-DO-NOT-EMIT';
 const DOMAIN = 'secret-domain.example';
 const OWNER = 'OWNER-CANARY-DO-NOT-EMIT';
@@ -440,6 +442,133 @@ test('ZERO/POSITIVE: exact 관리 PK의 bylotCnt와 부속지번 수를 교차�
     assert.match(
         positive.evidence.ldaregReplication.rowMultisetDigest ?? '',
         /^[a-f0-9]{64}$/
+    );
+});
+
+test('부속지번 0개 다세대는 expectedBylot과 무관하게 공식 분류 LDAREG를 검증한다', async () => {
+    const singleParcel = adapter({
+        async scanTitle(pnu) {
+            singleParcel.calls.push({ endpoint: 'getBrTitleInfo', pnu });
+            if (pnu !== SINGLE_PARCEL_MULTIPLEX_PNU) {
+                return complete(titleRows(pnu));
+            }
+            return complete([
+                {
+                    pnu,
+                    mgmBldrgstPk: SINGLE_PARCEL_MULTIPLEX_PK,
+                    bylotCnt: '0',
+                    regstrGbCd: '2',
+                    regstrGbCdNm: '집합',
+                    mainPurpsCd: '02000',
+                    mainPurpsCdNm: '공동주택',
+                    etcPurps: '다세대주택',
+                },
+            ]);
+        },
+        async scanBasis(pnu) {
+            singleParcel.calls.push({
+                endpoint: 'getBrBasisOulnInfo',
+                pnu,
+            });
+            if (pnu !== SINGLE_PARCEL_MULTIPLEX_PNU) {
+                return complete(basisRows(pnu));
+            }
+            return complete([
+                {
+                    pnu,
+                    mgmBldrgstPk: SINGLE_PARCEL_MULTIPLEX_PK,
+                    bylotCnt: '0',
+                },
+            ]);
+        },
+        async scanAttached(pnu) {
+            singleParcel.calls.push({
+                endpoint: 'getBrAtchJibunInfo',
+                pnu,
+            });
+            return pnu === SINGLE_PARCEL_MULTIPLEX_PNU
+                ? complete([])
+                : complete(attachedRows(pnu));
+        },
+        async scanExpos(pnu) {
+            singleParcel.calls.push({ endpoint: 'getBrExposInfo', pnu });
+            if (pnu !== SINGLE_PARCEL_MULTIPLEX_PNU) {
+                return complete(exposRows(pnu));
+            }
+            return complete([
+                {
+                    pnu,
+                    mgmBldrgstPk: SINGLE_PARCEL_MULTIPLEX_PK,
+                    flrNo: 1,
+                    hoNm: '101',
+                },
+            ]);
+        },
+        async scanLadfrl(pnu) {
+            singleParcel.calls.push({ endpoint: 'ladfrlList', pnu });
+            if (pnu !== SINGLE_PARCEL_MULTIPLEX_PNU) {
+                return complete(ladfrlRows(pnu));
+            }
+            return complete([{ pnu, lndpclAr: '221' }]);
+        },
+        async scanLdareg(pnu) {
+            singleParcel.calls.push({ endpoint: 'ldaregList', pnu });
+            if (pnu !== SINGLE_PARCEL_MULTIPLEX_PNU) {
+                return complete(ldaregRows(pnu));
+            }
+            return complete([
+                {
+                    pnu,
+                    agbldgSn: 'SINGLE-PARCEL',
+                    ldaQotaRate: '39.08/221',
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                    buldDongNm: '0000',
+                    buldFloorNm: '1',
+                    buldHoNm: '101',
+                },
+            ]);
+        },
+    });
+    const approvedManifest = manifest([
+        { alias: 'zero-control', expectedBylot: 'ZERO', pnu: ZERO_PNU },
+        {
+            alias: 'positive-control',
+            expectedBylot: 'POSITIVE',
+            pnu: POSITIVE_PNU,
+        },
+        {
+            alias: 'single-parcel-multiplex',
+            expectedBylot: 'ZERO',
+            pnu: SINGLE_PARCEL_MULTIPLEX_PNU,
+        },
+    ]);
+
+    const artifact = await captureLandAreaPhase0({
+        manifest: approvedManifest,
+        adapter: singleParcel.implementation,
+        buildingHubAuth: HUB_AUTH,
+        vworldAuth: VWORLD_AUTH,
+    });
+
+    const target = artifact.samples.find(
+        (sample) =>
+            sample.pnuHash ===
+            createHash('sha256')
+                .update(`PNU\u0000${SINGLE_PARCEL_MULTIPLEX_PNU}`)
+                .digest('hex')
+    )!;
+    assert.equal(artifact.gate.status, 'PASS');
+    assert.equal(target.expectedBylot, 'ZERO');
+    assert.equal(target.checks.bylotAttached.status, 'PASS');
+    assert.equal(target.evidence.ldaregReplication.status, 'PASS');
+    assert.deepEqual(target.failureCodes, []);
+    assert.equal(
+        validateLandAreaPhase0CaptureArtifact(
+            approvedManifest,
+            artifact
+        ),
+        artifact
     );
 });
 

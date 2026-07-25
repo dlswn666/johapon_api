@@ -1618,11 +1618,10 @@ function validateChecks(value: unknown, path: string): void {
     );
 }
 
-function hasExactHousingClassification(
-    expectedBylot: 'ZERO' | 'POSITIVE',
+function exactHousingFamily(
     titleRecords: JsonRecord[]
-): boolean {
-    if (titleRecords.length === 0) return false;
+): 'LADFRL' | 'LDAREG' | null {
+    if (titleRecords.length === 0) return null;
     const sameExactPair = (
         registryTypeCode: string,
         mainPurposeCode: string,
@@ -1642,16 +1641,25 @@ function hasExactHousingClassification(
                 (!requiredSignal ||
                     record.otherPurposeSignals.includes(expectedSignal))
         );
-    if (expectedBylot === 'ZERO') {
-        return sameExactPair(
+    if (
+        sameExactPair(
             '1',
             '01000',
             '단독주택',
             'DETACHED_HOUSE',
             false
-        );
+        ) ||
+        sameExactPair(
+            '1',
+            '01002',
+            '다가구주택',
+            'MULTI_UNIT_HOUSE',
+            false
+        )
+    ) {
+        return 'LADFRL';
     }
-    return (
+    if (
         sameExactPair(
             '2',
             '02003',
@@ -1666,7 +1674,10 @@ function hasExactHousingClassification(
             'MULTIPLEX_HOUSE',
             true
         )
-    );
+    ) {
+        return 'LDAREG';
+    }
+    return null;
 }
 
 function deriveScopeBasisParentMap(
@@ -1871,10 +1882,7 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
     );
     const ldaregApplicable =
         titleRootHashes.size === 1 &&
-        hasExactHousingClassification(
-            'POSITIVE',
-            titleInventoryRecords
-        );
+        exactHousingFamily(titleInventoryRecords) === 'LDAREG';
     for (const endpoint of endpoints) {
         const isNonApplicableLdareg =
             !ldaregApplicable &&
@@ -2065,10 +2073,7 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
 
     if (
         titleRootHashes.size !== 1 ||
-        !hasExactHousingClassification(
-            sample.expectedBylot as 'ZERO' | 'POSITIVE',
-            titleInventoryRecords
-        )
+        exactHousingFamily(titleInventoryRecords) === null
     ) {
         required.add('HOUSING_CLASSIFICATION_ALLOWLIST_MISMATCH');
     }
@@ -2105,7 +2110,7 @@ function requireSemanticFailureCodes(sample: JsonRecord, path: string): void {
         required.add('LDAREG_DENOMINATOR_MISMATCH');
     }
 
-    if (sample.expectedBylot === 'POSITIVE') {
+    if (ldaregApplicable) {
         const validLdaregRecords = ldaregRecords.filter(
             (record) => record.quotaRatioState === 'VALID'
         );
@@ -2311,14 +2316,11 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     ) {
         reject(`${path} PASS title endpoint lacks codebook evidence`);
     }
-    if (
-        !hasExactHousingClassification(
-            sample.expectedBylot as 'ZERO' | 'POSITIVE',
-            titleRecords
-        )
-    ) {
+    const housingFamily = exactHousingFamily(titleRecords);
+    if (housingFamily === null) {
         reject(`${path} PASS lacks an exact approved housing classification`);
     }
+    const ldaregApplicable = housingFamily === 'LDAREG';
 
     const titleHashes = new Set<string>();
     for (const [index, record] of titleRecords.entries()) {
@@ -2349,8 +2351,8 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
     const expectedPositive = sample.expectedBylot === 'POSITIVE';
     const passReplication = evidence.ldaregReplication as JsonRecord;
     if (
-        (expectedPositive && passReplication.status !== 'PASS') ||
-        (!expectedPositive &&
+        (ldaregApplicable && passReplication.status !== 'PASS') ||
+        (!ldaregApplicable &&
             passReplication.status !== 'NOT_APPLICABLE')
     ) {
         reject(`${path} PASS lacks the expected LDAREG applicability witness`);
@@ -2704,7 +2706,7 @@ function requirePassWitnesses(sample: JsonRecord, path: string): void {
         `${path}.checks.bylotAttached.matchedManagementPkHashes`
     );
 
-    if (expectedPositive) {
+    if (ldaregApplicable) {
         const ldaregEndpoint = endpoint('ldaregList');
         const ldaregInventory = ldaregEndpoint.inventory as JsonRecord;
         const ldaregRecords = ldaregInventory.records as JsonRecord[];
