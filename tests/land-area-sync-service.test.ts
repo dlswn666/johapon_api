@@ -842,19 +842,22 @@ test('LDAREG(single 확인) apply job: 재실행 scopeHash 불일치 → apply R
     assert.ok(spy.terminalIssues[0].some((i) => i.code === 'LAND_SCOPE_CONFIRMATION_MISMATCH'), 'mismatch issue 기록');
 });
 
-// ── Finding 3: LINKED discovery extraIssue를 원자 apply RPC에 전달 ─────────────
+// ── Finding 3: LINKED discovery extraIssue·ambiguity write barrier ─────────────
 
-test('LINKED LDAREG 즉시적용: discovery extraIssue를 apply RPC 입력으로 전달한다', async () => {
+test('LINKED LDAREG 즉시적용: 비적용 placeholder extraIssue를 apply RPC 입력으로 전달한다', async () => {
     const spy = emptySpy();
     const deps = makeDeps({
         resolver: linked(MEMBER),
         scans: {
             scanTitle: async () => titleComplete(MULTIPLEX),
-            // 상태 코드 ambiguity가 CURRENT component + discovery extraIssue를 함께 만든다.
+            // 실측형 비적용 placeholder는 유효 CURRENT component를 막지 않는 유일한 정보성 issue다.
             scanLdareg: async () => ({
                 state: 'COMPLETE',
-                rows: [{ pnu: ANCHOR, agbldgSn: '1', ldaQotaRate: '10/100.5', clsSeCode: 'X7', clsSeCodeNm: 'ZZZ', buldDongNm: '101', buldFloorNm: '3', buldHoNm: '301' }],
-                totalCount: 1,
+                rows: [
+                    { pnu: ANCHOR, agbldgSn: '1', ldaQotaRate: '10/100.5', clsSeCode: '0', clsSeCodeNm: '현재', buldDongNm: '101', buldFloorNm: '3', buldHoNm: '301' },
+                    { pnu: ANCHOR, agbldgSn: '2', ldaQotaRate: '', clsSeCode: '0', clsSeCodeNm: '현재', buldDongNm: '0000', buldFloorNm: '0000', buldHoNm: '0000', buldRoomNm: '0000' },
+                ],
+                totalCount: 2,
                 pagesFetched: 1,
             }),
         },
@@ -873,7 +876,7 @@ test('LINKED LDAREG 즉시적용: discovery extraIssue를 apply RPC 입력으로
             data: {
                 outcome: 'NO_DATA',
                 issues: [
-                    { code: 'LDAREG_IDENTITY_CONFLICT', propertyUnitId: PROP_ID, targetPnu: ANCHOR }, // discovery extraIssue 와 동일
+                    { code: 'RATIO_PARSE_FAILED', targetPnu: ANCHOR }, // discovery extraIssue 와 동일
                     { code: 'STALE_SCAN_REJECTED', targetPnu: ANCHOR }, // RPC 고유 issue
                 ],
             },
@@ -889,7 +892,44 @@ test('LINKED LDAREG 즉시적용: discovery extraIssue를 apply RPC 입력으로
     };
     assert.deepEqual(
         params.p_result_summary.extraIssues.map((issue) => issue.code),
-        ['LDAREG_IDENTITY_CONFLICT']
+        ['RATIO_PARSE_FAILED']
+    );
+});
+
+test('LINKED LDAREG clsSeCode ambiguity는 apply items를 사용하지 않고 RPC 0회로 전체 차단한다', async () => {
+    const spy = emptySpy();
+    const deps = makeDeps({
+        resolver: linked(MEMBER),
+        scans: {
+            scanTitle: async () => titleComplete(MULTIPLEX),
+            scanLdareg: async () => ({
+                state: 'COMPLETE',
+                rows: [{ pnu: ANCHOR, agbldgSn: '1', ldaQotaRate: '10/100.5', clsSeCode: 'X7', clsSeCodeNm: 'ZZZ', buldDongNm: '101', buldFloorNm: '3', buldHoNm: '301' }],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+        },
+        propertyUnits: [
+            {
+                id: PROP_ID,
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: '101',
+                ho: '301',
+            },
+        ],
+        spy,
+    });
+    await runLandAreaSyncJob({ jobId: 'job-1', unionId: 'union-1', deps });
+
+    assert.equal(spy.applyCalls, 0, 'ambiguity는 apply RPC 전에 차단한다');
+    assert.equal(spy.freezeCalls, 0);
+    assert.equal(spy.terminalCalls[0].scopeState, 'REVIEW_REQUIRED');
+    assert.ok(
+        spy.terminalIssues[0].some((issue) => issue.code === 'LDAREG_IDENTITY_CONFLICT'),
+        '진단 issue는 보존한다'
     );
 });
 

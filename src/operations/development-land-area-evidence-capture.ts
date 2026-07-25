@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
     DEVELOPMENT_EVIDENCE_MANIFEST_VERSION,
+    DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2,
+    DEVELOPMENT_TARGET_MANIFEST_VERSION,
+    developmentTargetAllowedScopePnus,
+    developmentTargetAllowsManualOverwrite,
+    developmentTargetExecutionAnchors,
     type DevelopmentEvidenceEntry,
     type DevelopmentEvidenceManifest,
     type DevelopmentTargetManifest,
@@ -178,8 +183,8 @@ function createSyntheticJobRow(
 /**
  * live snapshot을 runner 승인 evidence 한 건으로 변환한다.
  *
- * sourceReferences는 v1의 legacy 필드명을 유지하지만, 값은 workbook 원문이 아니라
- * 개발 read-only capture run/target/snapshot digest를 가리킨다. confirm API에는
+ * v1 target은 기존 evidence 형식을 그대로 유지한다. v2 target은 API capture
+ * provenance만 기록하여 workbook을 근거로 오인하지 않게 한다. confirm API에는
  * 200자 이하의 비식별 reference만 전달한다.
  */
 export function developmentEvidenceEntryFromSnapshot(input: {
@@ -199,7 +204,9 @@ export function developmentEvidenceEntryFromSnapshot(input: {
     }
 
     const expectedScannedPnus = sortedUnique(snapshot.scannedPnus);
-    const targetPnus = new Set(target.pnus);
+    const targetPnus = new Set(
+        developmentTargetAllowedScopePnus(target)
+    );
     if (
         expectedScannedPnus.length === 0 ||
         expectedScannedPnus.some(
@@ -262,6 +269,8 @@ export function developmentEvidenceEntryFromSnapshot(input: {
     );
     const allowedPrestates: DevelopmentEvidenceEntry['allowedPrestates'] =
         [];
+    const allowManualOverwrite =
+        developmentTargetAllowsManualOverwrite(target);
     for (const propertyUnitId of expectedPropertyUnitIds) {
         const current = currentById.get(propertyUnitId);
         const proposed = proposedById.get(propertyUnitId);
@@ -269,7 +278,7 @@ export function developmentEvidenceEntryFromSnapshot(input: {
             throw new Error('CAPTURE_PRESTATE_MISSING');
         }
         const currentSource = asAllowedSource(current.source);
-        if (currentSource === 'MANUAL') {
+        if (currentSource === 'MANUAL' && !allowManualOverwrite) {
             throw new Error('CAPTURE_MANUAL_PRESTATE_OUTSIDE_AUTO_TARGET');
         }
         allowedPrestates.push({
@@ -306,6 +315,29 @@ export function developmentEvidenceEntryFromSnapshot(input: {
     );
     const confirmationRef =
         `captureRun=${captureRunId};snapshot=${snapshotReferenceSha256}`;
+    const sourceReferences:
+        DevelopmentEvidenceEntry['sourceReferences'] =
+        target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION
+            ? {
+                  workbookFileReferenceSha256:
+                      target.manifestDigest,
+                  sheet: 'LIVE_CAPTURE',
+                  cells: ['A1'],
+                  selectedCellsReferenceSha256:
+                      snapshotReferenceSha256,
+                  phase0RunId: captureRunId,
+                  phase0ArtifactReferenceSha256:
+                      snapshotReferenceSha256,
+                  phase0ObservationReferenceSha256:
+                      snapshotReferenceSha256,
+                  developmentObservationReferenceSha256:
+                      snapshotReferenceSha256,
+              }
+            : {
+                  kind: 'DEVELOPMENT_READ_ONLY_API_CAPTURE',
+                  captureRunId,
+                  snapshotReferenceSha256,
+              };
 
     return {
         anchorPnu,
@@ -332,21 +364,8 @@ export function developmentEvidenceEntryFromSnapshot(input: {
                       ref: confirmationRef,
                   }
                 : null,
-        allowManualOverwrite: false,
-        sourceReferences: {
-            workbookFileReferenceSha256: target.manifestDigest,
-            sheet: 'LIVE_CAPTURE',
-            cells: ['A1'],
-            selectedCellsReferenceSha256:
-                snapshotReferenceSha256,
-            phase0RunId: captureRunId,
-            phase0ArtifactReferenceSha256:
-                snapshotReferenceSha256,
-            phase0ObservationReferenceSha256:
-                snapshotReferenceSha256,
-            developmentObservationReferenceSha256:
-                snapshotReferenceSha256,
-        },
+        allowManualOverwrite,
+        sourceReferences,
     };
 }
 
@@ -373,7 +392,9 @@ async function captureOne(input: {
         terminalWrites: 0,
         failureWrites: 0,
     };
-    const approvedPnus = new Set(input.target.pnus);
+    const approvedPnus = new Set(
+        developmentTargetAllowedScopePnus(input.target)
+    );
 
     const db: LandAreaSyncDbDeps = {
         resolveScope: input.deps.resolveScope,
@@ -541,8 +562,10 @@ export async function captureDevelopmentLandAreaEvidence(input: {
         throw new Error('CAPTURE_INPUT_INVALID');
     }
 
+    const executionAnchors =
+        developmentTargetExecutionAnchors(input.target);
     const results = new Array<CaptureOneResult>(
-        input.target.pnus.length
+        executionAnchors.length
     );
     let nextIndex = 0;
     let completed = 0;
@@ -550,20 +573,20 @@ export async function captureDevelopmentLandAreaEvidence(input: {
         while (true) {
             const index = nextIndex;
             nextIndex += 1;
-            if (index >= input.target.pnus.length) return;
+            if (index >= executionAnchors.length) return;
             results[index] = await captureOne({
                 target: input.target,
                 captureRunId: input.captureRunId,
-                anchorPnu: input.target.pnus[index],
+                anchorPnu: executionAnchors[index],
                 deps: input.deps,
             });
             completed += 1;
-            input.onProgress?.(completed, input.target.pnus.length);
+            input.onProgress?.(completed, executionAnchors.length);
         }
     };
     await Promise.all(
         Array.from(
-            { length: Math.min(concurrency, input.target.pnus.length) },
+            { length: Math.min(concurrency, executionAnchors.length) },
             () => worker()
         )
     );
@@ -579,8 +602,11 @@ export async function captureDevelopmentLandAreaEvidence(input: {
             (entry): entry is DevelopmentEvidenceEntry =>
                 entry !== null
         );
+    const capturedPropertyUnitIds = entries.flatMap(
+        (entry) => entry.expectedPropertyUnitIds
+    );
     const uniquePropertyUnitIds = new Set(
-        entries.flatMap((entry) => entry.expectedPropertyUnitIds)
+        capturedPropertyUnitIds
     );
     if (entries.length !== input.target.targetCount) {
         failureCodes.push('CAPTURE_TARGET_COVERAGE_MISMATCH');
@@ -593,14 +619,54 @@ export async function captureDevelopmentLandAreaEvidence(input: {
             'CAPTURE_PROPERTY_UNIT_COUNT_MISMATCH'
         );
     }
+    if (
+        uniquePropertyUnitIds.size !==
+        capturedPropertyUnitIds.length
+    ) {
+        failureCodes.push(
+            'CAPTURE_PROPERTY_UNIT_ID_OVERLAP'
+        );
+    }
+    if (input.target.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION) {
+        const capturedScannedPnus = entries.flatMap(
+            (entry) => entry.expectedScannedPnus
+        );
+        const uniqueScannedPnus = new Set(
+            capturedScannedPnus
+        );
+        const allowedScopePnus =
+            developmentTargetAllowedScopePnus(input.target);
+        if (
+            uniqueScannedPnus.size !==
+            capturedScannedPnus.length
+        ) {
+            failureCodes.push(
+                'CAPTURE_SCANNED_PNU_OVERLAP'
+            );
+        }
+        if (
+            uniqueScannedPnus.size !== allowedScopePnus.length ||
+            allowedScopePnus.some(
+                (pnu) => !uniqueScannedPnus.has(pnu)
+            )
+        ) {
+            failureCodes.push(
+                'CAPTURE_SCANNED_PNU_COVERAGE_MISMATCH'
+            );
+        }
+    }
 
-    const capturedEvidence: DevelopmentEvidenceManifest = {
-        version: DEVELOPMENT_EVIDENCE_MANIFEST_VERSION,
+    const capturedEvidence = {
+        version:
+            input.target.version ===
+            DEVELOPMENT_TARGET_MANIFEST_VERSION
+                ? DEVELOPMENT_EVIDENCE_MANIFEST_VERSION
+                : DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2,
         databaseTarget: 'development',
         unionId: input.target.unionId,
         manifestDigest: input.target.manifestDigest,
         entries,
-    };
+    } as DevelopmentEvidenceManifest;
     const capturedEvidenceManifestSha256 = sha256(
         `${JSON.stringify(capturedEvidence, null, 2)}\n`
     );

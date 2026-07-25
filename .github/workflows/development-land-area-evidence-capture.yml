@@ -13,6 +13,7 @@ on:
           - mia-seven-auto-76-20260725
           - mia-seven-parcel-singleton-202-20260725
           - mia-seven-review-210-20260725
+          - mia-seven-791-2280-ldareg-api-readonly-20260725
 
 permissions:
   contents: read
@@ -81,6 +82,11 @@ jobs:
               target_path="development-land-area-sync-manifests/mia-seven-review-210-target-20260725.json"
               target_count="210"
               property_unit_count="252"
+              ;;
+            mia-seven-791-2280-ldareg-api-readonly-20260725)
+              target_path="development-land-area-sync-manifests/mia-seven-791-2280-ldareg-api-readonly-target-20260725.json"
+              target_count="1"
+              property_unit_count="4"
               ;;
             *)
               echo "::error::Target manifest is not repository-approved."
@@ -449,6 +455,12 @@ jobs:
           const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
           const target = parseDevelopmentTargetManifest(read(process.argv[2]));
           const evidence = parseDevelopmentEvidenceManifest(read(process.argv[3]));
+          const approvedScopePnus = Array.isArray(target.allowedScopePnus)
+            ? target.allowedScopePnus
+            : target.pnus;
+          const approvedScopeDigest = typeof target.scopeDigest === "string"
+            ? target.scopeDigest
+            : target.manifestDigest;
           const audit = read(process.argv[4]);
           const evidenceText = fs.readFileSync(process.argv[3], "utf8");
           const evidenceSha = crypto.createHash("sha256").update(evidenceText).digest("hex");
@@ -471,9 +483,9 @@ jobs:
               version: "land-area-development-db-approval-manifest@1",
               databaseTarget: "development",
               unionId: target.unionId,
-              pnus: target.pnus,
-              targetCount: target.targetCount,
-              manifestDigest: target.manifestDigest,
+              pnus: approvedScopePnus,
+              targetCount: approvedScopePnus.length,
+              manifestDigest: approvedScopeDigest,
               enabled: true,
             },
             evidence

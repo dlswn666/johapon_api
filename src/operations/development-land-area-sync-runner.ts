@@ -20,10 +20,14 @@ const RESPONSE_SIZE_LIMIT = 256 * 1024;
 
 export const DEVELOPMENT_TARGET_MANIFEST_VERSION =
     'land-area-development-target-manifest@1';
+export const DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 =
+    'land-area-development-target-manifest@2';
 export const DEVELOPMENT_DB_APPROVAL_MANIFEST_VERSION =
     'land-area-development-db-approval-manifest@1';
 export const DEVELOPMENT_EVIDENCE_MANIFEST_VERSION =
     'land-area-development-evidence-manifest@1';
+export const DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2 =
+    'land-area-development-evidence-manifest@2';
 export const DEVELOPMENT_RUN_ARTIFACT_VERSION =
     'land-area-development-run-artifact@1';
 export const DEVELOPMENT_PUBLIC_RUN_ARTIFACT_VERSION =
@@ -34,17 +38,34 @@ export const DEVELOPMENT_JOB_POLL_SOFT_TIMEOUT_MS =
     DEVELOPMENT_API_QUEUE_TIMEOUT_MS + 60_000;
 export const DEVELOPMENT_ADMISSION_RECONCILIATION_ATTEMPTS = 10;
 
-export interface DevelopmentTargetManifest {
-    version: typeof DEVELOPMENT_TARGET_MANIFEST_VERSION;
+interface DevelopmentTargetManifestCommon {
     databaseTarget: 'development';
     unionId: string;
-    pnus: string[];
     targetCount: number;
     manifestDigest: string;
     expectedPropertyUnitCount: number;
     expectedUnionActivePropertyUnitCount: number;
     expectedUnionActivePnuCount: number;
 }
+
+export interface DevelopmentTargetManifestV1
+    extends DevelopmentTargetManifestCommon {
+    version: typeof DEVELOPMENT_TARGET_MANIFEST_VERSION;
+    pnus: string[];
+}
+
+export interface DevelopmentTargetManifestV2
+    extends DevelopmentTargetManifestCommon {
+    version: typeof DEVELOPMENT_TARGET_MANIFEST_VERSION_V2;
+    anchors: string[];
+    allowedScopePnus: string[];
+    scopeDigest: string;
+    allowManualOverwrite: true;
+}
+
+export type DevelopmentTargetManifest =
+    | DevelopmentTargetManifestV1
+    | DevelopmentTargetManifestV2;
 
 export interface DevelopmentDbApprovalManifest {
     version: typeof DEVELOPMENT_DB_APPROVAL_MANIFEST_VERSION;
@@ -71,6 +92,23 @@ export interface ConfirmationEvidence {
     ref: string;
 }
 
+export interface DevelopmentLegacyEvidenceSourceReferences {
+    workbookFileReferenceSha256: string;
+    sheet: string;
+    cells: string[];
+    selectedCellsReferenceSha256: string;
+    phase0RunId: string;
+    phase0ArtifactReferenceSha256: string;
+    phase0ObservationReferenceSha256: string;
+    developmentObservationReferenceSha256: string;
+}
+
+export interface DevelopmentApiCaptureEvidenceSourceReferences {
+    kind: 'DEVELOPMENT_READ_ONLY_API_CAPTURE';
+    captureRunId: string;
+    snapshotReferenceSha256: string;
+}
+
 export interface DevelopmentEvidenceEntry {
     anchorPnu: string;
     expectedStrategy: LandAreaSyncStrategy;
@@ -92,26 +130,31 @@ export interface DevelopmentEvidenceEntry {
     parcelScopeEvidence: ConfirmationEvidence;
     landOwnershipEvidence: ConfirmationEvidence | null;
     allowManualOverwrite: boolean;
-    sourceReferences: {
-        workbookFileReferenceSha256: string;
-        sheet: string;
-        cells: string[];
-        selectedCellsReferenceSha256: string;
-        phase0RunId: string;
-        phase0ArtifactReferenceSha256: string;
-        phase0ObservationReferenceSha256: string;
-        developmentObservationReferenceSha256: string;
-    };
+    sourceReferences:
+        | DevelopmentLegacyEvidenceSourceReferences
+        | DevelopmentApiCaptureEvidenceSourceReferences;
 }
 
-export interface DevelopmentEvidenceManifest {
-    version: typeof DEVELOPMENT_EVIDENCE_MANIFEST_VERSION;
+interface DevelopmentEvidenceManifestCommon {
     databaseTarget: 'development';
     unionId: string;
     manifestDigest: string;
     entries: DevelopmentEvidenceEntry[];
 }
 
+export interface DevelopmentEvidenceManifestV1
+    extends DevelopmentEvidenceManifestCommon {
+    version: typeof DEVELOPMENT_EVIDENCE_MANIFEST_VERSION;
+}
+
+export interface DevelopmentEvidenceManifestV2
+    extends DevelopmentEvidenceManifestCommon {
+    version: typeof DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2;
+}
+
+export type DevelopmentEvidenceManifest =
+    | DevelopmentEvidenceManifestV1
+    | DevelopmentEvidenceManifestV2;
 export interface DevelopmentRunnerEnvironment {
     DEV_API_JWT_SECRET?: string;
     DEV_SUPABASE_URL?: string;
@@ -367,6 +410,68 @@ export function computeDevelopmentTargetDigest(
         .digest('hex');
 }
 
+export function computeDevelopmentTargetV2ManifestDigest(input: {
+    unionId: string;
+    anchors: readonly string[];
+    allowedScopePnus: readonly string[];
+    targetCount: number;
+    expectedPropertyUnitCount: number;
+    expectedUnionActivePropertyUnitCount: number;
+    expectedUnionActivePnuCount: number;
+    allowManualOverwrite: boolean;
+}): string {
+    const canonicalManifestIdentity = JSON.stringify({
+        version: DEVELOPMENT_TARGET_MANIFEST_VERSION_V2,
+        databaseTarget: 'development',
+        unionId: input.unionId.toLowerCase(),
+        anchors: [...input.anchors],
+        allowedScopePnus: [...input.allowedScopePnus],
+        targetCount: input.targetCount,
+        expectedPropertyUnitCount: input.expectedPropertyUnitCount,
+        expectedUnionActivePropertyUnitCount:
+            input.expectedUnionActivePropertyUnitCount,
+        expectedUnionActivePnuCount:
+            input.expectedUnionActivePnuCount,
+        allowManualOverwrite: input.allowManualOverwrite,
+    });
+    return createHash('sha256')
+        .update(canonicalManifestIdentity, 'utf8')
+        .digest('hex');
+}
+
+export function developmentTargetExecutionAnchors(
+    target: DevelopmentTargetManifest
+): string[] {
+    return target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION
+        ? target.pnus
+        : target.anchors;
+}
+
+export function developmentTargetAllowedScopePnus(
+    target: DevelopmentTargetManifest
+): string[] {
+    return target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION
+        ? target.pnus
+        : target.allowedScopePnus;
+}
+
+export function developmentTargetScopeDigest(
+    target: DevelopmentTargetManifest
+): string {
+    return target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION
+        ? target.manifestDigest
+        : target.scopeDigest;
+}
+
+export function developmentTargetAllowsManualOverwrite(
+    target: DevelopmentTargetManifest
+): boolean {
+    return (
+        target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 &&
+        target.allowManualOverwrite
+    );
+}
+
 function assertCommonManifest(
     value: Record<string, unknown>,
     expectedVersion: string
@@ -401,19 +506,7 @@ export function parseDevelopmentTargetManifest(
     input: unknown
 ): DevelopmentTargetManifest {
     const value = asRecord(input, 'TARGET_MANIFEST_INVALID');
-    assertCommonManifest(value, DEVELOPMENT_TARGET_MANIFEST_VERSION);
-    if (
-        !hasExactKeys(value, [
-            'version',
-            'databaseTarget',
-            'unionId',
-            'pnus',
-            'targetCount',
-            'manifestDigest',
-            'expectedPropertyUnitCount',
-            'expectedUnionActivePropertyUnitCount',
-            'expectedUnionActivePnuCount',
-        ]) ||
+    const expectedCountsInvalid =
         !Number.isSafeInteger(value.expectedPropertyUnitCount) ||
         (value.expectedPropertyUnitCount as number) <= 0 ||
         !Number.isSafeInteger(value.expectedUnionActivePropertyUnitCount) ||
@@ -421,11 +514,98 @@ export function parseDevelopmentTargetManifest(
         !Number.isSafeInteger(value.expectedUnionActivePnuCount) ||
         (value.expectedUnionActivePnuCount as number) <= 0 ||
         (value.expectedUnionActivePnuCount as number) >
-            (value.expectedUnionActivePropertyUnitCount as number)
+            (value.expectedUnionActivePropertyUnitCount as number);
+    if (expectedCountsInvalid) {
+        throw new ControlledRunnerError('TARGET_MANIFEST_INVALID');
+    }
+
+    if (value.version === DEVELOPMENT_TARGET_MANIFEST_VERSION) {
+        assertCommonManifest(value, DEVELOPMENT_TARGET_MANIFEST_VERSION);
+        if (
+            !hasExactKeys(value, [
+                'version',
+                'databaseTarget',
+                'unionId',
+                'pnus',
+                'targetCount',
+                'manifestDigest',
+                'expectedPropertyUnitCount',
+                'expectedUnionActivePropertyUnitCount',
+                'expectedUnionActivePnuCount',
+            ])
+        ) {
+            throw new ControlledRunnerError('TARGET_MANIFEST_INVALID');
+        }
+        return value as unknown as DevelopmentTargetManifestV1;
+    }
+
+    if (
+        !hasExactKeys(value, [
+            'version',
+            'databaseTarget',
+            'unionId',
+            'anchors',
+            'allowedScopePnus',
+            'targetCount',
+            'scopeDigest',
+            'manifestDigest',
+            'expectedPropertyUnitCount',
+            'expectedUnionActivePropertyUnitCount',
+            'expectedUnionActivePnuCount',
+            'allowManualOverwrite',
+        ]) ||
+        value.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 ||
+        value.databaseTarget !== 'development' ||
+        typeof value.unionId !== 'string' ||
+        !UUID_RE.test(value.unionId) ||
+        !Array.isArray(value.anchors) ||
+        value.anchors.length === 0 ||
+        !value.anchors.every(
+            (pnu) => typeof pnu === 'string' && PNU_RE.test(pnu)
+        ) ||
+        !isSortedUnique(value.anchors as string[]) ||
+        !Array.isArray(value.allowedScopePnus) ||
+        value.allowedScopePnus.length === 0 ||
+        !value.allowedScopePnus.every(
+            (pnu) => typeof pnu === 'string' && PNU_RE.test(pnu)
+        ) ||
+        !isSortedUnique(value.allowedScopePnus as string[]) ||
+        (value.anchors as string[]).some(
+            (anchor) =>
+                !(value.allowedScopePnus as string[]).includes(anchor)
+        ) ||
+        !Number.isSafeInteger(value.targetCount) ||
+        value.targetCount !== value.anchors.length ||
+        typeof value.scopeDigest !== 'string' ||
+        !HEX64_RE.test(value.scopeDigest) ||
+        value.scopeDigest !==
+            computeDevelopmentTargetDigest(
+                value.unionId,
+                value.allowedScopePnus as string[]
+            ) ||
+        typeof value.manifestDigest !== 'string' ||
+        !HEX64_RE.test(value.manifestDigest) ||
+        value.manifestDigest !==
+            computeDevelopmentTargetV2ManifestDigest({
+                unionId: value.unionId,
+                anchors: value.anchors as string[],
+                allowedScopePnus:
+                    value.allowedScopePnus as string[],
+                targetCount: value.targetCount as number,
+                expectedPropertyUnitCount:
+                    value.expectedPropertyUnitCount as number,
+                expectedUnionActivePropertyUnitCount:
+                    value.expectedUnionActivePropertyUnitCount as number,
+                expectedUnionActivePnuCount:
+                    value.expectedUnionActivePnuCount as number,
+                allowManualOverwrite:
+                    value.allowManualOverwrite as boolean,
+            }) ||
+        value.allowManualOverwrite !== true
     ) {
         throw new ControlledRunnerError('TARGET_MANIFEST_INVALID');
     }
-    return value as unknown as DevelopmentTargetManifest;
+    return value as unknown as DevelopmentTargetManifestV2;
 }
 
 export function parseDevelopmentDbApprovalManifest(
@@ -482,7 +662,12 @@ function assertPositiveDecimal(value: unknown): value is string {
     );
 }
 
-function parseEvidenceEntry(input: unknown): DevelopmentEvidenceEntry {
+function parseEvidenceEntry(
+    input: unknown,
+    manifestVersion:
+        | typeof DEVELOPMENT_EVIDENCE_MANIFEST_VERSION
+        | typeof DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2
+): DevelopmentEvidenceEntry {
     const value = asRecord(input, 'EVIDENCE_ENTRY_INVALID');
     const proposed = value.expectedProposedLandAreas;
     const ladfrl = asRecord(
@@ -507,16 +692,6 @@ function parseEvidenceEntry(input: unknown): DevelopmentEvidenceEntry {
             'sourceReferences',
         ]) ||
         !hasExactKeys(ladfrl, ['parcels', 'totalArea']) ||
-        !hasExactKeys(sources, [
-            'workbookFileReferenceSha256',
-            'sheet',
-            'cells',
-            'selectedCellsReferenceSha256',
-            'phase0RunId',
-            'phase0ArtifactReferenceSha256',
-            'phase0ObservationReferenceSha256',
-            'developmentObservationReferenceSha256',
-        ]) ||
         typeof value.anchorPnu !== 'string' ||
         !PNU_RE.test(value.anchorPnu) ||
         (value.expectedStrategy !== 'LADFRL' &&
@@ -606,27 +781,57 @@ function parseEvidenceEntry(input: unknown): DevelopmentEvidenceEntry {
         );
     }
 
-    if (
-        typeof sources.workbookFileReferenceSha256 !== 'string' ||
-        !HEX64_RE.test(sources.workbookFileReferenceSha256) ||
-        typeof sources.sheet !== 'string' ||
-        sources.sheet.length < 1 ||
-        sources.sheet.length > 50 ||
-        !Array.isArray(sources.cells) ||
-        sources.cells.length === 0 ||
-        !sources.cells.every(
-            (cell) => typeof cell === 'string' && /^[A-Z]{1,3}[1-9][0-9]*$/.test(cell)
-        ) ||
-        typeof sources.selectedCellsReferenceSha256 !== 'string' ||
-        !HEX64_RE.test(sources.selectedCellsReferenceSha256) ||
-        typeof sources.phase0RunId !== 'string' ||
-        !POSITIVE_INTEGER_RE.test(sources.phase0RunId) ||
-        typeof sources.phase0ArtifactReferenceSha256 !== 'string' ||
-        !HEX64_RE.test(sources.phase0ArtifactReferenceSha256) ||
-        typeof sources.phase0ObservationReferenceSha256 !== 'string' ||
-        !HEX64_RE.test(sources.phase0ObservationReferenceSha256) ||
-        typeof sources.developmentObservationReferenceSha256 !== 'string' ||
-        !HEX64_RE.test(sources.developmentObservationReferenceSha256)
+    if (manifestVersion === DEVELOPMENT_EVIDENCE_MANIFEST_VERSION) {
+        if (
+            !hasExactKeys(sources, [
+                'workbookFileReferenceSha256',
+                'sheet',
+                'cells',
+                'selectedCellsReferenceSha256',
+                'phase0RunId',
+                'phase0ArtifactReferenceSha256',
+                'phase0ObservationReferenceSha256',
+                'developmentObservationReferenceSha256',
+            ]) ||
+            typeof sources.workbookFileReferenceSha256 !== 'string' ||
+            !HEX64_RE.test(sources.workbookFileReferenceSha256) ||
+            typeof sources.sheet !== 'string' ||
+            sources.sheet.length < 1 ||
+            sources.sheet.length > 50 ||
+            !Array.isArray(sources.cells) ||
+            sources.cells.length === 0 ||
+            !sources.cells.every(
+                (cell) =>
+                    typeof cell === 'string' &&
+                    /^[A-Z]{1,3}[1-9][0-9]*$/.test(cell)
+            ) ||
+            typeof sources.selectedCellsReferenceSha256 !== 'string' ||
+            !HEX64_RE.test(sources.selectedCellsReferenceSha256) ||
+            typeof sources.phase0RunId !== 'string' ||
+            !POSITIVE_INTEGER_RE.test(sources.phase0RunId) ||
+            typeof sources.phase0ArtifactReferenceSha256 !== 'string' ||
+            !HEX64_RE.test(sources.phase0ArtifactReferenceSha256) ||
+            typeof sources.phase0ObservationReferenceSha256 !== 'string' ||
+            !HEX64_RE.test(sources.phase0ObservationReferenceSha256) ||
+            typeof sources.developmentObservationReferenceSha256 !==
+                'string' ||
+            !HEX64_RE.test(
+                sources.developmentObservationReferenceSha256
+            )
+        ) {
+            throw new ControlledRunnerError('EVIDENCE_SOURCE_INVALID');
+        }
+    } else if (
+        !hasExactKeys(sources, [
+            'kind',
+            'captureRunId',
+            'snapshotReferenceSha256',
+        ]) ||
+        sources.kind !== 'DEVELOPMENT_READ_ONLY_API_CAPTURE' ||
+        typeof sources.captureRunId !== 'string' ||
+        !POSITIVE_INTEGER_RE.test(sources.captureRunId) ||
+        typeof sources.snapshotReferenceSha256 !== 'string' ||
+        !HEX64_RE.test(sources.snapshotReferenceSha256)
     ) {
         throw new ControlledRunnerError('EVIDENCE_SOURCE_INVALID');
     }
@@ -669,6 +874,7 @@ export function parseDevelopmentEvidenceManifest(
     input: unknown
 ): DevelopmentEvidenceManifest {
     const value = asRecord(input, 'EVIDENCE_MANIFEST_INVALID');
+    const version = value.version;
     if (
         !hasExactKeys(value, [
             'version',
@@ -677,7 +883,8 @@ export function parseDevelopmentEvidenceManifest(
             'manifestDigest',
             'entries',
         ]) ||
-        value.version !== DEVELOPMENT_EVIDENCE_MANIFEST_VERSION ||
+        (version !== DEVELOPMENT_EVIDENCE_MANIFEST_VERSION &&
+            version !== DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2) ||
         value.databaseTarget !== 'development' ||
         typeof value.unionId !== 'string' ||
         !UUID_RE.test(value.unionId) ||
@@ -689,12 +896,14 @@ export function parseDevelopmentEvidenceManifest(
         throw new ControlledRunnerError('EVIDENCE_MANIFEST_INVALID');
     }
     return {
-        version: DEVELOPMENT_EVIDENCE_MANIFEST_VERSION,
+        version,
         databaseTarget: 'development',
         unionId: value.unionId,
         manifestDigest: value.manifestDigest,
-        entries: value.entries.map(parseEvidenceEntry),
-    };
+        entries: value.entries.map((entry) =>
+            parseEvidenceEntry(entry, version)
+        ),
+    } as DevelopmentEvidenceManifest;
 }
 
 function normalizedUrl(value: string): string {
@@ -742,14 +951,17 @@ export function validateDevelopmentRunnerEnvironment(
     } catch {
         throw new ControlledRunnerError('RUNTIME_ALLOWLIST_INVALID');
     }
+    const allowedScopePnus =
+        developmentTargetAllowedScopePnus(target);
     const targetCanonical = canonicalTargetValue(
         'development',
         target.unionId,
-        target.pnus
+        allowedScopePnus
     );
     if (
-        runtimeManifest.count !== target.targetCount ||
-        runtimeManifest.digest !== target.manifestDigest ||
+        runtimeManifest.count !== allowedScopePnus.length ||
+        runtimeManifest.digest !==
+            developmentTargetScopeDigest(target) ||
         runtimeManifest.canonicalValue !== targetCanonical
     ) {
         throw new ControlledRunnerError('RUNTIME_ALLOWLIST_MANIFEST_MISMATCH');
@@ -761,12 +973,17 @@ export function validateDevelopmentRunnerManifests(
     dbApproval: DevelopmentDbApprovalManifest,
     evidence: DevelopmentEvidenceManifest
 ): void {
+    const anchors = developmentTargetExecutionAnchors(target);
+    const allowedScopePnus =
+        developmentTargetAllowedScopePnus(target);
     if (
         dbApproval.databaseTarget !== 'development' ||
         dbApproval.unionId.toLowerCase() !== target.unionId.toLowerCase() ||
-        dbApproval.targetCount !== target.targetCount ||
-        dbApproval.manifestDigest !== target.manifestDigest ||
-        JSON.stringify(dbApproval.pnus) !== JSON.stringify(target.pnus)
+        dbApproval.targetCount !== allowedScopePnus.length ||
+        dbApproval.manifestDigest !==
+            developmentTargetScopeDigest(target) ||
+        JSON.stringify(dbApproval.pnus) !==
+            JSON.stringify(allowedScopePnus)
     ) {
         throw new ControlledRunnerError('DB_APPROVAL_MANIFEST_MISMATCH');
     }
@@ -777,25 +994,83 @@ export function validateDevelopmentRunnerManifests(
     ) {
         throw new ControlledRunnerError('EVIDENCE_MANIFEST_MISMATCH');
     }
+    if (
+        (target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION &&
+            evidence.version !== DEVELOPMENT_EVIDENCE_MANIFEST_VERSION) ||
+        (target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 &&
+            evidence.version !==
+                DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2)
+    ) {
+        throw new ControlledRunnerError(
+            'EVIDENCE_MANIFEST_VERSION_MISMATCH'
+        );
+    }
     const entriesByPnu = new Map(
         evidence.entries.map((entry) => [entry.anchorPnu, entry])
     );
     if (
-        entriesByPnu.size !== target.pnus.length ||
-        target.pnus.some((pnu) => !entriesByPnu.has(pnu))
+        entriesByPnu.size !== anchors.length ||
+        anchors.some((pnu) => !entriesByPnu.has(pnu))
     ) {
         throw new ControlledRunnerError('EVIDENCE_PNU_COVERAGE_MISMATCH');
     }
-    const approvedPnus = new Set(target.pnus);
+    const approvedPnus = new Set(allowedScopePnus);
+    const observedScannedPnus = new Set<string>();
     for (const entry of evidence.entries) {
         if (entry.expectedScannedPnus.some((pnu) => !approvedPnus.has(pnu))) {
             throw new ControlledRunnerError('EVIDENCE_SCOPE_OUTSIDE_MANIFEST');
         }
+        if (
+            target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 &&
+            entry.expectedScannedPnus.some((pnu) =>
+                observedScannedPnus.has(pnu)
+            )
+        ) {
+            throw new ControlledRunnerError(
+                'EVIDENCE_SCANNED_PNU_OVERLAP'
+            );
+        }
+        entry.expectedScannedPnus.forEach((pnu) =>
+            observedScannedPnus.add(pnu)
+        );
+        if (
+            target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 &&
+            entry.allowManualOverwrite !== true
+        ) {
+            throw new ControlledRunnerError(
+                'MANUAL_OVERWRITE_EVIDENCE_MISMATCH'
+            );
+        }
     }
-    const expectedPropertyUnitIds = new Set(
-        evidence.entries.flatMap((entry) => entry.expectedPropertyUnitIds)
+    if (
+        target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 &&
+        (observedScannedPnus.size !== allowedScopePnus.length ||
+            allowedScopePnus.some(
+                (pnu) => !observedScannedPnus.has(pnu)
+            ))
+    ) {
+        throw new ControlledRunnerError(
+            'EVIDENCE_SCANNED_PNU_COVERAGE_MISMATCH'
+        );
+    }
+    const allExpectedPropertyUnitIds = evidence.entries.flatMap(
+        (entry) => entry.expectedPropertyUnitIds
     );
-    if (expectedPropertyUnitIds.size !== target.expectedPropertyUnitCount) {
+    const expectedPropertyUnitIds = new Set(
+        allExpectedPropertyUnitIds
+    );
+    if (
+        expectedPropertyUnitIds.size !==
+        allExpectedPropertyUnitIds.length
+    ) {
+        throw new ControlledRunnerError(
+            'EVIDENCE_PROPERTY_UNIT_ID_OVERLAP'
+        );
+    }
+    if (
+        expectedPropertyUnitIds.size !==
+        target.expectedPropertyUnitCount
+    ) {
         throw new ControlledRunnerError(
             'EXPECTED_PROPERTY_UNIT_COUNT_MISMATCH'
         );
@@ -1448,7 +1723,6 @@ async function readAndValidateDevelopmentSnapshot(input: {
     target: DevelopmentTargetManifest;
     evidence: DevelopmentEvidenceManifest;
     phase: 'PRE' | 'POST';
-    expectedIdentityDigest?: string;
 }): Promise<{
     summary: DevelopmentReadOnlySnapshot;
     rows: DevelopmentActivePropertyUnit[];
@@ -1495,13 +1769,22 @@ async function readAndValidateDevelopmentSnapshot(input: {
     const evidenceByPnu = new Map(
         input.evidence.entries.map((entry) => [entry.anchorPnu, entry])
     );
-    for (const pnu of input.target.pnus) {
+    for (const pnu of developmentTargetExecutionAnchors(input.target)) {
         const entry = evidenceByPnu.get(pnu)!;
-        const scopedRows = rows.filter((row) => row.pnu === pnu);
+        const expectedIds = new Set(entry.expectedPropertyUnitIds);
+        const expectedScannedPnus = new Set(
+            entry.expectedScannedPnus
+        );
+        const scopedRows = rows.filter((row) =>
+            expectedIds.has(row.id)
+        );
         const scopedIds = scopedRows.map((row) => row.id).sort();
         if (
             JSON.stringify(scopedIds) !==
-            JSON.stringify(entry.expectedPropertyUnitIds)
+                JSON.stringify(entry.expectedPropertyUnitIds) ||
+            scopedRows.some(
+                (row) => !expectedScannedPnus.has(row.pnu)
+            )
         ) {
             throw new ControlledRunnerError(
                 `${input.phase}FLIGHT_TARGET_MEMBERSHIP_MISMATCH`
@@ -1518,24 +1801,6 @@ async function readAndValidateDevelopmentSnapshot(input: {
                 if (!allowed) {
                     throw new ControlledRunnerError(
                         'PREFLIGHT_TARGET_PRESTATE_MISMATCH'
-                    );
-                }
-            }
-        } else {
-            const expectedAreaByPropertyId = new Map(
-                entry.expectedProposedLandAreas.map((area) => [
-                    area.propertyUnitId,
-                    area.landArea,
-                ])
-            );
-            for (const row of scopedRows) {
-                if (
-                    !isPositiveLandArea(row.landArea) ||
-                    row.landArea !== expectedAreaByPropertyId.get(row.id) ||
-                    row.landAreaSource !== entry.expectedStrategy
-                ) {
-                    throw new ControlledRunnerError(
-                        'POSTFLIGHT_TARGET_LAND_AREA_NOT_APPLIED'
                     );
                 }
             }
@@ -1562,14 +1827,6 @@ async function readAndValidateDevelopmentSnapshot(input: {
         tupleDigest: digestJson(tupleRows),
         nonTargetTupleDigest: digestJson(nonTargetTupleRows),
     };
-    if (
-        input.expectedIdentityDigest &&
-        summary.identityDigest !== input.expectedIdentityDigest
-    ) {
-        throw new ControlledRunnerError(
-            'POSTFLIGHT_PROPERTY_IDENTITY_CHANGED'
-        );
-    }
     return { summary, rows };
 }
 
@@ -1627,9 +1884,15 @@ function assertExpectedPostflightTransition(input: {
 
         const result = resultByPnu.get(expected.entry.anchorPnu);
         if (!result) {
-            throw new ControlledRunnerError(
-                'POSTFLIGHT_TARGET_RESULT_MISSING'
-            );
+            if (
+                JSON.stringify(canonicalLandTuple(pre)) !==
+                JSON.stringify(canonicalLandTuple(post))
+            ) {
+                throw new ControlledRunnerError(
+                    'POSTFLIGHT_UNFINALIZED_TARGET_TUPLE_CHANGED'
+                );
+            }
+            continue;
         }
         if (result.admission === 'ALREADY_APPLIED') {
             if (
@@ -1680,12 +1943,12 @@ async function readAndValidateWriteAttribution(input: {
         ...(await input.reader.readPropertyUnitsBySyncJobIds(writerJobIds)),
     ].sort((left, right) => left.id.localeCompare(right.id));
     const expectedWriterByPropertyId = new Map<string, string>();
-    const resultByPnu = new Map(
-        input.results.map((result) => [result.pnu, result])
+    const evidenceByPnu = new Map(
+        input.evidence.entries.map((entry) => [entry.anchorPnu, entry])
     );
-    for (const entry of input.evidence.entries) {
-        const result = resultByPnu.get(entry.anchorPnu);
-        if (!result) {
+    for (const result of input.results) {
+        const entry = evidenceByPnu.get(result.pnu);
+        if (!entry) {
             throw new ControlledRunnerError(
                 'POSTFLIGHT_WRITE_ATTRIBUTION_INVALID'
             );
@@ -1783,6 +2046,14 @@ export async function runDevelopmentLandAreaSync(input: {
     let postflight: DevelopmentReadOnlySnapshot | null = null;
     let preflightRows: DevelopmentActivePropertyUnit[] = [];
     let writeAttribution: DevelopmentWriteAttribution | null = null;
+    let safetyFailureCode: string | null = null;
+    const recordSafetyFailure = (error: unknown): void => {
+        if (safetyFailureCode !== null) return;
+        safetyFailureCode =
+            error instanceof ControlledRunnerError
+                ? error.code
+                : 'POSTFLIGHT_READ_FAILED';
+    };
     try {
         const observedPreflight =
             await readAndValidateDevelopmentSnapshot({
@@ -1798,10 +2069,13 @@ export async function runDevelopmentLandAreaSync(input: {
             error instanceof ControlledRunnerError
                 ? error.code
                 : 'PREFLIGHT_READ_FAILED';
-        stoppedBeforePnu = input.target.pnus[0] ?? null;
+        stoppedBeforePnu =
+            developmentTargetExecutionAnchors(input.target)[0] ?? null;
     }
 
-    for (const pnu of failureCode === null ? input.target.pnus : []) {
+    const executionAnchors =
+        developmentTargetExecutionAnchors(input.target);
+    for (const pnu of failureCode === null ? executionAnchors : []) {
         const evidence = evidenceByPnu.get(pnu)!;
         try {
             let admission: DevelopmentRunTargetResult['admission'] =
@@ -2049,31 +2323,63 @@ export async function runDevelopmentLandAreaSync(input: {
         failureCode = 'TARGET_RESULT_COUNT_MISMATCH';
     }
     if (preflight) {
+        let observedPostflight:
+            | Awaited<
+                  ReturnType<
+                      typeof readAndValidateDevelopmentSnapshot
+                  >
+              >
+            | null = null;
         try {
-            const observedPostflight =
+            observedPostflight =
                 await readAndValidateDevelopmentSnapshot({
                     reader: input.preflightReader,
                     target: input.target,
                     evidence: input.evidence,
                     phase: 'POST',
-                    expectedIdentityDigest: preflight.identityDigest,
                 });
             postflight = observedPostflight.summary;
-            if (failureCode === null) {
+        } catch (error) {
+            recordSafetyFailure(error);
+        }
+        if (observedPostflight) {
+            try {
+                if (
+                    preflight.identityDigest !==
+                    observedPostflight.summary.identityDigest
+                ) {
+                    throw new ControlledRunnerError(
+                        'POSTFLIGHT_PROPERTY_IDENTITY_CHANGED'
+                    );
+                }
+            } catch (error) {
+                recordSafetyFailure(error);
+            }
+            try {
+                if (
+                    preflight.nonTargetTupleDigest !==
+                    observedPostflight.summary.nonTargetTupleDigest
+                ) {
+                    throw new ControlledRunnerError(
+                        'POSTFLIGHT_NON_TARGET_TUPLE_CHANGED'
+                    );
+                }
+            } catch (error) {
+                recordSafetyFailure(error);
+            }
+            try {
                 assertExpectedPostflightTransition({
                     preRows: preflightRows,
                     postRows: observedPostflight.rows,
                     evidence: input.evidence,
                     results,
                 });
-                if (
-                    preflight.nonTargetTupleDigest !==
-                    postflight.nonTargetTupleDigest
-                ) {
-                    throw new ControlledRunnerError(
-                        'POSTFLIGHT_NON_TARGET_TUPLE_CHANGED'
-                    );
-                }
+            } catch (error) {
+                recordSafetyFailure(error);
+            }
+        }
+        if (results.length > 0) {
+            try {
                 writeAttribution =
                     await readAndValidateWriteAttribution({
                         reader: input.preflightReader,
@@ -2081,16 +2387,12 @@ export async function runDevelopmentLandAreaSync(input: {
                         evidence: input.evidence,
                         results,
                     });
-            }
-        } catch (error) {
-            if (failureCode === null) {
-                failureCode =
-                    error instanceof ControlledRunnerError
-                        ? error.code
-                        : 'POSTFLIGHT_READ_FAILED';
+            } catch (error) {
+                recordSafetyFailure(error);
             }
         }
     }
+    const finalFailureCode = safetyFailureCode ?? failureCode;
 
     return {
         version: DEVELOPMENT_RUN_ARTIFACT_VERSION,
@@ -2107,8 +2409,8 @@ export async function runDevelopmentLandAreaSync(input: {
         writeAttribution,
         results,
         gate: {
-            status: failureCode === null ? 'PASS' : 'FAIL',
-            failureCode,
+            status: finalFailureCode === null ? 'PASS' : 'FAIL',
+            failureCode: finalFailureCode,
             stoppedBeforePnu,
         },
     };
@@ -2151,6 +2453,8 @@ export function validateDevelopmentRunArtifact(
         value.expectedPropertyUnitCount !== target.expectedPropertyUnitCount ||
         !Number.isSafeInteger(value.observedPropertyUnitCount) ||
         (value.observedPropertyUnitCount as number) < 0 ||
+        (value.observedPropertyUnitCount as number) >
+            target.expectedPropertyUnitCount ||
         typeof value.startedAt !== 'string' ||
         !Number.isFinite(Date.parse(value.startedAt)) ||
         typeof value.completedAt !== 'string' ||
@@ -2216,17 +2520,30 @@ export function validateDevelopmentRunArtifact(
     };
     const preflight = parseSnapshot(value.preflight, gate.status === 'PASS');
     const postflight = parseSnapshot(value.postflight, gate.status === 'PASS');
+    const identityChanged =
+        preflight !== null &&
+        postflight !== null &&
+        preflight.identityDigest !== postflight.identityDigest;
     if (
-        preflight &&
-        postflight &&
-        preflight.identityDigest !== postflight.identityDigest
+        identityChanged &&
+        (gate.status !== 'FAIL' ||
+            gate.failureCode !==
+                'POSTFLIGHT_PROPERTY_IDENTITY_CHANGED')
     ) {
         throw new ControlledRunnerError('RUN_ARTIFACT_IDENTITY_CHANGED');
     }
+    const nonTargetTupleChanged =
+        preflight !== null &&
+        postflight !== null &&
+        preflight.nonTargetTupleDigest !==
+            postflight.nonTargetTupleDigest;
     if (
-        preflight &&
-        postflight &&
-        preflight.nonTargetTupleDigest !== postflight.nonTargetTupleDigest
+        nonTargetTupleChanged &&
+        (gate.status !== 'FAIL' ||
+            ![
+                'POSTFLIGHT_PROPERTY_IDENTITY_CHANGED',
+                'POSTFLIGHT_NON_TARGET_TUPLE_CHANGED',
+            ].includes(gate.failureCode as string))
     ) {
         throw new ControlledRunnerError(
             'RUN_ARTIFACT_NON_TARGET_TUPLE_CHANGED'
@@ -2248,8 +2565,14 @@ export function validateDevelopmentRunArtifact(
             !Number.isSafeInteger(attribution.writerJobCount) ||
             (attribution.writerJobCount as number) < 1 ||
             (attribution.writerJobCount as number) > target.targetCount ||
-            attribution.attributedPropertyUnitCount !==
+            !Number.isSafeInteger(
+                attribution.attributedPropertyUnitCount
+            ) ||
+            (attribution.attributedPropertyUnitCount as number) < 1 ||
+            (attribution.attributedPropertyUnitCount as number) >
                 target.expectedPropertyUnitCount ||
+            (attribution.writerJobCount as number) >
+                (attribution.attributedPropertyUnitCount as number) ||
             typeof attribution.attributionDigest !== 'string' ||
             !HEX64_RE.test(attribution.attributionDigest)
         ) {
@@ -2261,6 +2584,8 @@ export function validateDevelopmentRunArtifact(
             attribution as unknown as DevelopmentWriteAttribution;
     }
 
+    const executionAnchors =
+        developmentTargetExecutionAnchors(target);
     const results = value.results.map((item) => {
         const result = asRecord(item, 'RUN_ARTIFACT_INVALID');
         if (
@@ -2280,7 +2605,7 @@ export function validateDevelopmentRunArtifact(
             ]) ||
             typeof result.pnu !== 'string' ||
             !PNU_RE.test(result.pnu) ||
-            !target.pnus.includes(result.pnu) ||
+            !executionAnchors.includes(result.pnu) ||
             !['NEW_DISCOVERY', 'RESUMED_LATEST', 'ALREADY_APPLIED'].includes(
                 result.admission as string
             ) ||
@@ -2333,9 +2658,19 @@ export function validateDevelopmentRunArtifact(
     if (
         new Set(results.map((result) => result.pnu)).size !== results.length ||
         JSON.stringify(results.map((result) => result.pnu)) !==
-            JSON.stringify(target.pnus.slice(0, results.length))
+            JSON.stringify(executionAnchors.slice(0, results.length))
     ) {
         throw new ControlledRunnerError('RUN_ARTIFACT_TARGET_ORDER_INVALID');
+    }
+    if (
+        writeAttribution &&
+        (writeAttribution.writerJobCount > results.length ||
+            writeAttribution.attributedPropertyUnitCount !==
+                value.observedPropertyUnitCount)
+    ) {
+        throw new ControlledRunnerError(
+            'RUN_ARTIFACT_WRITE_ATTRIBUTION_INVALID'
+        );
     }
 
     if (gate.status === 'PASS') {
@@ -2626,6 +2961,11 @@ export function validateDevelopmentPublicRunArtifact(
         !allNullOrAllPresent(attributionFields) ||
         (aggregateCounts.resultCount as number) >
             (aggregateCounts.targetCount as number) ||
+        (attributionFields.every((field) => field !== null) &&
+            ((aggregateCounts.writerJobCount as number) >
+                (aggregateCounts.resultCount as number) ||
+                aggregateCounts.attributedPropertyUnitCount !==
+                    aggregateCounts.observedPropertyUnitCount)) ||
         (gate.status === 'PASS' &&
             (gate.failureCode !== null ||
                 aggregateCounts.observedPropertyUnitCount !==

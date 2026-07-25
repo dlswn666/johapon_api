@@ -62,6 +62,57 @@ DB approval JSON은 실행 의도를 exact 대조하는 두 번째 입력이다.
 approval manifest 활성 여부와 scanned PNU 포함 여부는 confirmation/apply RPC가 같은
 transaction 안에서 다시 검사하므로 JSON만으로 승인된 것으로 간주하지 않는다.
 
+### v2 대표 anchor·부속 scope 계약
+
+집합건물은 대표 PNU만 discovery 실행 anchor로 사용하고, 같은 건물의 부속 PNU는 외부 API
+조회와 DB approval이 허용하는 scope로만 사용한다. v2 target은 이를 다음 두 배열로
+분리한다.
+
+- `anchors`: 실제 discovery를 실행하는 대표 PNU. evidence entry와 run artifact 순서도
+  이 배열에만 대응한다.
+- `allowedScopePnus`: 대표·부속 PNU 전체. runtime allowlist와 DB approval은 이 배열에
+  대응한다.
+
+두 해시의 의미도 분리한다.
+
+- `scopeDigest`: `development:<union>:<pnu>` canonical 문자열로 계산한 대표·부속
+  allowlist 해시
+- `manifestDigest`: anchor, 전체 scope, 예상 property/union count,
+  `allowManualOverwrite`를 모두 포함한 v2 실행계획 해시
+
+runtime allowlist와 DB approval은 `scopeDigest`에 결합하고, read-only API evidence와 run
+artifact는 `manifestDigest`에 결합한다. 따라서 같은 대표·부속 allowlist를 유지하면서
+부속 PNU를 실행 anchor로 바꾸는 변조도 통과할 수 없다.
+
+`MANUAL` prestate는 제안 면적 계산에 사용하지 않는다. v2 read-only capture가 현재 tuple을
+동시성 guard로만 exact 기록하고, 제안값은 same-run LDAREG 응답의 유효한 현재행 분자에서만
+생성한다. v1 target은 계속 `MANUAL` prestate를 거부한다. v2 evidence provenance는
+`DEVELOPMENT_READ_ONLY_API_CAPTURE`와 capture/snapshot digest만 허용하며 workbook 근거를
+가장하지 않는다.
+
+`mia-seven-791-2280-ldareg-api-readonly-20260725` target은 다음 범위로 고정한다.
+
+- anchor: `1130510100107912280`
+- allowed scope: `1130510100107912280`, `1130510100107912281`
+- expected property units: `4`
+- scope digest:
+  `071c33bbdb72ed3b8352b0e67fc45777b88f204807f65ea15ef9aa620126c937`
+- manifest digest:
+  `0bf26f3963e043ed0f7333da1d2ae575d4b6b00886d61ca9e97e2fa0560cea12`
+
+이 target은 read-only evidence workflow에만 등록한다. live evidence와 별도 DB approval
+bundle이 저장소에 승인되기 전에는 write workflow 선택지로 승격하지 않는다.
+
+부분 wave가 실패해도 runner는 postflight를 생략하지 않는다. 성공 terminal이 확정된
+anchor만 expected tuple과 writer attribution을 검사하고, 실패·미실행 anchor는 prestate
+불변을 요구한다. 타 조합·비대상 write, non-target tuple 변화, 미확정 anchor 변화는 기존
+작업 오류보다 우선하는 safety failure로 기록한다.
+
+현재 공식 건축물대장 `집합/공동주택` 범위는 canonical 83호다. 그중 projection-clean
+7개 건물 39호만 대지권 wave 후보이며, 5개 건물 44호와 연결된 shadow property 52행은
+별도 canonicalization dry-run·명시 승인 전까지 land-area apply를 차단한다. 로컬
+`VILLA`지만 공식 대장이 `일반/단독주택`인 `791-2282` 10호는 이 LDAREG 범위에서 제외한다.
+
 ## evidence reference 경계
 
 `sourceReferences`의 `*ReferenceSha256` 값은 사람 검토와 원본 추적을 위한 reference다.

@@ -6,15 +6,20 @@ import jwt from 'jsonwebtoken';
 import {
     DEVELOPMENT_DB_APPROVAL_MANIFEST_VERSION,
     DEVELOPMENT_EVIDENCE_MANIFEST_VERSION,
+    DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2,
     DEVELOPMENT_GIS_JWT_TTL_SECONDS,
     DEVELOPMENT_JOB_POLL_SOFT_TIMEOUT_MS,
     DEVELOPMENT_PUBLIC_RUN_ARTIFACT_VERSION,
     DEVELOPMENT_RUN_ARTIFACT_VERSION,
     DEVELOPMENT_TARGET_MANIFEST_VERSION,
+    DEVELOPMENT_TARGET_MANIFEST_VERSION_V2,
     LocalhostDevelopmentLandAreaSyncClient,
     computeDevelopmentTargetDigest,
+    computeDevelopmentTargetV2ManifestDigest,
     createDevelopmentGisSystemAdminJwt,
     createDevelopmentPublicRunArtifact,
+    developmentTargetAllowedScopePnus,
+    developmentTargetScopeDigest,
     parseDevelopmentDbApprovalManifest,
     parseDevelopmentEvidenceManifest,
     parseDevelopmentTargetManifest,
@@ -29,6 +34,7 @@ import {
     type DevelopmentReadOnlyPreflightReader,
     type DevelopmentRunArtifact,
     type DevelopmentTargetManifest,
+    type DevelopmentTargetManifestV2,
     type LandAreaSyncApiClient,
     type LandAreaSyncApiJob,
 } from '../src/operations/development-land-area-sync-runner';
@@ -37,11 +43,14 @@ import type { LandAreaSyncScopeSnapshot } from '../src/types/land-area-sync-job.
 const UNION_ID = '00f48b95-e9bc-4c92-a0e5-6b9a57adcfb9';
 const ACTOR_AUTH_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PROPERTY_UNIT_ID = '5a1a4cbb-c8ad-45a3-ae40-b90665dc949c';
+const SECOND_PROPERTY_UNIT_ID =
+    '6b2b5dcc-d9be-46b4-bf51-ca17c6ed050d';
 const PNU = '1130510100107912166';
 const SECOND_PNU = '1130510100107912167';
 const DISCOVERY_JOB_ID = '11111111-1111-4111-8111-111111111111';
 const APPLY_JOB_ID = '22222222-2222-4222-8222-222222222222';
 const CONFIRM_ADMISSION_KEY = '33333333-3333-4333-8333-333333333333';
+const SECOND_APPLY_JOB_ID = '44444444-4444-4444-8444-444444444444';
 const HASH = 'a'.repeat(64);
 const REPRESENTATIVE_EVIDENCE_MANIFEST_URL = new URL(
     '../development-land-area-sync-manifests/mia-seven-representative-evidence-20260725.json',
@@ -69,14 +78,46 @@ function target(pnus = [PNU], expectedPropertyUnitCount = 1): DevelopmentTargetM
 function approval(
     targetManifest: DevelopmentTargetManifest
 ): DevelopmentDbApprovalManifest {
+    const pnus =
+        developmentTargetAllowedScopePnus(targetManifest);
     return {
         version: DEVELOPMENT_DB_APPROVAL_MANIFEST_VERSION,
         databaseTarget: 'development',
         unionId: targetManifest.unionId,
-        pnus: targetManifest.pnus,
-        targetCount: targetManifest.targetCount,
-        manifestDigest: targetManifest.manifestDigest,
+        pnus,
+        targetCount: pnus.length,
+        manifestDigest:
+            developmentTargetScopeDigest(targetManifest),
         enabled: true,
+    };
+}
+
+function targetV2(
+    anchors = [PNU],
+    allowedScopePnus = [PNU, SECOND_PNU],
+    expectedPropertyUnitCount = 1
+): DevelopmentTargetManifestV2 {
+    const identity = {
+        unionId: UNION_ID,
+        anchors,
+        allowedScopePnus,
+        targetCount: anchors.length,
+        expectedPropertyUnitCount,
+        expectedUnionActivePropertyUnitCount:
+            expectedPropertyUnitCount,
+        expectedUnionActivePnuCount: 1,
+        allowManualOverwrite: true as const,
+    };
+    return {
+        version: DEVELOPMENT_TARGET_MANIFEST_VERSION_V2,
+        databaseTarget: 'development',
+        ...identity,
+        scopeDigest: computeDevelopmentTargetDigest(
+            identity.unionId,
+            identity.allowedScopePnus
+        ),
+        manifestDigest:
+            computeDevelopmentTargetV2ManifestDigest(identity),
     };
 }
 
@@ -133,13 +174,16 @@ function evidenceEntry(
 function preflightReader(
     entries: DevelopmentEvidenceEntry[],
     initiallyApplied = false,
-    writerJobId = APPLY_JOB_ID
+    writerJobId = APPLY_JOB_ID,
+    applyAfterFirstRead = true
 ): DevelopmentReadOnlyPreflightReader {
     let reads = 0;
     return {
         async readActivePropertyUnits() {
             reads += 1;
-            const applied = initiallyApplied || reads > 1;
+            const applied =
+                initiallyApplied ||
+                (applyAfterFirstRead && reads > 1);
             return entries.flatMap((entry) =>
                 entry.expectedPropertyUnitIds.map((id) => ({
                     id,
@@ -177,6 +221,27 @@ function evidence(
         unionId: targetManifest.unionId,
         manifestDigest: targetManifest.manifestDigest,
         entries,
+    };
+}
+
+function evidenceV2(
+    targetManifest: DevelopmentTargetManifest,
+    entries: DevelopmentEvidenceEntry[]
+): DevelopmentEvidenceManifest {
+    return {
+        version: DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2,
+        databaseTarget: 'development',
+        unionId: targetManifest.unionId,
+        manifestDigest: targetManifest.manifestDigest,
+        entries: entries.map((entry) => ({
+            ...entry,
+            allowManualOverwrite: true,
+            sourceReferences: {
+                kind: 'DEVELOPMENT_READ_ONLY_API_CAPTURE',
+                captureRunId: '30118336235',
+                snapshotReferenceSha256: HASH,
+            },
+        })),
     };
 }
 
@@ -328,6 +393,116 @@ function validRunArtifact(): DevelopmentRunArtifact {
     };
 }
 
+async function runTwoTargetPartialFailure(input: {
+    mutateUnfinalizedTarget?: boolean;
+    attributionUnionId?: string;
+} = {}): Promise<{
+    artifact: DevelopmentRunArtifact;
+    targetManifest: DevelopmentTargetManifest;
+    activeReads: number;
+    attributionReads: number;
+}> {
+    const targetManifest = target([PNU, SECOND_PNU], 2);
+    const evidenceManifest = evidence(targetManifest, [
+        evidenceEntry(PNU, PROPERTY_UNIT_ID),
+        evidenceEntry(SECOND_PNU, SECOND_PROPERTY_UNIT_ID),
+    ]);
+    let activeReads = 0;
+    let attributionReads = 0;
+    const artifact = await runDevelopmentLandAreaSync({
+        target: targetManifest,
+        dbApproval: approval(targetManifest),
+        evidence: evidenceManifest,
+        client: {
+            async getLatest(_unionId, pnu) {
+                if (pnu === SECOND_PNU) {
+                    throw new Error('second anchor failed');
+                }
+                return job(APPLY_JOB_ID, {
+                    status: 'PROCESSING',
+                    scopeState: 'SINGLE_PNU_CONFIRMED',
+                    outcome: null,
+                    sourceDiscoveryJobId: DISCOVERY_JOB_ID,
+                    includeWorkerFinalization: false,
+                });
+            },
+            async getJob() {
+                return job(APPLY_JOB_ID, {
+                    status: 'COMPLETED',
+                    scopeState: 'SINGLE_PNU_CONFIRMED',
+                    outcome: 'APPLIED',
+                    sourceDiscoveryJobId: DISCOVERY_JOB_ID,
+                });
+            },
+            async admitDiscovery() {
+                throw new Error('호출되면 안 됨');
+            },
+            async confirmDiscovery() {
+                throw new Error('호출되면 안 됨');
+            },
+        },
+        preflightReader: {
+            async readActivePropertyUnits() {
+                activeReads += 1;
+                const isPostflight = activeReads > 1;
+                const firstApplied = isPostflight;
+                const secondApplied =
+                    isPostflight &&
+                    input.mutateUnfinalizedTarget === true;
+                return [
+                    {
+                        id: PROPERTY_UNIT_ID,
+                        pnu: PNU,
+                        landArea: firstApplied ? '161' : null,
+                        landAreaSource: firstApplied
+                            ? ('LADFRL' as const)
+                            : ('LEGACY_UNKNOWN' as const),
+                        landAreaSyncedAt: firstApplied
+                            ? '2026-07-25T00:01:00.000Z'
+                            : null,
+                        landAreaSyncJobId: firstApplied
+                            ? APPLY_JOB_ID
+                            : null,
+                    },
+                    {
+                        id: SECOND_PROPERTY_UNIT_ID,
+                        pnu: SECOND_PNU,
+                        landArea: secondApplied ? '161' : null,
+                        landAreaSource: secondApplied
+                            ? ('LADFRL' as const)
+                            : ('LEGACY_UNKNOWN' as const),
+                        landAreaSyncedAt: secondApplied
+                            ? '2026-07-25T00:01:00.000Z'
+                            : null,
+                        landAreaSyncJobId: secondApplied
+                            ? SECOND_APPLY_JOB_ID
+                            : null,
+                    },
+                ];
+            },
+            async readPropertyUnitsBySyncJobIds(jobIds) {
+                attributionReads += 1;
+                assert.deepEqual(jobIds, [APPLY_JOB_ID]);
+                return [
+                    {
+                        id: PROPERTY_UNIT_ID,
+                        unionId:
+                            input.attributionUnionId ?? UNION_ID,
+                        landAreaSyncJobId: APPLY_JOB_ID,
+                    },
+                ];
+            },
+        },
+        sleep: async () => undefined,
+    });
+    return {
+        artifact,
+        targetManifest,
+        activeReads,
+        attributionReads,
+    };
+}
+
 test('공개 artifact는 집계와 digest allowlist만 남기고 raw 식별자·secret·target 배열을 제거한다', () => {
     const targetManifest = target();
     const fullArtifact = validRunArtifact();
@@ -426,8 +601,41 @@ test('공개 artifact는 집계와 digest allowlist만 남기고 raw 식별자·
                     },
                 },
                 'mia-seven-representative-20260725'
-            ),
+        ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
+    );
+
+    const identityFailureArtifact: DevelopmentRunArtifact = {
+        ...fullArtifact,
+        postflight: {
+            ...fullArtifact.postflight!,
+            identityDigest: '0'.repeat(64),
+        },
+        gate: {
+            status: 'FAIL',
+            failureCode: 'POSTFLIGHT_PROPERTY_IDENTITY_CHANGED',
+            stoppedBeforePnu: null,
+        },
+    };
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(
+            identityFailureArtifact,
+            targetManifest
+        )
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentRunArtifact(
+                {
+                    ...identityFailureArtifact,
+                    gate: {
+                        ...identityFailureArtifact.gate,
+                        failureCode: 'UNEXPECTED_RUNNER_ERROR',
+                    },
+                },
+                targetManifest
+            ),
+        /RUN_ARTIFACT_IDENTITY_CHANGED/
     );
 });
 
@@ -438,6 +646,13 @@ test('대표 evidence reference digest는 문서화된 PII-free canonical preima
         )
     );
     const sources = manifest.entries[0].sourceReferences;
+    assert.equal(
+        'workbookFileReferenceSha256' in sources,
+        true
+    );
+    if (!('workbookFileReferenceSha256' in sources)) {
+        throw new Error('legacy evidence source expected');
+    }
     const selectedCellsPreimage =
         '{"cells":{"E29":"791-2166","F29":"161"},"sheet":"미아791"}';
     const phase0ObservationPreimage =
@@ -559,6 +774,222 @@ test('target/DB approval/evidence manifest는 exact union/PNU/count/digest와 1:
     );
 });
 
+test('v2 target은 실행 anchor와 전체 허용 scope를 분리하고 API capture evidence만 결합한다', () => {
+    const rawTarget = targetV2();
+    const targetManifest =
+        parseDevelopmentTargetManifest(rawTarget);
+    const linkedEntry: DevelopmentEvidenceEntry = {
+        ...evidenceEntry(),
+        expectedScannedPnus: [PNU, SECOND_PNU],
+        expectedLadfrlAreaEvidence: {
+            parcels: [
+                { pnu: PNU, area: '80' },
+                { pnu: SECOND_PNU, area: '81' },
+            ],
+            totalArea: '161',
+        },
+    };
+    const evidenceManifest = parseDevelopmentEvidenceManifest(
+        evidenceV2(targetManifest, [linkedEntry])
+    );
+    const approvalManifest = parseDevelopmentDbApprovalManifest(
+        approval(targetManifest)
+    );
+
+    assert.equal(targetManifest.targetCount, 1);
+    assert.deepEqual(
+        developmentTargetAllowedScopePnus(targetManifest),
+        [PNU, SECOND_PNU]
+    );
+    assert.equal(
+        developmentTargetScopeDigest(targetManifest),
+        computeDevelopmentTargetDigest(UNION_ID, [
+            PNU,
+            SECOND_PNU,
+        ])
+    );
+    assert.notEqual(
+        targetManifest.manifestDigest,
+        developmentTargetScopeDigest(targetManifest)
+    );
+    assert.equal(approvalManifest.targetCount, 2);
+    assert.equal(
+        approvalManifest.manifestDigest,
+        developmentTargetScopeDigest(targetManifest)
+    );
+    assert.equal(
+        evidenceManifest.manifestDigest,
+        targetManifest.manifestDigest
+    );
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunnerManifests(
+            targetManifest,
+            approvalManifest,
+            evidenceManifest
+        )
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                targetManifest,
+                {
+                    ...approvalManifest,
+                    manifestDigest:
+                        targetManifest.manifestDigest,
+                },
+                evidenceManifest
+            ),
+        /DB_APPROVAL_MANIFEST_MISMATCH/
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                targetManifest,
+                approvalManifest,
+                {
+                    ...evidenceManifest,
+                    manifestDigest:
+                        targetManifest.scopeDigest,
+                }
+            ),
+        /EVIDENCE_MANIFEST_MISMATCH/
+    );
+    assert.throws(
+        () =>
+            parseDevelopmentTargetManifest({
+                ...rawTarget,
+                pnus: rawTarget.allowedScopePnus,
+        }),
+        /TARGET_MANIFEST_INVALID/
+    );
+    const {
+        scopeDigest: _omittedScopeDigest,
+        ...targetWithoutScopeDigest
+    } = rawTarget;
+    assert.throws(
+        () =>
+            parseDevelopmentTargetManifest(
+                targetWithoutScopeDigest
+            ),
+        /TARGET_MANIFEST_INVALID/
+    );
+    assert.throws(
+        () =>
+            parseDevelopmentTargetManifest({
+                ...rawTarget,
+                anchors: [SECOND_PNU],
+            }),
+        /TARGET_MANIFEST_INVALID/
+    );
+    assert.throws(
+        () =>
+            parseDevelopmentTargetManifest({
+                ...rawTarget,
+                expectedPropertyUnitCount: 2,
+            }),
+        /TARGET_MANIFEST_INVALID/
+    );
+    assert.throws(
+        () =>
+            parseDevelopmentEvidenceManifest({
+                ...evidenceManifest,
+                version: DEVELOPMENT_EVIDENCE_MANIFEST_VERSION,
+            }),
+        /EVIDENCE_SOURCE_INVALID/
+    );
+
+    const allowedTargets = [PNU, SECOND_PNU]
+        .map((pnu) => `development:${UNION_ID}:${pnu}`)
+        .join(',');
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunnerEnvironment(
+            {
+                DEV_API_JWT_SECRET: 'dev-jwt',
+                DEV_SUPABASE_URL:
+                    'https://dev.example.supabase.co',
+                DEV_SUPABASE_SERVICE_ROLE_KEY: 'dev-service',
+                JWT_SECRET: 'prod-jwt',
+                SUPABASE_URL:
+                    'https://prod.example.supabase.co',
+                SUPABASE_SERVICE_ROLE_KEY: 'prod-service',
+                LAND_AREA_SYNC_ENABLED: 'true',
+                LAND_AREA_SYNC_ALLOWED_TARGETS:
+                    allowedTargets,
+            },
+            targetManifest
+        )
+    );
+});
+
+test('v2 evidence entry 간 property unit ID 중복은 expected count와 무관하게 fail-close한다', () => {
+    const targetManifest = targetV2(
+        [PNU, SECOND_PNU],
+        [PNU, SECOND_PNU],
+        1
+    );
+    const duplicateEntries = [
+        evidenceEntry(PNU, PROPERTY_UNIT_ID),
+        evidenceEntry(SECOND_PNU, PROPERTY_UNIT_ID),
+    ];
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                targetManifest,
+                approval(targetManifest),
+                evidenceV2(targetManifest, duplicateEntries)
+            ),
+        /EVIDENCE_PROPERTY_UNIT_ID_OVERLAP/
+    );
+});
+
+test('v2 evidence entry 간 scanned PNU 중복은 같은 물리 scope의 중복 실행을 막는다', () => {
+    const targetManifest = targetV2(
+        [PNU, SECOND_PNU],
+        [PNU, SECOND_PNU],
+        2
+    );
+    const firstEntry: DevelopmentEvidenceEntry = {
+        ...evidenceEntry(PNU, PROPERTY_UNIT_ID),
+        expectedScannedPnus: [PNU, SECOND_PNU],
+        expectedLadfrlAreaEvidence: {
+            parcels: [
+                { pnu: PNU, area: '80' },
+                { pnu: SECOND_PNU, area: '81' },
+            ],
+            totalArea: '161',
+        },
+    };
+    const secondEntry = evidenceEntry(
+        SECOND_PNU,
+        SECOND_PROPERTY_UNIT_ID
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                targetManifest,
+                approval(targetManifest),
+                evidenceV2(targetManifest, [
+                    firstEntry,
+                    secondEntry,
+                ])
+            ),
+        /EVIDENCE_SCANNED_PNU_OVERLAP/
+    );
+});
+
+test('v2 evidence scanned PNU 합집합은 전체 허용 scope를 exact하게 덮어야 한다', () => {
+    const targetManifest = targetV2();
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                targetManifest,
+                approval(targetManifest),
+                evidenceV2(targetManifest, [evidenceEntry()])
+            ),
+        /EVIDENCE_SCANNED_PNU_COVERAGE_MISMATCH/
+    );
+});
+
 test('runtime은 dev service env 격리, exact allowlist, write feature flag를 모두 확인한다', () => {
     const targetManifest = target();
     const allowedTarget = `development:${UNION_ID}:${PNU}`;
@@ -610,6 +1041,109 @@ test('runtime은 dev service env 격리, exact allowlist, write feature flag를 
                 targetManifest
             ),
         /RUNTIME_ALLOWLIST_MANIFEST_MISMATCH/
+    );
+});
+
+test('v2 preflight는 anchor PNU가 아니라 evidence property ID exact 집합으로 부속지번 호실을 검증한다', async () => {
+    const targetManifest = targetV2();
+    const linkedEntry: DevelopmentEvidenceEntry = {
+        ...evidenceEntry(),
+        expectedScannedPnus: [PNU, SECOND_PNU],
+        expectedLadfrlAreaEvidence: {
+            parcels: [
+                { pnu: PNU, area: '80' },
+                { pnu: SECOND_PNU, area: '81' },
+            ],
+            totalArea: '161',
+        },
+    };
+    const evidenceManifest = evidenceV2(targetManifest, [
+        linkedEntry,
+    ]);
+    const linkedSnapshot: LandAreaSyncScopeSnapshot = {
+        ...snapshot(),
+        scannedPnus: [PNU, SECOND_PNU],
+        ladfrlAreaEvidence: {
+            version: 'land-area-sync.ladfrl-scope.v1',
+            parcels:
+                linkedEntry.expectedLadfrlAreaEvidence.parcels,
+            totalArea:
+                linkedEntry.expectedLadfrlAreaEvidence.totalArea,
+        },
+    };
+    const terminal = job(APPLY_JOB_ID, {
+        status: 'COMPLETED',
+        scopeState: 'LINKED_SCOPE_RESOLVED',
+        outcome: 'APPLIED',
+        scopeSnapshot: linkedSnapshot,
+    });
+    let latestCalls = 0;
+    const activeRow = {
+        id: PROPERTY_UNIT_ID,
+        pnu: SECOND_PNU,
+        landArea: '161',
+        landAreaSource: 'LADFRL' as const,
+        landAreaSyncedAt: '2026-07-25T00:01:00.000Z',
+        landAreaSyncJobId: APPLY_JOB_ID,
+    };
+    const artifact = await runDevelopmentLandAreaSync({
+        target: targetManifest,
+        dbApproval: approval(targetManifest),
+        evidence: evidenceManifest,
+        client: {
+            async getLatest() {
+                latestCalls += 1;
+                return terminal;
+            },
+            async getJob() {
+                throw new Error('호출되면 안 됨');
+            },
+            async admitDiscovery() {
+                throw new Error('호출되면 안 됨');
+            },
+            async confirmDiscovery() {
+                throw new Error('호출되면 안 됨');
+            },
+        },
+        preflightReader: {
+            async readActivePropertyUnits() {
+                return [activeRow];
+            },
+            async readPropertyUnitsBySyncJobIds() {
+                return [
+                    {
+                        id: PROPERTY_UNIT_ID,
+                        unionId: UNION_ID,
+                        landAreaSyncJobId: APPLY_JOB_ID,
+                    },
+                ];
+            },
+        },
+    });
+
+    assert.equal(
+        artifact.gate.status,
+        'PASS',
+        artifact.gate.failureCode ?? undefined
+    );
+    assert.equal(
+        artifact.manifestDigest,
+        targetManifest.manifestDigest
+    );
+    assert.notEqual(
+        artifact.manifestDigest,
+        targetManifest.scopeDigest
+    );
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(
+            artifact,
+            targetManifest
+        )
+    );
+    assert.equal(latestCalls, 1);
+    assert.deepEqual(
+        artifact.results.map((result) => result.pnu),
+        [PNU]
     );
 });
 
@@ -873,7 +1407,10 @@ test('discovery 증거 불일치는 raw 값을 노출하지 않는 필드별 코
                 },
             },
             preflightReader: preflightReader(
-                evidenceManifest.entries
+                evidenceManifest.entries,
+                false,
+                APPLY_JOB_ID,
+                false
             ),
         });
 
@@ -1197,7 +1734,7 @@ test('read-only preflight membership/prestate가 다르면 API admission 전에 
     assert.equal(artifact.results.length, 0);
 });
 
-test('10분 queue 상한과 전파 여유를 지난 job도 durable terminal까지 drain한 뒤 FAIL한다', async () => {
+test('10분 queue 상한 뒤 적용된 미기록 terminal은 tuple 안전 실패가 기존 timeout을 우선한다', async () => {
     const targetManifest = target();
     const evidenceManifest = evidence(targetManifest);
     let clock = Date.parse('2026-07-25T00:00:00.000Z');
@@ -1257,7 +1794,7 @@ test('10분 queue 상한과 전파 여유를 지난 job도 durable terminal까�
     assert.equal(artifact.gate.status, 'FAIL');
     assert.equal(
         artifact.gate.failureCode,
-        'JOB_POLL_SOFT_TIMEOUT_AFTER_TERMINAL'
+        'POSTFLIGHT_UNFINALIZED_TARGET_TUPLE_CHANGED'
     );
     await assert.rejects(
         runDevelopmentLandAreaSync({
@@ -1343,7 +1880,9 @@ test('confirmation POST 503은 exact admission id를 복구해 apply terminal까
         dbApproval: approval(targetManifest),
         evidence: evidenceManifest,
         client,
-        preflightReader: preflightReader(evidenceManifest.entries),
+        preflightReader: preflightReader(
+            evidenceManifest.entries
+        ),
         pollIntervalMs: 100,
         admissionReconciliationAttempts: 2,
         sleep: async () => undefined,
@@ -1514,7 +2053,12 @@ test('POST 5xx 전에 durable admission이 없으면 exact 조회를 유한 횟�
         dbApproval: approval(targetManifest),
         evidence: evidenceManifest,
         client,
-        preflightReader: preflightReader(evidenceManifest.entries),
+        preflightReader: preflightReader(
+            evidenceManifest.entries,
+            false,
+            APPLY_JOB_ID,
+            false
+        ),
         pollIntervalMs: 100,
         admissionReconciliationAttempts: 2,
         sleep: async () => undefined,
@@ -1527,6 +2071,75 @@ test('POST 5xx 전에 durable admission이 없으면 exact 조회를 유한 횟�
         artifact.gate.failureCode,
         'AMBIGUOUS_ADMISSION_NOT_DURABLE'
     );
+});
+
+test('두 번째 anchor 실패 후에도 postflight를 읽고 성공 subset만 transition·writer 귀속을 검증한다', async () => {
+    const {
+        artifact,
+        targetManifest,
+        activeReads,
+        attributionReads,
+    } = await runTwoTargetPartialFailure();
+
+    assert.equal(activeReads, 2);
+    assert.equal(attributionReads, 1);
+    assert.equal(artifact.gate.status, 'FAIL');
+    assert.equal(artifact.gate.failureCode, 'UNEXPECTED_RUNNER_ERROR');
+    assert.equal(artifact.gate.stoppedBeforePnu, SECOND_PNU);
+    assert.deepEqual(
+        artifact.results.map((result) => result.pnu),
+        [PNU]
+    );
+    assert.equal(artifact.observedPropertyUnitCount, 1);
+    assert.equal(artifact.postflight?.positiveLandAreaCount, 1);
+    assert.equal(artifact.writeAttribution?.writerJobCount, 1);
+    assert.equal(
+        artifact.writeAttribution?.attributedPropertyUnitCount,
+        1
+    );
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(artifact, targetManifest)
+    );
+    assert.doesNotThrow(() =>
+        createDevelopmentPublicRunArtifact(
+            artifact,
+            'partial-failure-safety-test'
+        )
+    );
+});
+
+test('실패·미실행 anchor tuple 변경은 기존 작업 오류를 안전 postflight 오류로 덮어쓴다', async () => {
+    const { artifact, attributionReads } =
+        await runTwoTargetPartialFailure({
+            mutateUnfinalizedTarget: true,
+        });
+
+    assert.equal(attributionReads, 1);
+    assert.equal(artifact.gate.status, 'FAIL');
+    assert.equal(
+        artifact.gate.failureCode,
+        'POSTFLIGHT_UNFINALIZED_TARGET_TUPLE_CHANGED'
+    );
+    assert.equal(
+        artifact.writeAttribution?.attributedPropertyUnitCount,
+        1
+    );
+});
+
+test('부분 성공 writer bounded read의 타 조합 행은 기존 작업 오류보다 우선해 FAIL한다', async () => {
+    const { artifact, attributionReads } =
+        await runTwoTargetPartialFailure({
+            attributionUnionId:
+                '10f48b95-e9bc-4c92-a0e5-6b9a57adcfb9',
+        });
+
+    assert.equal(attributionReads, 1);
+    assert.equal(artifact.gate.status, 'FAIL');
+    assert.equal(
+        artifact.gate.failureCode,
+        'POSTFLIGHT_CROSS_UNION_OR_SCOPE_WRITE_DETECTED'
+    );
+    assert.equal(artifact.writeAttribution, null);
 });
 
 test('postflight는 승인 대상 밖의 land area/source/synced/job tuple 변경을 exact 거부한다', async () => {
@@ -1594,6 +2207,15 @@ test('postflight는 승인 대상 밖의 land area/source/synced/job tuple 변�
     assert.equal(
         artifact.gate.failureCode,
         'POSTFLIGHT_NON_TARGET_TUPLE_CHANGED'
+    );
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(artifact, targetManifest)
+    );
+    assert.doesNotThrow(() =>
+        createDevelopmentPublicRunArtifact(
+            artifact,
+            'non-target-safety-failure'
+        )
     );
 });
 
@@ -1678,7 +2300,10 @@ test('FAILED/review/cache conflict이면 다음 PNU admission을 즉시 중단�
         preflightReader: preflightReader(evidenceManifest.entries),
     });
     assert.equal(artifact.gate.status, 'FAIL');
-    assert.equal(artifact.gate.failureCode, 'APPLY_TERMINAL_NOT_PASS');
+    assert.equal(
+        artifact.gate.failureCode,
+        'POSTFLIGHT_UNFINALIZED_TARGET_TUPLE_CHANGED'
+    );
     assert.equal(artifact.gate.stoppedBeforePnu, PNU);
     assert.deepEqual(latestPnus, [PNU]);
 });

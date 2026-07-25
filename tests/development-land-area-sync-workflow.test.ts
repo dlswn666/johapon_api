@@ -11,6 +11,13 @@ const workflow = fs.readFileSync(
     ),
     'utf8'
 );
+const captureWorkflow = fs.readFileSync(
+    path.join(
+        root,
+        '.github/workflows/development-land-area-evidence-capture.yml'
+    ),
+    'utf8'
+);
 const runner = fs.readFileSync(
     path.join(root, 'src/operations/development-land-area-sync-runner.ts'),
     'utf8'
@@ -55,6 +62,33 @@ test('workflow는 protected environment secret의 actor UUID만 내부 사용하
     assert.doesNotMatch(
         workflow,
         /echo[^\n]*\$\{ACTOR_AUTH_USER_ID\}/
+    );
+});
+
+test('791-2280 API target은 read-only capture에서만 선택되고 v2 전체 scope로 임시 approval을 검증한다', () => {
+    const label =
+        'mia-seven-791-2280-ldareg-api-readonly-20260725';
+    assert.match(captureWorkflow, new RegExp(label));
+    assert.match(
+        captureWorkflow,
+        /mia-seven-791-2280-ldareg-api-readonly-target-20260725\.json/
+    );
+    assert.match(
+        captureWorkflow,
+        /const approvedScopePnus = Array\.isArray\(target\.allowedScopePnus\)[\s\S]+pnus: approvedScopePnus,[\s\S]+targetCount: approvedScopePnus\.length/
+    );
+    assert.match(
+        captureWorkflow,
+        /const approvedScopeDigest = typeof target\.scopeDigest === "string"[\s\S]+manifestDigest: approvedScopeDigest/
+    );
+    assert.match(
+        captureWorkflow,
+        /evidence\.manifestDigest !== target\.manifestDigest/
+    );
+    assert.doesNotMatch(workflow, new RegExp(label));
+    assert.doesNotMatch(
+        workflow,
+        /mia-seven-791-2280-ldareg-api-readonly-target-20260725\.json/
     );
 });
 

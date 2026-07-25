@@ -1515,7 +1515,7 @@ test('dedup identity payload conflict는 정상 row가 남아도 partial apply�
     assert.ok(result.issues.some((issue) => issue.code === 'LDAREG_IDENTITY_CONFLICT'));
 });
 
-test('원장 승격: clsSeCode 불명확(ambiguous)이면 CURRENT 유지하되 LDAREG_IDENTITY_CONFLICT issue 1건을 남긴다', () => {
+test('clsSeCode 불명확(ambiguous)이면 LDAREG_IDENTITY_CONFLICT를 남기고 서비스 apply 전 전체 blocking한다', () => {
     const result = assemble({
         unionId: 'union-1',
         scannedPnus: [ANCHOR],
@@ -1531,8 +1531,13 @@ test('원장 승격: clsSeCode 불명확(ambiguous)이면 CURRENT 유지하되 L
         buildingUnits: [],
         propertyUnits: [property],
     });
-    assert.equal(result.items.length, 1, 'ambiguous 여도 CURRENT 로 유지·적용');
+    assert.equal(result.items.length, 1, '진단용 매칭 결과는 보존한다');
     assert.equal(result.items[0].components[0].sourceState, 'CURRENT');
+    assert.equal(
+        result.blocking,
+        true,
+        'service의 blocking barrier가 apply items를 사용하기 전에 전체 scope를 차단한다'
+    );
     assert.ok(result.issues.some((i) => i.code === 'LDAREG_IDENTITY_CONFLICT'), 'ambiguous 표시 issue 1건');
 });
 

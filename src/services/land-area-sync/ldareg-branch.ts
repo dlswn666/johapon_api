@@ -695,6 +695,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
     let denominatorMismatch = false;
     let ratioParseFailed = false;
     let unitMatchIncomplete = false;
+    let sourceStateAmbiguous = false;
 
     // property_unit_id → component 목록.
     const byProperty = new Map<string, LandAreaSyncApplyLdaregComponent[]>();
@@ -829,6 +830,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         }
 
         if (record.sourceStateAmbiguous) {
+            sourceStateAmbiguous = true;
             issues.push({
                 code: 'LDAREG_IDENTITY_CONFLICT',
                 propertyUnitId: decision.propertyUnitId,
@@ -1015,6 +1017,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         blocking:
             denominatorMismatch ||
             ratioParseFailed ||
+            sourceStateAmbiguous ||
             componentReplicaMismatch ||
             ambiguousPropertyIdentity ||
             nonzeroWithoutMatchedItem ||

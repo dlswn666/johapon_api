@@ -1,0 +1,19 @@
+{
+  "version": "land-area-development-target-manifest@2",
+  "databaseTarget": "development",
+  "unionId": "00f48b95-e9bc-4c92-a0e5-6b9a57adcfb9",
+  "anchors": [
+    "1130510100107912280"
+  ],
+  "allowedScopePnus": [
+    "1130510100107912280",
+    "1130510100107912281"
+  ],
+  "targetCount": 1,
+  "scopeDigest": "071c33bbdb72ed3b8352b0e67fc45777b88f204807f65ea15ef9aa620126c937",
+  "manifestDigest": "0bf26f3963e043ed0f7333da1d2ae575d4b6b00886d61ca9e97e2fa0560cea12",
+  "expectedPropertyUnitCount": 4,
+  "expectedUnionActivePropertyUnitCount": 429,
+  "expectedUnionActivePnuCount": 299,
+  "allowManualOverwrite": true
+}
