@@ -41,8 +41,11 @@ COPY --from=builder /app/data ./data
 RUN addgroup -g 1001 -S nodejs
 RUN adduser -S nodejs -u 1001
 RUN mkdir -p logs .phase0-land-area .development-land-area-sync \
+      .development-building-registry-relation-adoption \
   && chown -R nodejs:nodejs logs .phase0-land-area .development-land-area-sync \
-  && chmod 700 .phase0-land-area .development-land-area-sync
+      .development-building-registry-relation-adoption \
+  && chmod 700 .phase0-land-area .development-land-area-sync \
+      .development-building-registry-relation-adoption
 USER nodejs
 
 # 환경 변수 설정

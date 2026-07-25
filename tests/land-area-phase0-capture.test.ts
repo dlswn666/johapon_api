@@ -3315,3 +3315,66 @@ test('서울특별시 강북구 미아동 791-2280 base/attached manifest와 승
         )
     );
 });
+
+test('미아7 중복 없는 다세대 6개 Phase 0 manifest는 단일필지 가설과 양쪽 대조군을 exact 고정한다', async () => {
+    const manifestName =
+        'mia-seven-clean-multifamily-remaining-six-first-observation-20260725';
+    const manifestPath = path.join(
+        process.cwd(),
+        `phase0-manifests/${manifestName}.json`
+    );
+    const manifestRaw = await readFile(manifestPath, 'utf8');
+    const expectedManifest = {
+        version: LAND_AREA_PHASE0_MANIFEST_VERSION,
+        samples: [
+            {
+                alias: 'mia7-zero-control',
+                expectedBylot: 'ZERO',
+                pnu: '1130510100107912166',
+            },
+            {
+                alias: 'mia7-positive-control',
+                expectedBylot: 'POSITIVE',
+                pnu: '1130510100107450049',
+            },
+            ...[
+                '1130510100107912172',
+                '1130510100107912173',
+                '1130510100107912188',
+                '1130510100107912191',
+                '1130510100107912315',
+                '1130510100107912340',
+            ].map((pnu) => ({
+                alias: `mia7-mf-791-${pnu.slice(-4)}`,
+                expectedBylot: 'ZERO' as const,
+                pnu,
+            })),
+        ],
+    } as const;
+
+    assert.deepEqual(JSON.parse(manifestRaw), expectedManifest);
+    assert.deepEqual(
+        parseLandAreaPhase0Manifest(JSON.parse(manifestRaw)),
+        expectedManifest
+    );
+    assert.equal(
+        createHash('sha256').update(manifestRaw).digest('hex'),
+        '462295b3021ba8c00807225d52cc12a4124ca69f8c70c8cf2a604a430c152dc6'
+    );
+
+    const workflow = await readFile(
+        path.join(
+            process.cwd(),
+            '.github/workflows/phase0-land-area-capture.yml'
+        ),
+        'utf8'
+    );
+    assert.match(workflow, new RegExp(`^          - ${manifestName}$`, 'm'));
+    assert.match(
+        workflow,
+        new RegExp(
+            `${manifestName.replaceAll('-', '\\-')}\\)\\n` +
+                `              manifest_path="phase0-manifests/${manifestName}\\.json"`
+        )
+    );
+});
