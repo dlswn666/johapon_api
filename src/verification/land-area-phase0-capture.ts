@@ -58,6 +58,8 @@ import type {
 
 export const LAND_AREA_PHASE0_MANIFEST_VERSION =
     'land-area-phase0-capture-input@1' as const;
+export const LAND_AREA_PHASE0_MANIFEST_VERSION_V2 =
+    'land-area-phase0-capture-input@2' as const;
 export const LAND_AREA_PHASE0_PLAN_VERSION =
     'land-area-phase0-capture-plan@1' as const;
 export const LAND_AREA_PHASE0_ARTIFACT_VERSION =
@@ -92,15 +94,19 @@ export const LAND_AREA_PHASE0_ENDPOINTS = [
 ] as const satisfies readonly GisSharedEndpointName[];
 
 export type LandAreaPhase0ExpectedBylot = 'ZERO' | 'POSITIVE';
+export type LandAreaPhase0ExpectedFamily = 'LADFRL' | 'LDAREG';
 
 export interface LandAreaPhase0CaptureSample {
     alias: string;
     expectedBylot: LandAreaPhase0ExpectedBylot;
+    expectedFamily?: LandAreaPhase0ExpectedFamily;
     pnu: string;
 }
 
 export interface LandAreaPhase0CaptureManifest {
-    version: typeof LAND_AREA_PHASE0_MANIFEST_VERSION;
+    version:
+        | typeof LAND_AREA_PHASE0_MANIFEST_VERSION
+        | typeof LAND_AREA_PHASE0_MANIFEST_VERSION_V2;
     samples: LandAreaPhase0CaptureSample[];
 }
 
@@ -467,9 +473,13 @@ export function parseLandAreaPhase0Manifest(
         throw new Error('manifest는 JSON 객체여야 합니다.');
     }
     assertOnlyKeys(input, ['version', 'samples']);
-    if (input.version !== LAND_AREA_PHASE0_MANIFEST_VERSION) {
+    if (
+        input.version !== LAND_AREA_PHASE0_MANIFEST_VERSION &&
+        input.version !== LAND_AREA_PHASE0_MANIFEST_VERSION_V2
+    ) {
         throw new Error('manifest version이 올바르지 않습니다.');
     }
+    const isV2 = input.version === LAND_AREA_PHASE0_MANIFEST_VERSION_V2;
     if (
         !Array.isArray(input.samples) ||
         input.samples.length < 1 ||
@@ -487,7 +497,17 @@ export function parseLandAreaPhase0Manifest(
             if (!isRecord(candidate)) {
                 throw new Error('sample은 JSON 객체여야 합니다.');
             }
-            assertOnlyKeys(candidate, ['alias', 'expectedBylot', 'pnu']);
+            assertOnlyKeys(
+                candidate,
+                isV2
+                    ? [
+                          'alias',
+                          'expectedBylot',
+                          'expectedFamily',
+                          'pnu',
+                      ]
+                    : ['alias', 'expectedBylot', 'pnu']
+            );
             if (
                 typeof candidate.alias !== 'string' ||
                 !ALIAS_PATTERN.test(candidate.alias)
@@ -510,6 +530,14 @@ export function parseLandAreaPhase0Manifest(
             hasPositive ||= candidate.expectedBylot === 'POSITIVE';
 
             if (
+                isV2 &&
+                candidate.expectedFamily !== 'LADFRL' &&
+                candidate.expectedFamily !== 'LDAREG'
+            ) {
+                throw new Error('expectedFamily 값이 올바르지 않습니다.');
+            }
+
+            if (
                 typeof candidate.pnu !== 'string' ||
                 !PNU_PATTERN.test(candidate.pnu)
             ) {
@@ -523,6 +551,12 @@ export function parseLandAreaPhase0Manifest(
             return {
                 alias: candidate.alias,
                 expectedBylot: candidate.expectedBylot,
+                ...(isV2
+                    ? {
+                          expectedFamily:
+                              candidate.expectedFamily as LandAreaPhase0ExpectedFamily,
+                      }
+                    : {}),
                 pnu: candidate.pnu,
             };
         }
@@ -531,7 +565,16 @@ export function parseLandAreaPhase0Manifest(
     if (!hasZero || !hasPositive) {
         throw new Error('ZERO와 POSITIVE sample이 각각 최소 1개 필요합니다.');
     }
-    return { version: LAND_AREA_PHASE0_MANIFEST_VERSION, samples };
+    return { version: input.version, samples };
+}
+
+export function expectedLandAreaPhase0Family(
+    sample: LandAreaPhase0CaptureSample
+): LandAreaPhase0ExpectedFamily {
+    return (
+        sample.expectedFamily ??
+        (sample.expectedBylot === 'POSITIVE' ? 'LDAREG' : 'LADFRL')
+    );
 }
 
 function sha256(value: string): string {
@@ -2229,10 +2272,14 @@ function buildSampleArtifact(
         failureCodes.add('EXPOS_PK_INVALID');
     }
     const reviewCodes = new Set<string>();
-    // expectedBylot은 부속지번 개수에 대한 가설일 뿐 주택 유형이나
-    // 대지권 자료군을 뜻하지 않는다. 단일 필지(0개 부속지번)인
-    // 다세대주택도 공식 표제부 분류가 LDAREG이면 그대로 허용한다.
-    if (classification.kind !== 'CLASSIFIED') {
+    // v2의 expectedFamily는 주택 유형/자료군 가설을 expectedBylot과
+    // 분리한다. v1은 이미 보존된 최초 관찰 artifact의 하위 호환을 위해
+    // 기존 ZERO→LADFRL, POSITIVE→LDAREG 의미를 유지한다.
+    if (
+        classification.kind !== 'CLASSIFIED' ||
+        classification.family !==
+            expectedLandAreaPhase0Family(raw.sample)
+    ) {
         failureCodes.add('HOUSING_CLASSIFICATION_ALLOWLIST_MISMATCH');
     }
     if (titleCounts.hasInvalidPk || titlePkInvalid)

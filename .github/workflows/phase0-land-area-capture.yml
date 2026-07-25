@@ -87,10 +87,22 @@ jobs:
           node -e '
             const fs = require("node:fs");
             const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const approvedVersions = new Set([
+              "land-area-phase0-capture-input@1",
+              "land-area-phase0-capture-input@2",
+            ]);
             if (
-              value?.version !== "land-area-phase0-capture-input@1"
+              !approvedVersions.has(value?.version)
               || !Array.isArray(value.samples)
               || value.samples.length < 2
+              || (
+                value.version === "land-area-phase0-capture-input@2"
+                && value.samples.some(
+                  (sample) =>
+                    sample?.expectedFamily !== "LADFRL"
+                    && sample?.expectedFamily !== "LDAREG"
+                )
+              )
             ) process.exit(1);
           ' "${manifest_path}"
 

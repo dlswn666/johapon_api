@@ -11,9 +11,11 @@ import {
     LAND_AREA_PHASE0_ARTIFACT_VERSION,
     LAND_AREA_PHASE0_ENDPOINTS,
     LAND_AREA_PHASE0_MAX_ARTIFACT_BYTES,
+    expectedLandAreaPhase0Family,
     parseLandAreaPhase0Manifest,
     type LandAreaPhase0CaptureArtifact,
     type LandAreaPhase0CaptureManifest,
+    type LandAreaPhase0ExpectedFamily,
 } from './land-area-phase0-capture';
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
@@ -1680,6 +1682,39 @@ function exactHousingFamily(
     return null;
 }
 
+function requireExpectedHousingFamily(
+    sample: JsonRecord,
+    expectedFamily: LandAreaPhase0ExpectedFamily,
+    path: string
+): void {
+    const endpoints = sample.endpoints as JsonRecord[];
+    const titleEndpoint = endpoints.find(
+        (endpoint) => endpoint.endpoint === 'getBrTitleInfo'
+    )!;
+    const titleInventory = titleEndpoint.inventory as JsonRecord;
+    const titleRecords = titleInventory.records as JsonRecord[];
+    const titleRootHashes = new Set(
+        titleRecords
+            .map((record) => record.managementPkHash)
+            .filter((hash): hash is string => typeof hash === 'string')
+    );
+    const actualFamily =
+        titleRootHashes.size === 1
+            ? exactHousingFamily(titleRecords)
+            : null;
+    const hasMismatchCode = (
+        sample.failureCodes as string[]
+    ).includes('HOUSING_CLASSIFICATION_ALLOWLIST_MISMATCH');
+    if (
+        hasMismatchCode !==
+        (actualFamily === null || actualFamily !== expectedFamily)
+    ) {
+        reject(
+            `${path}.failureCodes conflicts with manifest housing family`
+        );
+    }
+}
+
 function deriveScopeBasisParentMap(
     titleRecords: JsonRecord[],
     basisRecords: JsonRecord[]
@@ -2944,6 +2979,32 @@ export function validateLandAreaPhase0CaptureArtifact(
     if (new Set(actualCommitments).size !== actualCommitments.length) {
         reject('artifact samples contain duplicate commitments');
     }
+    const expectedFamilyByCommitment = new Map(
+        manifest.samples.map((sample) => [
+            sampleCommitment(
+                hashIdentity('ALIAS', sample.alias),
+                hashIdentity('PNU', sample.pnu),
+                sample.expectedBylot
+            ),
+            expectedLandAreaPhase0Family(sample),
+        ])
+    );
+    artifactInput.samples.forEach((sample, index) => {
+        const commitment = validatedSamples[index].commitment;
+        const expectedFamily = expectedFamilyByCommitment.get(
+            commitment
+        );
+        if (expectedFamily === undefined) {
+            reject(
+                `artifact.samples[${index}] lacks an approved manifest family`
+            );
+        }
+        requireExpectedHousingFamily(
+            sample as JsonRecord,
+            expectedFamily,
+            `artifact.samples[${index}]`
+        );
+    });
     if (artifactInput.gate.status === 'PASS') {
         artifactInput.samples.forEach((sample, index) =>
             requirePassWitnesses(
