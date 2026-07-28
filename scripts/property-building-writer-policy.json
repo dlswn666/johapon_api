@@ -181,6 +181,24 @@
   ],
   "rpcCalls": [
     {
+      "id": "5c509741bdcf3c6eaba8",
+      "path": "src/cli/development-api-authoritative-ldareg-backfill.ts",
+      "name": "inspect_development_api_authoritative_ldareg_backfill_v1",
+      "contextSha256": "538848d9fa661b53f24f1725f90dac2f6492e6f310ab11ccc11232e2749b96af",
+      "sourceFileSha256": "1c41cbc40987aabecc9a02fbee7634002919f4437105b3ddbdc97b8b221ae994",
+      "owner": "개발 API-authoritative LDAREG pre/postflight",
+      "rationale": "비공개 target@2에 고정된 exact property-buildingUnit 집합, scope PNU, 공식 LDAREG proposal, 별도 owner approval, replay 및 비대상 invariant를 manual 의사결정 없이 검사하는 전용 occurrence를 고정한다."
+    },
+    {
+      "id": "7882453b625fa96c30fd",
+      "path": "src/cli/development-api-authoritative-ldareg-backfill.ts",
+      "name": "apply_development_api_authoritative_ldareg_backfill_v1",
+      "contextSha256": "981332c57753714d4892eb28b7f76515c3ed68805de5e5c42d7a6cdf99228cd4",
+      "sourceFileSha256": "1c41cbc40987aabecc9a02fbee7634002919f4437105b3ddbdc97b8b221ae994",
+      "owner": "개발 API-authoritative LDAREG exact backfill",
+      "rationale": "직렬 official API evidence와 preinstalled owner approval에 결합된 active property target의 LDAREG 분자 및 CURRENT scope component만 동일 syncJobId로 원자 적용하고 ignored official unit은 쓰기에서 제외하는 개발 전용 occurrence를 고정한다."
+    },
+    {
       "id": "e03d4b42da63c7dbc1b0",
       "path": "src/cli/development-building-registry-relation-adoption.ts",
       "name": "inspect_development_verified_building_registry_relation_v1",

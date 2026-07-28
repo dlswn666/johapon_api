@@ -1,3 +1,24 @@
+# owner 승인 요청을 컨테이너 밖으로 내보내기 전에 암호화하는 고정 도구
+FROM alpine:3.22 AS age-tool
+
+ARG AGE_VERSION=1.3.1
+ARG TARGETARCH
+ARG AGE_LINUX_AMD64_SHA256=bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377
+ARG AGE_LINUX_ARM64_SHA256=c6878a324421b69e3e20b00ba17c04bc5c6dab0030cfe55bf8f68fa8d9e9093a
+
+RUN case "${TARGETARCH}" in \
+      amd64) age_sha256="${AGE_LINUX_AMD64_SHA256}" ;; \
+      arm64) age_sha256="${AGE_LINUX_ARM64_SHA256}" ;; \
+      *) exit 64 ;; \
+    esac \
+  && wget -q \
+      "https://github.com/FiloSottile/age/releases/download/v${AGE_VERSION}/age-v${AGE_VERSION}-linux-${TARGETARCH}.tar.gz" \
+      -O /tmp/age.tar.gz \
+  && printf '%s  %s\n' "${age_sha256}" /tmp/age.tar.gz \
+      | sha256sum -c - \
+  && tar -xzf /tmp/age.tar.gz -C /tmp \
+  && install -m 755 /tmp/age/age /age
+
 # Node.js 22 Alpine 기반 경량 이미지
 FROM node:22-alpine AS builder
 
@@ -36,10 +57,12 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/data ./data
+COPY --from=age-tool /age /usr/local/bin/age
 
 # 비특권 사용자로 실행
 RUN addgroup -g 1001 -S nodejs
 RUN adduser -S nodejs -u 1001
+RUN test "$(age --version)" = "v1.3.1"
 RUN mkdir -p logs .phase0-land-area .development-land-area-sync \
       .development-building-registry-relation-adoption \
   && chown -R nodejs:nodejs logs .phase0-land-area .development-land-area-sync \

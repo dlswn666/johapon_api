@@ -1,0 +1,615 @@
+name: Development API-Authoritative LDAREG Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Read-only prepare or separately approved apply
+        required: true
+        type: choice
+        default: prepare
+        options:
+          - prepare
+          - apply
+      target:
+        description: Opaque repository-pinned private development LDAREG target key
+        required: true
+        type: choice
+        default: ldareg-target-07
+        options:
+          - ldareg-target-01
+          - ldareg-target-02
+          - ldareg-target-03
+          - ldareg-target-04
+          - ldareg-target-05
+          - ldareg-target-06
+          - ldareg-target-07
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    name: Backfill exact LDAREG numerators in development
+    runs-on: ubuntu-latest
+    environment: land-area-sync-development-write
+    timeout-minutes: 65
+    steps:
+      - name: Require approved main revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Development backfill must run from refs/heads/main."
+            exit 1
+          fi
+          if [[ ! "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::GitHub revision is invalid."
+            exit 1
+          fi
+
+      - name: Checkout exact revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Compile and verify guarded runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          node --import tsx --test \
+            tests/development-api-authoritative-ldareg-backfill.test.ts \
+            tests/development-api-authoritative-ldareg-backfill-workflow.test.ts \
+            tests/property-building-link-writer-guard.test.ts
+          node scripts/check-property-building-link-writers.mjs
+          bash -n \
+            scripts/development-api-authoritative-ldareg-backfill-guardian.sh \
+            scripts/install-development-api-authoritative-ldareg-approval.sh
+
+      - name: Select one protected private target
+        id: target
+        shell: bash
+        env:
+          TARGET_KEY: ${{ inputs.target }}
+          TARGET_BUNDLE_B64: ${{ secrets.LDAREG_BACKFILL_TARGET_BUNDLE_B64 }}
+        run: |
+          set -euo pipefail
+          case "${TARGET_KEY}" in
+            ldareg-target-01|ldareg-target-02|ldareg-target-03|ldareg-target-04|ldareg-target-05|ldareg-target-06|ldareg-target-07)
+              ;;
+            *)
+              echo "::error::Target key is not repository-pinned."
+              exit 1
+              ;;
+          esac
+          if [[ -z "${TARGET_BUNDLE_B64:-}" ]]; then
+            echo "::error::Protected private target bundle secret is missing."
+            exit 1
+          fi
+          private_target_root="${RUNNER_TEMP}/development-api-ldareg-private-target"
+          private_directory="${private_target_root}/.development-api-authoritative-ldareg-backfill"
+          bundle_path="${private_directory}/bundle.json"
+          target_path="${private_directory}/target.json"
+          cleanup_private_bundle() {
+            rm -f -- "${bundle_path}"
+          }
+          trap cleanup_private_bundle EXIT
+          install -d -m 700 "${private_target_root}"
+          install -d -m 700 "${private_directory}"
+          install -m 600 /dev/null "${bundle_path}"
+          printf '%s' "${TARGET_BUNDLE_B64}" | base64 --decode > "${bundle_path}"
+          chmod 600 "${bundle_path}"
+          if [[ ! -f "${bundle_path}" || -L "${bundle_path}" ]]; then
+            echo "::error::Target bundle must be a private regular file."
+            exit 1
+          fi
+          if [[ "$(stat -c '%a' "${bundle_path}")" != "600" ]]; then
+            echo "::error::Target bundle must remain mode 600."
+            exit 1
+          fi
+          selection_output="$(
+            cd "${private_target_root}"
+            node "${GITHUB_WORKSPACE}/dist/cli/development-api-authoritative-ldareg-target-bundle-select.js" \
+              --bundle ".development-api-authoritative-ldareg-backfill/bundle.json" \
+              --target-key "${TARGET_KEY}" \
+              --out ".development-api-authoritative-ldareg-backfill/target.json"
+          )"
+          if [[ "${selection_output}" != "Development API-authoritative LDAREG target selected." ]]; then
+            echo "::error::Private target selector did not attest success."
+            exit 1
+          fi
+          rm -f -- "${bundle_path}"
+          test ! -e "${bundle_path}"
+          test ! -L "${bundle_path}"
+          trap - EXIT
+          if [[
+            ! -f "${target_path}"
+            || -L "${target_path}"
+            || "$(stat -c '%a' "${target_path}")" != "600"
+          ]]; then
+            echo "::error::Selected target must remain a private mode-600 regular file."
+            exit 1
+          fi
+          echo "target_path=${target_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate pinned owner encryption recipient
+        shell: bash
+        env:
+          OWNER_AGE_RECIPIENT: ${{ secrets.LDAREG_APPROVAL_AGE_RECIPIENT }}
+          OWNER_AGE_RECIPIENT_SHA256: 20f4e791c9b45cccdd8882ded87bf9171ef0387fc5e1a25dcd89781c1893b93c
+        run: |
+          set -euo pipefail
+          if [[
+            ! "${OWNER_AGE_RECIPIENT:-}" =~ ^age1[0-9a-z]{58}$
+            || ! "${OWNER_AGE_RECIPIENT_SHA256:-}" =~ ^[0-9a-f]{64}$
+          ]]; then
+            echo "::error::Pinned owner age recipient configuration is invalid."
+            exit 1
+          fi
+          actual_recipient_sha256="$(
+            printf '%s' "${OWNER_AGE_RECIPIENT}" | sha256sum | awk '{print $1}'
+          )"
+          if [[ "${actual_recipient_sha256}" != "${OWNER_AGE_RECIPIENT_SHA256}" ]]; then
+            echo "::error::Pinned owner age recipient fingerprint mismatch."
+            exit 1
+          fi
+
+      - name: Configure pinned EC2 SSH identity
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_FINGERPRINT: ${{ secrets.EC2_SSH_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          for variable_name in \
+            EC2_HOST \
+            EC2_USERNAME \
+            EC2_SSH_KEY \
+            EC2_SSH_FINGERPRINT
+          do
+            if [[ -z "${!variable_name:-}" ]]; then
+              echo "::error::Missing required EC2 connection secret."
+              exit 1
+            fi
+          done
+          if [[ ! "${EC2_USERNAME}" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+            echo "::error::EC2 username format is invalid."
+            exit 1
+          fi
+          if [[
+            ${#EC2_HOST} -gt 253
+            || ! "${EC2_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$
+          ]]; then
+            echo "::error::EC2 host format is invalid."
+            exit 1
+          fi
+          install -d -m 700 "${HOME}/.ssh"
+          install -m 600 /dev/null "${HOME}/.ssh/id_ed25519"
+          printf '%s\n' "${EC2_SSH_KEY}" > "${HOME}/.ssh/id_ed25519"
+          host_keys="$(
+            ssh-keyscan -T 10 -t ed25519,ecdsa,rsa \
+              "${EC2_HOST}" 2>/dev/null
+          )"
+          matched_host_key=""
+          while IFS= read -r host_key; do
+            fingerprint="$(
+              printf '%s\n' "${host_key}" \
+                | ssh-keygen -lf - -E sha256 \
+                | awk '{print $2}'
+            )"
+            if [[ "${fingerprint}" == "${EC2_SSH_FINGERPRINT}" ]]; then
+              matched_host_key="${host_key}"
+              break
+            fi
+          done <<< "${host_keys}"
+          if [[ -z "${matched_host_key}" ]]; then
+            echo "::error::EC2 SSH fingerprint mismatch."
+            exit 1
+          fi
+          printf '%s\n' "${matched_host_key}" \
+            > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/known_hosts"
+
+      - name: Run exact deployed guarded backfill
+        id: remote
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          TARGET_PATH: ${{ steps.target.outputs.target_path }}
+          GUARDIAN_PATH: scripts/development-api-authoritative-ldareg-backfill-guardian.sh
+          RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+          EXPECTED_GIT_SHA: ${{ github.sha }}
+          EXPECTED_IMAGE_TAG: ghcr.io/dlswn666/alimtalk-proxy:${{ github.sha }}
+          MODE: ${{ inputs.mode }}
+          OWNER_AGE_RECIPIENT: ${{ secrets.LDAREG_APPROVAL_AGE_RECIPIENT }}
+          OWNER_AGE_RECIPIENT_SHA256: 20f4e791c9b45cccdd8882ded87bf9171ef0387fc5e1a25dcd89781c1893b93c
+        run: |
+          set -Eeuo pipefail
+          if [[ ! "${RUN_KEY}" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "::error::Invalid run key."
+            exit 1
+          fi
+          ssh_options=(
+            -i "${HOME}/.ssh/id_ed25519"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=40
+            -o "UserKnownHostsFile=${HOME}/.ssh/known_hosts"
+          )
+          remote_root="/dev/shm/.development-api-authoritative-ldareg-backfill-${RUN_KEY}"
+          cleanup_finished=0
+
+          cleanup_remote() {
+            ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+              "RUN_KEY='${RUN_KEY}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' MODE='${MODE}' bash -s" <<'REMOTE_CLEANUP'
+          set -euo pipefail
+          run_root="/dev/shm/.development-api-authoritative-ldareg-backfill-${RUN_KEY}"
+          guardian_started="${run_root}/guardian-started"
+          workflow_ack="${run_root}/workflow-ack"
+          ack_value="ACK:${RUN_KEY}:${EXPECTED_GIT_SHA}:${MODE}"
+          if [[ ! -e "${run_root}" && ! -L "${run_root}" ]]; then
+            exit 0
+          fi
+          test -d "${run_root}"
+          test ! -L "${run_root}"
+          test "$(stat -f -c '%T' "${run_root}")" = "tmpfs"
+          test "$(stat -c '%u' "${run_root}")" = "$(id -u)"
+          test "$(stat -c '%a' "${run_root}")" = "700"
+
+          if [[ ! -e "${guardian_started}" && ! -L "${guardian_started}" ]]; then
+            rm -f -- \
+              "${run_root}/target.json" \
+              "${run_root}/target.json.tmp-${RUN_KEY}" \
+              "${run_root}/guardian.sh" \
+              "${run_root}/guardian.log" \
+              "${run_root}/guardian.pid" \
+              "${run_root}/guardian-started.tmp-${RUN_KEY}" \
+              "${run_root}/janitor-started" \
+              "${run_root}/janitor-started.tmp-${RUN_KEY}" \
+              "${run_root}/container-id" \
+              "${run_root}/container-id.tmp-${RUN_KEY}" \
+              "${run_root}/artifact.json" \
+              "${run_root}/artifact.json.tmp-${RUN_KEY}" \
+              "${run_root}/approval-request.age" \
+              "${run_root}/approval-request.age.tmp-${RUN_KEY}" \
+              "${run_root}/status" \
+              "${run_root}/status.tmp-${RUN_KEY}" \
+              "${run_root}/validated" \
+              "${run_root}/validated.tmp-${RUN_KEY}" \
+              "${run_root}/approval-ciphertext-validated" \
+              "${run_root}/approval-ciphertext-validated.tmp-${RUN_KEY}" \
+              "${run_root}/workflow-ack" \
+              "${run_root}/workflow-ack.tmp-${RUN_KEY}"
+            rmdir -- "${run_root}"
+            exit 0
+          fi
+
+          test -f "${guardian_started}"
+          test ! -L "${guardian_started}"
+          test "$(stat -c '%u' "${guardian_started}")" = "$(id -u)"
+          test "$(stat -c '%a' "${guardian_started}")" = "600"
+          ack_temporary="${workflow_ack}.tmp-${RUN_KEY}"
+          install -m 600 /dev/null "${ack_temporary}"
+          printf '%s\n' "${ack_value}" > "${ack_temporary}"
+          mv -f -- "${ack_temporary}" "${workflow_ack}"
+          chmod 600 "${workflow_ack}"
+
+          for _attempt in $(seq 1 45); do
+            if [[ ! -e "${run_root}" && ! -L "${run_root}" ]]; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Exact run cleanup ACK was not completed within 45 seconds." >&2
+          exit 1
+          REMOTE_CLEANUP
+          }
+
+          finish_step() {
+            local prior_status="$?"
+            trap - EXIT
+            local cleanup_status=0
+            if [[ "${cleanup_finished}" -ne 1 ]]; then
+              set +e
+              cleanup_remote
+              cleanup_status="$?"
+              set -e
+            fi
+            if [[ "${cleanup_status}" -ne 0 ]]; then
+              echo "::error::Exact remote cleanup ACK failed; fixed 75-minute janitor TTL remains active."
+              if [[ "${prior_status}" -eq 0 ]]; then
+                prior_status=1
+              fi
+            fi
+            exit "${prior_status}"
+          }
+          trap finish_step EXIT
+
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "RUN_KEY='${RUN_KEY}' bash -s" <<'REMOTE_PREPARE'
+          set -euo pipefail
+          application_root="${HOME}/alimtalk-proxy"
+          run_root="/dev/shm/.development-api-authoritative-ldareg-backfill-${RUN_KEY}"
+          test -d "${application_root}"
+          test ! -L "${application_root}"
+          test "$(stat -f -c '%T' /dev/shm)" = "tmpfs"
+          test ! -e "${run_root}"
+          test ! -L "${run_root}"
+          mkdir -m 700 -- "${run_root}"
+          REMOTE_PREPARE
+
+          scp "${ssh_options[@]}" "${TARGET_PATH}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/target.json"
+          scp "${ssh_options[@]}" "${GUARDIAN_PATH}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/guardian.sh"
+
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "RUN_KEY='${RUN_KEY}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' EXPECTED_IMAGE_TAG='${EXPECTED_IMAGE_TAG}' MODE='${MODE}' OWNER_AGE_RECIPIENT='${OWNER_AGE_RECIPIENT}' OWNER_AGE_RECIPIENT_SHA256='${OWNER_AGE_RECIPIENT_SHA256}' bash -s" <<'REMOTE_START'
+          set -euo pipefail
+          run_root="/dev/shm/.development-api-authoritative-ldareg-backfill-${RUN_KEY}"
+          chmod 600 \
+            "${run_root}/target.json" \
+            "${run_root}/guardian.sh"
+          nohup setsid env \
+            RUN_KEY="${RUN_KEY}" \
+            EXPECTED_GIT_SHA="${EXPECTED_GIT_SHA}" \
+            EXPECTED_IMAGE_TAG="${EXPECTED_IMAGE_TAG}" \
+            MODE="${MODE}" \
+            OWNER_AGE_RECIPIENT="${OWNER_AGE_RECIPIENT}" \
+            OWNER_AGE_RECIPIENT_SHA256="${OWNER_AGE_RECIPIENT_SHA256}" \
+            bash "${run_root}/guardian.sh" \
+            > "${run_root}/guardian.log" 2>&1 < /dev/null &
+          guardian_pid="$!"
+          printf '%s\n' "${guardian_pid}" > "${run_root}/guardian.pid"
+          chmod 600 "${run_root}/guardian.pid" "${run_root}/guardian.log"
+          REMOTE_START
+
+          completed=0
+          for _attempt in $(seq 1 390); do
+            if ssh "${ssh_options[@]}" \
+              "${EC2_USERNAME}@${EC2_HOST}" \
+              "test -f '${remote_root}/status'"
+            then
+              completed=1
+              break
+            fi
+            sleep 10
+          done
+          if [[ "${completed}" -ne 1 ]]; then
+            echo "::error::Guardian did not publish terminal status."
+            exit 1
+          fi
+
+          if [[ -e development-api-ldareg-output || -L development-api-ldareg-output ]]; then
+            echo "::error::Local output directory must not pre-exist."
+            exit 1
+          fi
+          mkdir -m 700 -- development-api-ldareg-output
+          scp "${ssh_options[@]}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/status" \
+            development-api-ldareg-output/status
+          runner_status="$(
+            tr -d '[:space:]' \
+              < development-api-ldareg-output/status
+          )"
+          if [[ "${runner_status}" == "0" || "${runner_status}" == "1" ]]; then
+            scp "${ssh_options[@]}" \
+              "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/artifact.json" \
+              development-api-ldareg-output/artifact.json
+            scp "${ssh_options[@]}" \
+              "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/validated" \
+              development-api-ldareg-output/validated
+            if [[ "${MODE}" == "prepare" && "${runner_status}" == "0" ]]; then
+              scp "${ssh_options[@]}" \
+                "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/approval-request.age" \
+                development-api-ldareg-output/approval-request.age
+              scp "${ssh_options[@]}" \
+                "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/approval-ciphertext-validated" \
+                development-api-ldareg-output/approval-ciphertext-validated
+            fi
+          fi
+          cleanup_remote
+          cleanup_finished=1
+          trap - EXIT
+
+      - name: Revalidate private redacted artifact
+        id: validate
+        if: always() && hashFiles('development-api-ldareg-output/artifact.json') != '' && hashFiles('development-api-ldareg-output/validated') != ''
+        shell: bash
+        env:
+          TARGET_PATH: ${{ steps.target.outputs.target_path }}
+          SOURCE_RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          artifact="development-api-ldareg-output/artifact.json"
+          validated="development-api-ldareg-output/validated"
+          artifact_sha="$(sha256sum "${artifact}" | awk '{print $1}')"
+          expected="DEVELOPMENT_API_AUTHORITATIVE_LDAREG_BACKFILL_ARTIFACT_VALIDATED:${artifact_sha}"
+          if [[ "$(tr -d '\r\n' < "${validated}")" != "${expected}" ]]; then
+            echo "::error::Remote artifact attestation mismatch."
+            exit 1
+          fi
+          validation_root="$(mktemp -d)"
+          private_root="${validation_root}/.development-api-authoritative-ldareg-backfill"
+          mkdir -m 700 -- "${private_root}"
+          cleanup_validation() {
+            rm -f -- "${private_root}/target.json" "${private_root}/artifact.json"
+            rmdir -- "${private_root}" "${validation_root}"
+          }
+          trap cleanup_validation EXIT
+          install -m 600 "${TARGET_PATH}" "${private_root}/target.json"
+          install -m 600 "${artifact}" "${private_root}/artifact.json"
+          validation_output="$(
+            cd "${validation_root}"
+            node "${GITHUB_WORKSPACE}/dist/cli/development-api-authoritative-ldareg-backfill-validate.js" \
+              --target ".development-api-authoritative-ldareg-backfill/target.json" \
+              --artifact ".development-api-authoritative-ldareg-backfill/artifact.json" \
+              --source-release-sha "${SOURCE_RELEASE_SHA}"
+          )"
+          if [[ "${validation_output}" != "DEVELOPMENT_API_AUTHORITATIVE_LDAREG_BACKFILL_ARTIFACT_VALIDATED" ]]; then
+            echo "::error::Repository validator rejected artifact."
+            exit 1
+          fi
+          printf '%s\n' "${expected}" \
+            > development-api-ldareg-output/validated-runner
+          chmod 600 \
+            development-api-ldareg-output/validated-runner \
+            "${artifact}"
+
+      - name: Verify owner-encrypted approval ciphertext
+        id: validate_approval_ciphertext
+        if: inputs.mode == 'prepare' && steps.validate.outcome == 'success' && hashFiles('development-api-ldareg-output/approval-request.age') != '' && hashFiles('development-api-ldareg-output/approval-ciphertext-validated') != ''
+        shell: bash
+        env:
+          OWNER_AGE_RECIPIENT_SHA256: 20f4e791c9b45cccdd8882ded87bf9171ef0387fc5e1a25dcd89781c1893b93c
+        run: |
+          set -euo pipefail
+          ciphertext="development-api-ldareg-output/approval-request.age"
+          validated="development-api-ldareg-output/approval-ciphertext-validated"
+          chmod 600 "${ciphertext}" "${validated}"
+          ciphertext_sha="$(sha256sum "${ciphertext}" | awk '{print $1}')"
+          expected="DEVELOPMENT_API_AUTHORITATIVE_LDAREG_OWNER_CIPHERTEXT_VALIDATED:${OWNER_AGE_RECIPIENT_SHA256}:${ciphertext_sha}"
+          if [[ "$(tr -d '\r\n' < "${validated}")" != "${expected}" ]]; then
+            echo "::error::Remote owner ciphertext attestation mismatch."
+            exit 1
+          fi
+          if [[
+            "$(head -n 1 "${ciphertext}")" != "-----BEGIN AGE ENCRYPTED FILE-----"
+            || "$(tail -n 1 "${ciphertext}")" != "-----END AGE ENCRYPTED FILE-----"
+          ]]; then
+            echo "::error::Owner ciphertext is not an armored age file."
+            exit 1
+          fi
+          printf '%s\n' "${expected}" \
+            > development-api-ldareg-output/approval-ciphertext-validated-runner
+          chmod 600 \
+            development-api-ldareg-output/approval-ciphertext-validated-runner \
+            "${ciphertext}"
+
+      - name: Upload private redacted artifact
+        if: always() && steps.validate.outcome == 'success' && hashFiles('development-api-ldareg-output/validated-runner') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: development-api-ldareg-${{ inputs.mode }}-${{ inputs.target }}-${{ github.run_id }}
+          path: development-api-ldareg-output/artifact.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload owner-encrypted approval ciphertext
+        if: inputs.mode == 'prepare' && steps.validate_approval_ciphertext.outcome == 'success' && hashFiles('development-api-ldareg-output/approval-ciphertext-validated-runner') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: development-api-ldareg-owner-ciphertext-${{ inputs.target }}-${{ github.run_id }}
+          path: development-api-ldareg-output/approval-request.age
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Enforce API-authoritative backfill gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status_file="development-api-ldareg-output/status"
+          artifact_file="development-api-ldareg-output/artifact.json"
+          validation_file="development-api-ldareg-output/validated-runner"
+          approval_ciphertext_file="development-api-ldareg-output/approval-request.age"
+          approval_ciphertext_validation_file="development-api-ldareg-output/approval-ciphertext-validated-runner"
+          if [[
+            ! -f "${status_file}"
+            || ! -f "${artifact_file}"
+            || ! -f "${validation_file}"
+            || -L "${status_file}"
+            || -L "${artifact_file}"
+            || -L "${validation_file}"
+          ]]; then
+            echo "::error::Validated backfill output is incomplete."
+            exit 1
+          fi
+          runner_status="$(tr -d '[:space:]' < "${status_file}")"
+          gate_status="$(
+            node -e '
+              const fs = require("node:fs");
+              const artifact = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              process.stdout.write(String(artifact?.gate?.status ?? ""));
+            ' "${artifact_file}"
+          )"
+          if [[ "${{ inputs.mode }}" == "prepare" ]]; then
+            if [[
+              ! -f "${approval_ciphertext_file}"
+              || ! -f "${approval_ciphertext_validation_file}"
+              || -L "${approval_ciphertext_file}"
+              || -L "${approval_ciphertext_validation_file}"
+            ]]; then
+              echo "::error::Validated owner ciphertext is incomplete."
+              exit 1
+            fi
+            approval_result="validated age-encrypted owner ciphertext; 1-day retention"
+            execution_result="read-only official scan + DB inspect; development writes 0"
+          else
+            if [[
+              -e "${approval_ciphertext_file}"
+              || -L "${approval_ciphertext_file}"
+              || -e "${approval_ciphertext_validation_file}"
+              || -L "${approval_ciphertext_validation_file}"
+            ]]; then
+              echo "::error::Apply mode must not emit owner ciphertext."
+              exit 1
+            fi
+            approval_result="preinstalled DB-owner approval consumed only"
+            execution_result="fresh official scan + approved exact development apply"
+          fi
+          {
+            echo "### Development API-authoritative LDAREG backfill"
+            echo
+            echo "- Mode: \`${{ inputs.mode }}\`"
+            echo "- Target: \`${{ inputs.target }}\`"
+            echo "- Gate: \`${gate_status}\`"
+            echo "- Source: \`LDAREG only; manual decision counters all zero\`"
+            echo "- Approval: \`${approval_result}\`"
+            echo "- Execution: \`${execution_result}\`"
+            echo "- General sync runtime: \`disabled; allowlist empty\`"
+            echo "- Production writes: \`0 (no production client boundary)\`"
+            echo "- Artifact: \`redacted JSON uploaded; owner handoff is age ciphertext only\`"
+            echo "- Owner install: \`pinned age v1.3.1 decrypt + validator + mode 0600 helper\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [[ "${runner_status}" != "0" || "${gate_status}" != "PASS" ]]; then
+            echo "::error::Development API-authoritative LDAREG gate did not pass."
+            exit 1
+          fi
+
+      - name: Remove private runner material
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_target_root="${RUNNER_TEMP}/development-api-ldareg-private-target"
+          private_directory="${private_target_root}/.development-api-authoritative-ldareg-backfill"
+          bundle_path="${private_directory}/bundle.json"
+          target_path="${private_directory}/target.json"
+          rm -f -- \
+            "${bundle_path}" \
+            "${target_path}" \
+            development-api-ldareg-output/approval-request.age \
+            development-api-ldareg-output/approval-ciphertext-validated \
+            development-api-ldareg-output/approval-ciphertext-validated-runner
+          if [[ -d "${private_directory}" && ! -L "${private_directory}" ]]; then
+            rmdir -- "${private_directory}"
+          fi
+          if [[ -d "${private_target_root}" && ! -L "${private_target_root}" ]]; then
+            rmdir -- "${private_target_root}"
+          fi
+          test ! -e "${bundle_path}"
+          test ! -L "${bundle_path}"
+          test ! -e "${target_path}"
+          test ! -L "${target_path}"
