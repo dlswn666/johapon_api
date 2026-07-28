@@ -5444,3 +5444,82 @@ test('미아7 중복 없는 다세대 6개 Phase 0 manifest는 단일필지 가�
         )
     );
 });
+
+test('미아7 전체 갱신 비성공 15개 Phase 0 manifest는 공식 API 재관측 범위를 exact 고정한다', async () => {
+    const manifestName =
+        'mia-seven-full-refresh-remaining-fifteen-first-observation-20260728';
+    const manifestPath = path.join(
+        process.cwd(),
+        `phase0-manifests/${manifestName}.json`
+    );
+    const manifestRaw = await readFile(manifestPath, 'utf8');
+    const multiplexLots = new Set([
+        '2155',
+        '2173',
+        '2188',
+        '2267',
+        '2282',
+        '2315',
+        '2320',
+        '2343',
+        '2474',
+        '3568',
+    ]);
+    const attachedHypotheses = new Set(['2244', '2313']);
+    const lots = [
+        '2155',
+        '2173',
+        '2188',
+        '2227',
+        '2244',
+        '2267',
+        '2282',
+        '2313',
+        '2315',
+        '2320',
+        '2338',
+        '2343',
+        '2474',
+        '2700',
+        '3568',
+    ];
+    const expectedManifest = {
+        version: LAND_AREA_PHASE0_MANIFEST_VERSION_V2,
+        samples: lots.map((lot) => ({
+            alias: `mia7-full-refresh-791-${lot}`,
+            expectedBylot: attachedHypotheses.has(lot)
+                ? ('POSITIVE' as const)
+                : ('ZERO' as const),
+            expectedFamily: multiplexLots.has(lot)
+                ? ('LDAREG' as const)
+                : ('LADFRL' as const),
+            pnu: `113051010010791${lot}`,
+        })),
+    } as const;
+
+    assert.deepEqual(JSON.parse(manifestRaw), expectedManifest);
+    assert.deepEqual(
+        parseLandAreaPhase0Manifest(JSON.parse(manifestRaw)),
+        expectedManifest
+    );
+    assert.equal(
+        createHash('sha256').update(manifestRaw).digest('hex'),
+        '46ec50c5ae56f8a84cdae3f0cd7331c4a4291c15e6d5a6751d7a49e0cc637701'
+    );
+
+    const workflow = await readFile(
+        path.join(
+            process.cwd(),
+            '.github/workflows/phase0-land-area-capture.yml'
+        ),
+        'utf8'
+    );
+    assert.match(workflow, new RegExp(`^          - ${manifestName}$`, 'm'));
+    assert.match(
+        workflow,
+        new RegExp(
+            `${manifestName.replaceAll('-', '\\-')}\\)\\n` +
+                `              manifest_path="phase0-manifests/${manifestName}\\.json"`
+        )
+    );
+});
