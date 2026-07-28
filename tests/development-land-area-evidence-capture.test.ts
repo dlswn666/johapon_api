@@ -14,6 +14,8 @@ import {
     type DevelopmentTargetManifest,
 } from '../src/operations/development-land-area-sync-runner';
 import {
+    aggregateDevelopmentEvidenceCaptureEntries,
+    assertDevelopmentEvidenceCaptureActiveIdentity,
     developmentEvidenceEntryFromSnapshot,
 } from '../src/operations/development-land-area-evidence-capture';
 import type { LandAreaSyncScopeSnapshot } from '../src/types/land-area-sync-job.types';
@@ -27,6 +29,29 @@ const MIA_791_2280_TARGET_URL = new URL(
     '../development-land-area-sync-manifests/mia-seven-791-2280-ldareg-api-readonly-target-20260725.json',
     import.meta.url
 );
+const MIA_AUTO_286_TARGET_URL = new URL(
+    '../development-land-area-sync-manifests/mia-seven-auto-286-target-20260725.json',
+    import.meta.url
+);
+const MIA_FULL_299_TARGET_URL = new URL(
+    '../development-land-area-sync-manifests/mia-seven-full-299-api-readonly-target-20260728.json',
+    import.meta.url
+);
+const MIA_FULL_299_DELTA = [
+    '1130510100107450049',
+    '1130510100107450052',
+    '1130510100107450076',
+    '1130510100107912211',
+    '1130510100107912212',
+    '1130510100107912213',
+    '1130510100107912267',
+    '1130510100107912280',
+    '1130510100107912320',
+    '1130510100107912343',
+    '1130510100107912344',
+    '1130510100107912474',
+    '1130510100107913568',
+] as const;
 
 function target(pnus = [PNU]): DevelopmentTargetManifest {
     return {
@@ -147,6 +172,174 @@ test('791-2280 API read-only target은 anchor 1건과 대표·부속지번 allow
     assert.notEqual(
         manifest.manifestDigest,
         developmentTargetScopeDigest(manifest)
+    );
+});
+
+test('미아7 전체 API 재조회 target은 활성 anchor 299건과 property unit 429건을 고정한다', () => {
+    const auto286 = parseDevelopmentTargetManifest(
+        JSON.parse(readFileSync(MIA_AUTO_286_TARGET_URL, 'utf8'))
+    );
+    const full299 = parseDevelopmentTargetManifest(
+        JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
+    );
+    assert.equal(
+        full299.version,
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V2
+    );
+    if (
+        auto286.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION ||
+        full299.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2
+    ) {
+        throw new Error('v1 auto286 and v2 full299 expected');
+    }
+
+    assert.equal(full299.anchors.length, 299);
+    assert.equal(full299.targetCount, 299);
+    assert.equal(full299.allowedScopePnus.length, 300);
+    assert.equal(full299.expectedPropertyUnitCount, 429);
+    assert.equal(full299.expectedUnionActivePropertyUnitCount, 429);
+    assert.equal(full299.expectedUnionActivePnuCount, 299);
+    assert.equal(full299.allowManualOverwrite, true);
+    assert.equal(
+        computeDevelopmentTargetDigest(UNION_ID, full299.anchors),
+        '638977eb11e2e09afdb949179fe59e7944c2ed4c973fe2695bf0628239a2e219'
+    );
+    assert.equal(
+        full299.scopeDigest,
+        computeDevelopmentTargetDigest(
+            UNION_ID,
+            full299.allowedScopePnus
+        )
+    );
+    assert.equal(
+        full299.manifestDigest,
+        computeDevelopmentTargetV2ManifestDigest(full299)
+    );
+
+    const autoSet = new Set(auto286.pnus);
+    assert.equal(
+        auto286.pnus.every((pnu) => full299.anchors.includes(pnu)),
+        true
+    );
+    assert.deepEqual(
+        full299.anchors.filter((pnu) => !autoSet.has(pnu)),
+        [...MIA_FULL_299_DELTA]
+    );
+    assert.equal(full299.anchors.includes('1130510100107912280'), true);
+    assert.equal(full299.anchors.includes('1130510100107912281'), false);
+    assert.equal(
+        full299.allowedScopePnus.includes('1130510100107912280'),
+        true
+    );
+    assert.equal(
+        full299.allowedScopePnus.includes('1130510100107912281'),
+        true
+    );
+    assert.deepEqual(
+        full299.allowedScopePnus.filter(
+            (pnu) => !full299.anchors.includes(pnu)
+        ),
+        ['1130510100107912281']
+    );
+});
+
+test('전체 capture는 실행 직전 DEV 활성 429호·299 PNU가 anchor와 exact 일치해야 한다', () => {
+    const full299 = parseDevelopmentTargetManifest(
+        JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
+    );
+    assert.equal(
+        full299.version,
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V2
+    );
+    if (
+        full299.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2
+    ) {
+        throw new Error('v2 full299 expected');
+    }
+    const rows = Array.from(
+        { length: full299.expectedUnionActivePropertyUnitCount },
+        (_, index) => ({
+            id: `00000000-0000-4000-a000-${String(index + 1).padStart(12, '0')}`,
+            pnu: full299.anchors[
+                index < full299.anchors.length
+                    ? index
+                    : index - full299.anchors.length
+            ],
+        })
+    );
+    assert.doesNotThrow(() =>
+        assertDevelopmentEvidenceCaptureActiveIdentity({
+            target: full299,
+            rows,
+        })
+    );
+
+    const sameCountsDifferentPnu = rows.map((row) => ({ ...row }));
+    sameCountsDifferentPnu[full299.anchors.length - 1].pnu =
+        '1130510100109999999';
+    assert.throws(
+        () =>
+            assertDevelopmentEvidenceCaptureActiveIdentity({
+                target: full299,
+                rows: sameCountsDifferentPnu,
+            }),
+        /CAPTURE_UNION_ACTIVE_PNU_SET_MISMATCH/
+    );
+    assert.throws(
+        () =>
+            assertDevelopmentEvidenceCaptureActiveIdentity({
+                target: full299,
+                rows: rows.slice(0, -1),
+            }),
+        /CAPTURE_UNION_ACTIVE_PROPERTY_SET_MISMATCH/
+    );
+});
+
+test('read-only audit 집계는 식별자 없이 CAPTURED/NO_DATA/REVIEW/FAILED를 분리한다', () => {
+    const base = {
+        anchorPnu: PNU,
+        strategy: null,
+        scannedPnuCount: 0,
+        propertyUnitCount: 0,
+        snapshotReferenceSha256: null,
+        applyRpcBlocked: false,
+        failureCode: null,
+        terminalScopeState: null,
+        terminalOutcome: null,
+        terminalIssueCodes: [],
+        terminalIssuesTotal: 0,
+        terminalIssuesTruncated: false,
+    } as const;
+    const aggregate = aggregateDevelopmentEvidenceCaptureEntries([
+        { ...base, status: 'CAPTURED' },
+        {
+            ...base,
+            status: 'FAILED',
+            terminalOutcome: 'NO_DATA',
+        },
+        {
+            ...base,
+            status: 'FAILED',
+            terminalScopeState: 'REVIEW_REQUIRED',
+            terminalOutcome: 'REVIEW_REQUIRED',
+        },
+        {
+            ...base,
+            status: 'FAILED',
+            terminalScopeState: 'FAILED',
+            terminalOutcome: 'FAILED',
+        },
+    ]);
+    assert.deepEqual(aggregate, {
+        CAPTURED: 1,
+        NO_DATA: 1,
+        REVIEW: 1,
+        FAILED: 1,
+    });
+    assert.equal(JSON.stringify(aggregate).includes(PNU), false);
+    assert.equal(
+        JSON.stringify(aggregate).includes(PROPERTY_UNIT_ID),
+        false
     );
 });
 

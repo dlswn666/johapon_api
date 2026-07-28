@@ -44,6 +44,9 @@ export interface DevelopmentEvidenceCaptureReadOnlyDeps {
     readBuildingUnits: LandAreaSyncDbDeps['readBuildingUnits'];
     readPropertyUnits: LandAreaSyncDbDeps['readPropertyUnits'];
     readCurrentLandTuples: LandAreaSyncDbDeps['readCurrentLandTuples'];
+    readActivePropertyIdentity(
+        unionId: string
+    ): Promise<Array<{ id: string; pnu: string }>>;
     now(): Date;
 }
 
@@ -61,6 +64,13 @@ export interface DevelopmentEvidenceCaptureAuditEntry {
     terminalIssueCodes: string[];
     terminalIssuesTotal: number;
     terminalIssuesTruncated: boolean;
+}
+
+export interface DevelopmentEvidenceCaptureRedactedAggregate {
+    CAPTURED: number;
+    NO_DATA: number;
+    REVIEW: number;
+    FAILED: number;
 }
 
 export interface DevelopmentEvidenceCaptureAudit {
@@ -81,6 +91,11 @@ export interface DevelopmentEvidenceCaptureAudit {
         interceptedFailureWrites: number;
     };
     entries: DevelopmentEvidenceCaptureAuditEntry[];
+    /**
+     * 공개 artifact에서 주소·PNU·물건지 ID 없이 결과 분포만 확인하기 위한 집계다.
+     * 상세 entry와 gate는 그대로 유지하며 이 집계가 실패를 성공으로 바꾸지는 않는다.
+     */
+    redactedAggregate: DevelopmentEvidenceCaptureRedactedAggregate;
     capturedEvidence: DevelopmentEvidenceManifest | null;
     capturedEvidencePropertyUnitCount: number;
     capturedEvidenceManifestSha256: string | null;
@@ -152,6 +167,65 @@ function asAllowedSource(
 
 function sortedUnique(values: string[]): string[] {
     return [...new Set(values)].sort();
+}
+
+export function assertDevelopmentEvidenceCaptureActiveIdentity(input: {
+    target: DevelopmentTargetManifest;
+    rows: readonly { id: string; pnu: string }[];
+}): void {
+    const { target, rows } = input;
+    if (
+        rows.length !== target.expectedUnionActivePropertyUnitCount ||
+        rows.some(
+            (row) =>
+                !UUID_RE.test(row.id) ||
+                !PNU_RE.test(row.pnu)
+        ) ||
+        new Set(rows.map((row) => row.id)).size !== rows.length
+    ) {
+        throw new Error('CAPTURE_UNION_ACTIVE_PROPERTY_SET_MISMATCH');
+    }
+    const activePnus = sortedUnique(rows.map((row) => row.pnu));
+    if (activePnus.length !== target.expectedUnionActivePnuCount) {
+        throw new Error('CAPTURE_UNION_ACTIVE_PNU_COUNT_MISMATCH');
+    }
+
+    const anchors = developmentTargetExecutionAnchors(target);
+    if (
+        target.targetCount === target.expectedUnionActivePnuCount &&
+        (
+            anchors.length !== activePnus.length ||
+            anchors.some((pnu, index) => pnu !== activePnus[index])
+        )
+    ) {
+        throw new Error('CAPTURE_UNION_ACTIVE_PNU_SET_MISMATCH');
+    }
+}
+
+export function aggregateDevelopmentEvidenceCaptureEntries(
+    entries: readonly DevelopmentEvidenceCaptureAuditEntry[]
+): DevelopmentEvidenceCaptureRedactedAggregate {
+    const aggregate: DevelopmentEvidenceCaptureRedactedAggregate = {
+        CAPTURED: 0,
+        NO_DATA: 0,
+        REVIEW: 0,
+        FAILED: 0,
+    };
+    for (const entry of entries) {
+        if (entry.status === 'CAPTURED') {
+            aggregate.CAPTURED += 1;
+        } else if (entry.terminalOutcome === 'NO_DATA') {
+            aggregate.NO_DATA += 1;
+        } else if (
+            entry.terminalOutcome === 'REVIEW_REQUIRED' ||
+            entry.terminalScopeState === 'REVIEW_REQUIRED'
+        ) {
+            aggregate.REVIEW += 1;
+        } else {
+            aggregate.FAILED += 1;
+        }
+    }
+    return aggregate;
 }
 
 function createSyntheticJobRow(
@@ -564,6 +638,12 @@ export async function captureDevelopmentLandAreaEvidence(input: {
 
     const executionAnchors =
         developmentTargetExecutionAnchors(input.target);
+    assertDevelopmentEvidenceCaptureActiveIdentity({
+        target: input.target,
+        rows: await input.deps.readActivePropertyIdentity(
+            input.target.unionId
+        ),
+    });
     const results = new Array<CaptureOneResult>(
         executionAnchors.length
     );
@@ -713,6 +793,10 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 ),
             },
             entries: results.map((result) => result.audit),
+            redactedAggregate:
+                aggregateDevelopmentEvidenceCaptureEntries(
+                    results.map((result) => result.audit)
+                ),
             capturedEvidence,
             capturedEvidencePropertyUnitCount:
                 uniquePropertyUnitIds.size,

@@ -92,6 +92,74 @@ test('791-2280 API target은 read-only capture에서만 선택되고 v2 전체 s
     );
 });
 
+test('미아7 전체 299 PNU·429 물건지 API 재조회는 read-only capture에서만 exact routing한다', () => {
+    const label = 'mia-seven-full-299-api-readonly-20260728';
+    const selection = captureWorkflow.slice(
+        captureWorkflow.indexOf(`${label})`),
+        captureWorkflow.indexOf(
+            'mia-seven-auto-286-20260725)',
+            captureWorkflow.indexOf(`${label})`)
+        )
+    );
+    assert.match(
+        captureWorkflow,
+        new RegExp(`default: ${label}`)
+    );
+    assert.match(captureWorkflow, new RegExp(`- ${label}`));
+    assert.match(
+        selection,
+        /mia-seven-full-299-api-readonly-target-20260728\.json/
+    );
+    assert.match(selection, /target_count="299"/);
+    assert.match(selection, /property_unit_count="429"/);
+    assert.doesNotMatch(workflow, new RegExp(label));
+    assert.doesNotMatch(
+        workflow,
+        /mia-seven-full-299-api-readonly-target-20260728\.json/
+    );
+});
+
+test('read-only capture는 raw evidence를 업로드하지 않고 비식별 집계만 게시한 뒤 private 파일을 제거한다', () => {
+    const uploadBlock = captureWorkflow.slice(
+        captureWorkflow.indexOf(
+            '- name: Upload sanitized read-only capture artifact'
+        ),
+        captureWorkflow.indexOf('- name: Enforce capture gate')
+    );
+    const publicArtifactBlock = captureWorkflow.slice(
+        captureWorkflow.indexOf(
+            '- name: Build sanitized read-only capture artifact'
+        ),
+        captureWorkflow.indexOf(
+            '- name: Upload sanitized read-only capture artifact'
+        )
+    );
+    const cleanupBlock = captureWorkflow.slice(
+        captureWorkflow.indexOf('- name: Remove private capture files')
+    );
+    assert.match(
+        uploadBlock,
+        /path: development-land-area-evidence-public\/artifact\.json/
+    );
+    assert.doesNotMatch(
+        uploadBlock,
+        /development-land-area-evidence-output|audit\.json|evidence\.json/
+    );
+    assert.match(
+        publicArtifactBlock,
+        /land-area-development-evidence-public-artifact@1/
+    );
+    assert.match(publicArtifactBlock, /redactedAggregate/);
+    assert.match(publicArtifactBlock, /productionWrites: 0/);
+    assert.match(
+        publicArtifactBlock,
+        /anchorPnu\|propertyUnitId\|allowedPrestates\|proposedLandAreas\|landArea/
+    );
+    assert.match(cleanupBlock, /rm -f -- "\$\{candidate\}"/);
+    assert.match(cleanupBlock, /rmdir -- "\$\{root\}"/);
+    assert.match(cleanupBlock, /test ! -e "\$\{root\}"/);
+});
+
 test('workflow는 full artifact를 로컬 gate에만 쓰고 strict 공개 artifact만 업로드한다', () => {
     const uploadBlock = workflow.slice(
         workflow.indexOf('- name: Upload sanitized run artifact'),
