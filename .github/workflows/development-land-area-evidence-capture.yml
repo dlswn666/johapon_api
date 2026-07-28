@@ -572,7 +572,8 @@ jobs:
             ? fs.readFileSync(evidencePath, "utf8")
             : null;
           const hex64 = /^[0-9a-f]{64}$/;
-          const safeCode = /^[A-Z0-9_]{1,100}$/;
+          const safeCode =
+            /^(?!.*[0-9]{19})[A-Z0-9_]{1,100}$/;
           const aggregateKeys = ["CAPTURED", "NO_DATA", "REVIEW", "FAILED"];
           const guardKeys = [
             "durableSyncJobWrites",
@@ -582,6 +583,49 @@ jobs:
             "interceptedTerminalWrites",
             "interceptedFailureWrites",
           ];
+          const strategyValues = new Set(["LADFRL", "LDAREG"]);
+          const resolutionSourceValues = new Set([
+            "DB_RESOLVER",
+            "SAME_RUN_OFFICIAL_READ_ONLY",
+            "SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH",
+          ]);
+          const optionalSafeCode = (value) =>
+            value === null
+            || (typeof value === "string" && safeCode.test(value));
+          const failureDetailsValid =
+            Array.isArray(audit?.entries)
+            && audit.entries.length === audit.targetCount
+            && audit.entries.every(
+              (entry) =>
+                entry
+                && typeof entry === "object"
+                && !Array.isArray(entry)
+                && ["CAPTURED", "FAILED"].includes(entry.status)
+                && (
+                  entry.strategy === null
+                  || strategyValues.has(entry.strategy)
+                )
+                && Number.isSafeInteger(entry.scannedPnuCount)
+                && entry.scannedPnuCount >= 0
+                && Number.isSafeInteger(entry.propertyUnitCount)
+                && entry.propertyUnitCount >= 0
+                && optionalSafeCode(entry.failureCode)
+                && optionalSafeCode(entry.terminalScopeState)
+                && optionalSafeCode(entry.terminalOutcome)
+                && Array.isArray(entry.terminalIssueCodes)
+                && new Set(entry.terminalIssueCodes).size
+                  === entry.terminalIssueCodes.length
+                && entry.terminalIssueCodes.every(
+                  (code) =>
+                    typeof code === "string" && safeCode.test(code)
+                )
+                && Number.isSafeInteger(entry.terminalIssuesTotal)
+                && entry.terminalIssuesTotal >= 0
+                && typeof entry.terminalIssuesTruncated === "boolean"
+                && resolutionSourceValues.has(
+                  entry.scopeResolutionSource
+                )
+            );
           const issueCountsValid =
             Array.isArray(audit?.redactedIssueCounts)
             && new Set(
@@ -625,7 +669,7 @@ jobs:
             || audit.sameRunOfficialComponentCount < 0
             || typeof audit.manifestDigest !== "string"
             || !hex64.test(audit.manifestDigest)
-            || !Array.isArray(audit.entries)
+            || !failureDetailsValid
             || !audit.redactedAggregate
             || !issueCountsValid
             || aggregateKeys.some(
@@ -654,12 +698,47 @@ jobs:
             )
             || !/^[0-9]+$/.test(statusText)
           ) process.exit(1);
+          const classifyFailure = (entry) =>
+            entry.terminalOutcome === "NO_DATA"
+              ? "NO_DATA"
+              : (
+                entry.terminalOutcome === "REVIEW_REQUIRED"
+                || entry.terminalScopeState === "REVIEW_REQUIRED"
+              )
+                ? "REVIEW"
+                : "FAILED";
+          const redactedFailureDetails = audit.entries.flatMap(
+            (entry, index) =>
+              entry.status === "CAPTURED"
+                ? []
+                : [{
+                    targetOrdinal: index + 1,
+                    result: classifyFailure(entry),
+                    strategy: entry.strategy,
+                    scannedScopeCount: entry.scannedPnuCount,
+                    propertyCount: entry.propertyUnitCount,
+                    failureCode: entry.failureCode,
+                    scopeState: entry.terminalScopeState,
+                    terminalOutcome: entry.terminalOutcome,
+                    issueCodes: [...entry.terminalIssueCodes].sort(),
+                    issuesTotal: entry.terminalIssuesTotal,
+                    issuesTruncated: entry.terminalIssuesTruncated,
+                    resolutionSource: entry.scopeResolutionSource,
+                  }]
+          );
+          for (const result of ["NO_DATA", "REVIEW", "FAILED"]) {
+            if (
+              redactedFailureDetails.filter(
+                (detail) => detail.result === result
+              ).length !== audit.redactedAggregate[result]
+            ) process.exit(1);
+          }
           const sha256 = (value) =>
             crypto.createHash("sha256").update(value).digest("hex");
           const optionalHex = (value) =>
             typeof value === "string" && hex64.test(value) ? value : null;
           const artifact = {
-            version: "land-area-development-evidence-public-artifact@2",
+            version: "land-area-development-evidence-public-artifact@3",
             databaseTarget: "development",
             manifestLabel,
             manifestDigest: audit.manifestDigest,
@@ -689,6 +768,7 @@ jobs:
               code: row.code,
               count: row.count,
             })),
+            redactedFailureDetails,
             readOnlyGuards: Object.fromEntries(
               guardKeys.map((key) => [key, audit.readOnlyGuards[key]])
             ),
@@ -716,7 +796,8 @@ jobs:
           };
           const serialized = `${JSON.stringify(artifact, null, 2)}\n`;
           if (
-            /\b[0-9]{19}\b/.test(serialized)
+            /[0-9]{19}/.test(manifestLabel)
+            || /\b[0-9]{19}\b/.test(serialized)
             || /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(serialized)
             || /anchorPnu|propertyUnitId|allowedPrestates|proposedLandAreas|landArea/i.test(serialized)
           ) process.exit(1);
