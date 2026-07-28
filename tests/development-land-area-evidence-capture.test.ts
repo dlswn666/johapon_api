@@ -14,10 +14,10 @@ import {
     type DevelopmentTargetManifest,
 } from '../src/operations/development-land-area-sync-runner';
 import {
+    aggregateDevelopmentEvidenceCaptureIssueCodes,
     aggregateDevelopmentEvidenceCaptureEntries,
     assertDevelopmentEvidenceCaptureActiveIdentity,
     developmentEvidenceEntryFromSnapshot,
-    redactDevelopmentEvidenceCaptureDiagnostics,
 } from '../src/operations/development-land-area-evidence-capture';
 import type { LandAreaSyncScopeSnapshot } from '../src/types/land-area-sync-job.types';
 
@@ -344,7 +344,7 @@ test('read-only audit 집계는 식별자 없이 CAPTURED/NO_DATA/REVIEW/FAILED�
     );
 });
 
-test('read-only 공개 진단은 PNU 대신 manifest 순번과 안정된 enum/code만 남긴다', () => {
+test('read-only 공개 진단은 개별 PNU를 가리키지 않는 issue code별 건수만 남긴다', () => {
     const base = {
         anchorPnu: PNU,
         strategy: null,
@@ -359,8 +359,8 @@ test('read-only 공개 진단은 PNU 대신 manifest 순번과 안정된 enum/co
         terminalIssuesTotal: 0,
         terminalIssuesTruncated: false,
     } as const;
-    const diagnostics =
-        redactDevelopmentEvidenceCaptureDiagnostics([
+    const issueCounts =
+        aggregateDevelopmentEvidenceCaptureIssueCodes([
             { ...base, status: 'CAPTURED' },
             {
                 ...base,
@@ -383,33 +383,15 @@ test('read-only 공개 진단은 PNU 대신 manifest 순번과 안정된 enum/co
             },
         ]);
 
-    assert.deepEqual(diagnostics, [
-        {
-            anchorIndex: 1,
-            category: 'REVIEW',
-            strategy: null,
-            terminalScopeState: 'REVIEW_REQUIRED',
-            terminalOutcome: 'REVIEW_REQUIRED',
-            issueCodes: [
-                'PROPERTY_UNIT_NOT_FOUND',
-                'RATIO_PARSE_FAILED',
-            ],
-            failureCode: 'CAPTURE_REVIEW_REQUIRED',
-        },
-        {
-            anchorIndex: 2,
-            category: 'FAILED',
-            strategy: null,
-            terminalScopeState: 'FAILED',
-            terminalOutcome: 'FAILED',
-            issueCodes: [],
-            failureCode: 'CAPTURE_DISCOVERY_FAILED',
-        },
+    assert.deepEqual(issueCounts, [
+        { code: 'PROPERTY_UNIT_NOT_FOUND', count: 1 },
+        { code: 'RATIO_PARSE_FAILED', count: 1 },
     ]);
-    const serialized = JSON.stringify(diagnostics);
+    const serialized = JSON.stringify(issueCounts);
     assert.equal(serialized.includes(PNU), false);
     assert.equal(serialized.includes(PROPERTY_UNIT_ID), false);
     assert.doesNotMatch(serialized, /\b[0-9]{19}\b/);
+    assert.equal(serialized.includes('anchorIndex'), false);
 });
 
 test('read-only live snapshot은 runner가 재검증하는 strict evidence로 변환된다', () => {

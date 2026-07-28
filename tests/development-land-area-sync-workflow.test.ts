@@ -150,9 +150,9 @@ test('read-only capture는 raw evidence를 업로드하지 않고 비식별 집�
         /land-area-development-evidence-public-artifact@2/
     );
     assert.match(publicArtifactBlock, /redactedAggregate/);
-    assert.match(publicArtifactBlock, /redactedDiagnostics/);
-    assert.match(publicArtifactBlock, /anchorIndex/);
-    assert.match(publicArtifactBlock, /terminalIssueCodes|issueCodes/);
+    assert.match(publicArtifactBlock, /redactedIssueCounts/);
+    assert.doesNotMatch(publicArtifactBlock, /anchorIndex/);
+    assert.doesNotMatch(publicArtifactBlock, /redactedDiagnostics/);
     assert.match(publicArtifactBlock, /productionWrites: 0/);
     assert.match(
         publicArtifactBlock,

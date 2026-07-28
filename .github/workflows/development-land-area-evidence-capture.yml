@@ -541,74 +541,22 @@ jobs:
             "interceptedTerminalWrites",
             "interceptedFailureWrites",
           ];
-          const diagnosticKeys = [
-            "anchorIndex",
-            "category",
-            "strategy",
-            "terminalScopeState",
-            "terminalOutcome",
-            "issueCodes",
-            "failureCode",
-          ];
-          const scopeStates = new Set([
-            "FAILED",
-            "REVIEW_REQUIRED",
-            "SINGLE_SCOPE_CONFIRMATION_REQUIRED",
-            "SINGLE_PNU_CONFIRMED",
-            "LINKED_SCOPE_RESOLVED",
-          ]);
-          const outcomes = new Set([
-            "FAILED",
-            "REVIEW_REQUIRED",
-            "NO_DATA",
-            "APPLIED",
-            "PARTIAL",
-          ]);
-          const diagnosticsValid =
-            Array.isArray(audit?.redactedDiagnostics)
-            && audit.redactedDiagnostics.length ===
-              (audit?.redactedAggregate?.NO_DATA ?? -1)
-                + (audit?.redactedAggregate?.REVIEW ?? -1)
-                + (audit?.redactedAggregate?.FAILED ?? -1)
+          const issueCountsValid =
+            Array.isArray(audit?.redactedIssueCounts)
             && new Set(
-              audit.redactedDiagnostics.map((row) => row?.anchorIndex)
-            ).size === audit.redactedDiagnostics.length
-            && audit.redactedDiagnostics.every(
+              audit.redactedIssueCounts.map((row) => row?.code)
+            ).size === audit.redactedIssueCounts.length
+            && audit.redactedIssueCounts.every(
               (row) =>
                 row
                 && typeof row === "object"
                 && !Array.isArray(row)
                 && JSON.stringify(Object.keys(row).sort()) ===
-                  JSON.stringify([...diagnosticKeys].sort())
-                && Number.isSafeInteger(row.anchorIndex)
-                && row.anchorIndex >= 0
-                && row.anchorIndex < audit.targetCount
-                && ["NO_DATA", "REVIEW", "FAILED"].includes(row.category)
-                && (
-                  row.strategy === null
-                  || ["LADFRL", "LDAREG"].includes(row.strategy)
-                )
-                && (
-                  row.terminalScopeState === null
-                  || scopeStates.has(row.terminalScopeState)
-                )
-                && (
-                  row.terminalOutcome === null
-                  || outcomes.has(row.terminalOutcome)
-                )
-                && Array.isArray(row.issueCodes)
-                && row.issueCodes.every(
-                  (code) =>
-                    typeof code === "string" && safeCode.test(code)
-                )
-                && new Set(row.issueCodes).size === row.issueCodes.length
-                && (
-                  row.failureCode === null
-                  || (
-                    typeof row.failureCode === "string"
-                    && safeCode.test(row.failureCode)
-                  )
-                )
+                  JSON.stringify(["code", "count"])
+                && typeof row.code === "string"
+                && safeCode.test(row.code)
+                && Number.isSafeInteger(row.count)
+                && row.count > 0
             );
           if (
             audit?.version !== "land-area-development-evidence-capture-audit@1"
@@ -623,7 +571,7 @@ jobs:
             || !hex64.test(audit.manifestDigest)
             || !Array.isArray(audit.entries)
             || !audit.redactedAggregate
-            || !diagnosticsValid
+            || !issueCountsValid
             || aggregateKeys.some(
               (key) =>
                 !Number.isSafeInteger(audit.redactedAggregate[key])
@@ -662,14 +610,9 @@ jobs:
             redactedAggregate: Object.fromEntries(
               aggregateKeys.map((key) => [key, audit.redactedAggregate[key]])
             ),
-            redactedDiagnostics: audit.redactedDiagnostics.map((row) => ({
-              anchorIndex: row.anchorIndex,
-              category: row.category,
-              strategy: row.strategy,
-              terminalScopeState: row.terminalScopeState,
-              terminalOutcome: row.terminalOutcome,
-              issueCodes: [...row.issueCodes].sort(),
-              failureCode: row.failureCode,
+            redactedIssueCounts: audit.redactedIssueCounts.map((row) => ({
+              code: row.code,
+              count: row.count,
             })),
             readOnlyGuards: Object.fromEntries(
               guardKeys.map((key) => [key, audit.readOnlyGuards[key]])

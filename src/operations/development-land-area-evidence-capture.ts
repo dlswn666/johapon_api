@@ -73,21 +73,9 @@ export interface DevelopmentEvidenceCaptureRedactedAggregate {
     FAILED: number;
 }
 
-export interface DevelopmentEvidenceCaptureRedactedDiagnostic {
-    anchorIndex: number;
-    category: Exclude<
-        keyof DevelopmentEvidenceCaptureRedactedAggregate,
-        'CAPTURED'
-    >;
-    strategy: LandAreaSyncStrategy | null;
-    terminalScopeState:
-        | LandAreaSyncTerminalInput['scopeState']
-        | null;
-    terminalOutcome:
-        | LandAreaSyncTerminalInput['outcome']
-        | null;
-    issueCodes: string[];
-    failureCode: string | null;
+export interface DevelopmentEvidenceCaptureRedactedIssueCount {
+    code: string;
+    count: number;
 }
 
 export interface DevelopmentEvidenceCaptureAudit {
@@ -113,7 +101,7 @@ export interface DevelopmentEvidenceCaptureAudit {
      * 상세 entry와 gate는 그대로 유지하며 이 집계가 실패를 성공으로 바꾸지는 않는다.
      */
     redactedAggregate: DevelopmentEvidenceCaptureRedactedAggregate;
-    redactedDiagnostics: DevelopmentEvidenceCaptureRedactedDiagnostic[];
+    redactedIssueCounts: DevelopmentEvidenceCaptureRedactedIssueCount[];
     capturedEvidence: DevelopmentEvidenceManifest | null;
     capturedEvidencePropertyUnitCount: number;
     capturedEvidenceManifestSha256: string | null;
@@ -247,37 +235,22 @@ export function aggregateDevelopmentEvidenceCaptureEntries(
 }
 
 /**
- * 공개 진단에는 manifest 정렬 순번과 enum/code만 남긴다.
- * PNU·UUID·면적·snapshot hash는 포함하지 않으며, repository 승인 manifest를 가진
- * 운영자만 순번을 실제 대상과 대조할 수 있다.
+ * 공개 진단에는 terminal issue code별 발생 건수만 남긴다.
+ * PNU·manifest 순번·UUID·면적·snapshot hash는 포함하지 않아 저장소 target과
+ * 결합해도 개별 물건지를 역매핑할 수 없다.
  */
-export function redactDevelopmentEvidenceCaptureDiagnostics(
+export function aggregateDevelopmentEvidenceCaptureIssueCodes(
     entries: readonly DevelopmentEvidenceCaptureAuditEntry[]
-): DevelopmentEvidenceCaptureRedactedDiagnostic[] {
-    return entries.flatMap((entry, anchorIndex) => {
-        if (entry.status === 'CAPTURED') return [];
-        const category:
-            DevelopmentEvidenceCaptureRedactedDiagnostic['category'] =
-            entry.terminalOutcome === 'NO_DATA'
-                ? 'NO_DATA'
-                : entry.terminalOutcome === 'REVIEW_REQUIRED' ||
-                    entry.terminalScopeState === 'REVIEW_REQUIRED'
-                  ? 'REVIEW'
-                  : 'FAILED';
-        return [
-            {
-                anchorIndex,
-                category,
-                strategy: entry.strategy,
-                terminalScopeState: entry.terminalScopeState,
-                terminalOutcome: entry.terminalOutcome,
-                issueCodes: sortedUnique(
-                    entry.terminalIssueCodes
-                ),
-                failureCode: entry.failureCode,
-            },
-        ];
-    });
+): DevelopmentEvidenceCaptureRedactedIssueCount[] {
+    const counts = new Map<string, number>();
+    for (const entry of entries) {
+        for (const code of new Set(entry.terminalIssueCodes)) {
+            counts.set(code, (counts.get(code) ?? 0) + 1);
+        }
+    }
+    return [...counts.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([code, count]) => ({ code, count }));
 }
 
 function createSyntheticJobRow(
@@ -850,8 +823,8 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 aggregateDevelopmentEvidenceCaptureEntries(
                     results.map((result) => result.audit)
                 ),
-            redactedDiagnostics:
-                redactDevelopmentEvidenceCaptureDiagnostics(
+            redactedIssueCounts:
+                aggregateDevelopmentEvidenceCaptureIssueCodes(
                     results.map((result) => result.audit)
                 ),
             capturedEvidence,
