@@ -205,7 +205,8 @@ export interface SameRunOfficialDevelopmentFullRefreshComponent
 }
 
 export type DevelopmentFullRefreshParcelSingletonBasis =
-    'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON';
+    | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+    | 'OFFICIAL_COMPONENT_DB_PARCEL_SINGLETONS';
 
 function scanRows<T>(scan: StrictScan<T>): T[] {
     return scan.state === 'COMPLETE' ? scan.rows : [];
@@ -424,7 +425,7 @@ export function resolveSameRunOfficialReadOnlyComponent(
  */
 function resolveStrictSameRunOfficialAttachedComponent(
     input: ParcelScopeInput & { anchorPnu: string },
-    allowClassificationConflict: boolean
+    allowDevelopmentFullRefreshClassification: boolean
 ): SameRunOfficialReadOnlyComponent | null {
     const { anchorPnu, dbScope, baseScans } = input;
     if (
@@ -444,7 +445,7 @@ function resolveStrictSameRunOfficialAttachedComponent(
 
     const normalGate = resolveParcelScopeCompleteness(input);
     const expectedIssues =
-        allowClassificationConflict &&
+        allowDevelopmentFullRefreshClassification &&
         normalGate.classification.kind === 'REVIEW_REQUIRED' &&
         normalGate.classification.issue ===
             'BUILDING_CLASSIFICATION_CONFLICT'
@@ -463,8 +464,9 @@ function resolveStrictSameRunOfficialAttachedComponent(
                 )
         ) ||
         (normalGate.classification.kind === 'CLASSIFIED'
-            ? normalGate.classification.family !== 'LDAREG'
-            : !allowClassificationConflict ||
+            ? normalGate.classification.family !== 'LDAREG' &&
+              !allowDevelopmentFullRefreshClassification
+            : !allowDevelopmentFullRefreshClassification ||
               normalGate.classification.issue !==
                   'BUILDING_CLASSIFICATION_CONFLICT') ||
         normalGate.bylot.status !== 'RESOLVED'
@@ -631,11 +633,30 @@ export function resolveSameRunOfficialDevelopmentFullRefreshComponent(
         ...input,
         dbScope: officialOnlyDbScope,
     });
+    const classifiedSingleton =
+        singletonGate.state ===
+            'SINGLE_SCOPE_CONFIRMATION_REQUIRED' &&
+        singletonGate.issues.length === 0 &&
+        singletonGate.classification.kind === 'CLASSIFIED';
+    const classificationConflictSingleton =
+        singletonGate.state === 'REVIEW_REQUIRED' &&
+        singletonGate.classification.kind ===
+            'REVIEW_REQUIRED' &&
+        singletonGate.classification.issue ===
+            'BUILDING_CLASSIFICATION_CONFLICT' &&
+        (singletonGate.issues.length === 1
+            ? singletonGate.issues[0] ===
+              'BUILDING_CLASSIFICATION_CONFLICT'
+            : singletonGate.issues.length === 2 &&
+              singletonGate.issues.includes(
+                  'BUILDING_CLASSIFICATION_CONFLICT'
+              ) &&
+              singletonGate.issues.includes(
+                  'SCOPE_NOT_LINKED'
+              ));
     if (
-        singletonGate.state !==
-            'SINGLE_SCOPE_CONFIRMATION_REQUIRED' ||
-        singletonGate.issues.length !== 0 ||
-        singletonGate.classification.kind !== 'CLASSIFIED' ||
+        (!classifiedSingleton &&
+            !classificationConflictSingleton) ||
         singletonGate.bylot.status !== 'RESOLVED'
     ) {
         return null;
@@ -694,9 +715,9 @@ export function resolveSameRunOfficialDevelopmentFullRefreshComponent(
  *
  * 이 함수는 parcel-singleton 판정 자체를 대체하지 않는다. 호출자가 그 판정을 통과한
  * basis를 명시해야 하며, 같은 실행의 title/attached scan이 완전하고 공식 부속지번
- * 근거가 0일 때만 pairCount=0 component를 만든다. title 자체가 COMPLETE_ZERO이거나
- * 관리번호가 여러 개인 경우에는 공식 scan digest에서 결정적인 synthetic identity를
- * 만들되, provider 실패·pagination 미완료·bylot 상충·attached 행은 모두 차단한다.
+ * 근거가 0일 때만 pairCount=0 component를 만든다. 공식 title 자체가 없으면 DB
+ * singleton만으로 임의 component를 만들지 않는다. provider 실패·pagination 미완료·
+ * bylot 상충·attached 행은 모두 차단한다.
  */
 export function resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
     input: ParcelScopeInput & {
@@ -714,8 +735,7 @@ export function resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonCompo
     }
     const baseScan = input.baseScans[0];
     if (
-        (baseScan.title.state !== 'COMPLETE' &&
-            baseScan.title.state !== 'COMPLETE_ZERO') ||
+        baseScan.title.state !== 'COMPLETE' ||
         baseScan.attached.state !== 'COMPLETE_ZERO'
     ) {
         return null;
@@ -751,29 +771,23 @@ export function resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonCompo
         return null;
     }
 
-    const titleSelfPks =
-        baseScan.title.state === 'COMPLETE'
-            ? [
-                  ...new Set(
-                      baseScan.title.rows
-                          .map((row) =>
-                              normalizeRegistryManagementPk(
-                                  row.mgmBldrgstPk
-                              )
-                          )
-                          .filter(
-                              (
-                                  value
-                              ): value is string =>
-                                  value !== null
-                          )
-                  ),
-              ].sort()
-            : [];
-    if (
-        baseScan.title.state === 'COMPLETE' &&
-        titleSelfPks.length === 0
-    ) {
+    const titleSelfPks = [
+        ...new Set(
+            baseScan.title.rows
+                .map((row) =>
+                    normalizeRegistryManagementPk(
+                        row.mgmBldrgstPk
+                    )
+                )
+                .filter(
+                    (
+                        value
+                    ): value is string =>
+                        value !== null
+                )
+        ),
+    ].sort();
+    if (titleSelfPks.length === 0) {
         return null;
     }
     if (

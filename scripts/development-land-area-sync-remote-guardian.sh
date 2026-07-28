@@ -353,6 +353,15 @@ else
       const evidence = runner.parseDevelopmentEvidenceManifest(read("FULL_REFRESH_EVIDENCE"));
       const audit = read("FULL_REFRESH_AUDIT");
       const marker = runner.developmentFullRefreshMarkerForTarget(target);
+      const exactFullRefreshComponentCoverage =
+        (
+          audit?.sameRunOfficialComponentCount === target.targetCount
+          && audit?.verifiedNoDataCount === 0
+        )
+        || (
+          audit?.sameRunOfficialComponentCount === target.targetCount - 1
+          && audit?.verifiedNoDataCount === 1
+        );
       if (
         !marker
         || audit?.gate?.status !== "PASS"
@@ -361,7 +370,7 @@ else
         || audit?.readOnlyGuards?.durableSyncJobWrites !== 0
         || audit?.readOnlyGuards?.propertyUnitWriteRpcCalls !== 0
         || audit?.resolvedComponentCount !== target.targetCount
-        || audit?.sameRunOfficialComponentCount !== target.targetCount
+        || !exactFullRefreshComponentCoverage
         || evidence.manifestDigest !== target.manifestDigest
       ) process.exit(1);
       const approval = {

@@ -7,9 +7,9 @@ on:
         description: Repository-approved development target
         required: true
         type: choice
-        default: mia-seven-full-295-components-api-readonly-20260728
+        default: mia-seven-full-279-official-components-api-readonly-20260728
         options:
-          - mia-seven-full-295-components-api-readonly-20260728
+          - mia-seven-full-279-official-components-api-readonly-20260728
           - mia-seven-full-299-api-readonly-20260728
           - mia-seven-auto-286-20260725
           - mia-seven-auto-76-20260725
@@ -65,9 +65,9 @@ jobs:
         run: |
           set -euo pipefail
           case "${MANIFEST_NAME}" in
-            mia-seven-full-295-components-api-readonly-20260728)
-              target_path="development-land-area-sync-manifests/mia-seven-full-295-components-api-readonly-target-20260728.json"
-              target_count="295"
+            mia-seven-full-279-official-components-api-readonly-20260728)
+              target_path="development-land-area-sync-manifests/mia-seven-full-279-official-components-api-readonly-target-20260728.json"
+              target_count="279"
               property_unit_count="429"
               ;;
             mia-seven-full-299-api-readonly-20260728)
@@ -479,7 +479,16 @@ jobs:
           const evidenceSha = crypto.createHash("sha256").update(evidenceText).digest("hex");
           const expectedSameRunOfficial =
             process.env.MANIFEST_LABEL ===
-              "mia-seven-full-295-components-api-readonly-20260728";
+              "mia-seven-full-279-official-components-api-readonly-20260728";
+          const exactFullRefreshComponentCoverage =
+            (
+              audit?.sameRunOfficialComponentCount === target.targetCount
+              && audit?.verifiedNoDataCount === 0
+            )
+            || (
+              audit?.sameRunOfficialComponentCount === target.targetCount - 1
+              && audit?.verifiedNoDataCount === 1
+            );
           if (
             evidence.unionId !== target.unionId
             || evidence.manifestDigest !== target.manifestDigest
@@ -514,7 +523,7 @@ jobs:
           };
           if (expectedSameRunOfficial) {
             if (
-              audit?.sameRunOfficialComponentCount !== target.targetCount
+              !exactFullRefreshComponentCoverage
               || audit?.promotionGate?.status !== "PASS"
               || audit?.promotionGate?.writeEligible !== true
               || audit?.promotionGate?.failureCodes?.length !== 0
@@ -527,6 +536,7 @@ jobs:
           } else {
             if (
               audit?.sameRunOfficialComponentCount !== 0
+              || audit?.verifiedNoDataCount !== 0
               || audit?.promotionGate?.status !== "PASS"
               || audit?.promotionGate?.writeEligible !== true
               || audit?.promotionGate?.failureCodes?.length !== 0
@@ -588,6 +598,7 @@ jobs:
             "DB_RESOLVER",
             "SAME_RUN_OFFICIAL_READ_ONLY",
             "SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH",
+            "VERIFIED_NO_DATA",
           ]);
           const optionalSafeCode = (value) =>
             value === null
@@ -600,7 +611,7 @@ jobs:
                 entry
                 && typeof entry === "object"
                 && !Array.isArray(entry)
-                && ["CAPTURED", "FAILED"].includes(entry.status)
+                && ["CAPTURED", "VERIFIED_NO_DATA", "FAILED"].includes(entry.status)
                 && (
                   entry.strategy === null
                   || strategyValues.has(entry.strategy)
@@ -667,6 +678,8 @@ jobs:
             || audit.scannedPnuCount < 0
             || !Number.isSafeInteger(audit.sameRunOfficialComponentCount)
             || audit.sameRunOfficialComponentCount < 0
+            || !Number.isSafeInteger(audit.verifiedNoDataCount)
+            || audit.verifiedNoDataCount < 0
             || typeof audit.manifestDigest !== "string"
             || !hex64.test(audit.manifestDigest)
             || !failureDetailsValid
@@ -756,6 +769,7 @@ jobs:
             scannedPnuCount: audit.scannedPnuCount,
             sameRunOfficialComponentCount:
               audit.sameRunOfficialComponentCount,
+            verifiedNoDataCount: audit.verifiedNoDataCount,
             entryCount: audit.entries.length,
             capturedEvidencePropertyUnitCount:
               Number.isSafeInteger(audit.capturedEvidencePropertyUnitCount)

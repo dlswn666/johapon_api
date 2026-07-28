@@ -65,7 +65,7 @@ const REPRESENTATIVE_EVIDENCE_MANIFEST_URL = new URL(
     import.meta.url
 );
 const FULL_REFRESH_TARGET_MANIFEST_URL = new URL(
-    '../development-land-area-sync-manifests/mia-seven-full-295-components-api-readonly-target-20260728.json',
+    '../development-land-area-sync-manifests/mia-seven-full-279-official-components-api-readonly-target-20260728.json',
     import.meta.url
 );
 
@@ -424,7 +424,7 @@ function fullRefreshRelationGisSnapshot():
         )
     ) as DevelopmentRelationGisInvariantSnapshot['tables'];
     return {
-        scopePnuCount: 300,
+        scopePnuCount: 301,
         propertyUnitCount: 429,
         tables,
         aggregateDigest: sha256Utf8(
@@ -530,7 +530,7 @@ function validFullRefreshRunArtifact(): {
                     'full-refresh-property-attribution'
                 ),
             },
-            results: targetManifest.anchors.map((pnu) => ({
+            results: targetManifest.anchors.map((pnu, index) => ({
                 pnu,
                 admission: 'NEW_DISCOVERY',
                 discoveryJobId: DISCOVERY_JOB_ID,
@@ -540,7 +540,7 @@ function validFullRefreshRunArtifact(): {
                 strategy: 'LADFRL',
                 scopeState: 'SINGLE_PNU_CONFIRMED',
                 outcome: 'APPLIED',
-                updatedPropertyUnits: 1,
+                updatedPropertyUnits: index < 150 ? 2 : 1,
                 unchangedPropertyUnits: 0,
                 issueCodes: [],
             })),
@@ -549,6 +549,55 @@ function validFullRefreshRunArtifact(): {
                 failureCode: null,
                 stoppedBeforePnu: null,
             },
+        },
+    };
+}
+
+function validFullRefreshVerifiedNoDataRunArtifact(): {
+    artifact: DevelopmentRunArtifact;
+    targetManifest: DevelopmentTargetManifestV3;
+} {
+    const { artifact, targetManifest } =
+        validFullRefreshRunArtifact();
+    let projectableIndex = 0;
+    const results = artifact.results.map((result) => {
+        if (
+            result.pnu ===
+            '1130510100107913568'
+        ) {
+            return {
+                ...result,
+                applyJobId: null,
+                writerJobId: null,
+                strategy: null,
+                scopeState: 'LINKED_SCOPE_RESOLVED' as const,
+                outcome: 'NO_DATA' as const,
+                updatedPropertyUnits: 0,
+                unchangedPropertyUnits: 7,
+            };
+        }
+        const updatedPropertyUnits =
+            projectableIndex < 144 ? 2 : 1;
+        projectableIndex += 1;
+        return {
+            ...result,
+            updatedPropertyUnits,
+        };
+    });
+    assert.equal(projectableIndex, 278);
+    return {
+        targetManifest,
+        artifact: {
+            ...artifact,
+            postflight: {
+                ...artifact.postflight!,
+                positiveLandAreaCount: 422,
+            },
+            writeAttribution: {
+                ...artifact.writeAttribution!,
+                attributedPropertyUnitCount: 422,
+            },
+            results,
         },
     };
 }
@@ -1199,7 +1248,7 @@ test('공개 artifact는 집계와 digest allowlist만 남기고 raw 식별자·
     );
 });
 
-test('미아7 전체 재조회 private/public artifact는 295 구성요소·300 PNU·429 물건과 relation/rights 게이트를 고정한다', () => {
+test('미아7 전체 재조회 private/public artifact는 공식 279 구성요소·301 조회 PNU·429 물건과 relation/rights 게이트를 고정한다', () => {
     const { artifact, targetManifest } =
         validFullRefreshRunArtifact();
     assert.doesNotThrow(() =>
@@ -1207,15 +1256,15 @@ test('미아7 전체 재조회 private/public artifact는 295 구성요소·300 
     );
     const publicArtifact = createDevelopmentPublicRunArtifact(
         artifact,
-        'mia-seven-full-295-components-api-readonly-20260728'
+        'mia-seven-full-279-official-components-api-readonly-20260728'
     );
     assert.doesNotThrow(() =>
         validateDevelopmentPublicRunArtifact(
             publicArtifact,
-            'mia-seven-full-295-components-api-readonly-20260728'
+            'mia-seven-full-279-official-components-api-readonly-20260728'
         )
     );
-    assert.equal(publicArtifact.aggregateCounts.targetCount, 295);
+    assert.equal(publicArtifact.aggregateCounts.targetCount, 279);
     assert.equal(
         publicArtifact.aggregateCounts.expectedPropertyUnitCount,
         429
@@ -1223,13 +1272,116 @@ test('미아7 전체 재조회 private/public artifact는 295 구성요소·300 
     assert.equal(
         publicArtifact.relationGisInvariant.preflight
             ?.scopePnuCount,
-        300
+        301
     );
     assert.deepEqual(publicArtifact.strategyCounts, {
-        LADFRL: 295,
+        LADFRL: 279,
         LDAREG: 0,
         NONE: 0,
     });
+});
+
+test('미아7 전체 재조회는 278 APPLIED/422호 + exact 1 VERIFIED_NO_DATA/7호도 PASS하며 no-data를 writer·strategy에서 제외한다', () => {
+    const { artifact, targetManifest } =
+        validFullRefreshVerifiedNoDataRunArtifact();
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(artifact, targetManifest)
+    );
+    const publicArtifact = createDevelopmentPublicRunArtifact(
+        artifact,
+        'mia-seven-full-279-official-components-api-readonly-20260728'
+    );
+    assert.doesNotThrow(() =>
+        validateDevelopmentPublicRunArtifact(
+            publicArtifact,
+            'mia-seven-full-279-official-components-api-readonly-20260728'
+        )
+    );
+    assert.equal(
+        publicArtifact.aggregateCounts.projectableResultCount,
+        278
+    );
+    assert.equal(
+        publicArtifact.aggregateCounts.verifiedNoDataResultCount,
+        1
+    );
+    assert.equal(
+        publicArtifact.aggregateCounts.projectablePropertyUnitCount,
+        422
+    );
+    assert.equal(
+        publicArtifact.aggregateCounts
+            .verifiedNoDataPropertyUnitCount,
+        7
+    );
+    assert.deepEqual(publicArtifact.outcomeCounts, {
+        APPLIED: 278,
+        PARTIAL: 0,
+        NO_DATA: 1,
+        REVIEW_REQUIRED: 0,
+        FAILED: 0,
+        NONE: 0,
+    });
+    assert.deepEqual(publicArtifact.strategyCounts, {
+        LADFRL: 278,
+        LDAREG: 0,
+        NONE: 1,
+    });
+    assert.equal(
+        artifact.writeAttribution?.attributedPropertyUnitCount,
+        422
+    );
+    assert.equal(
+        artifact.landRightWriteAttribution
+            ?.attributedPropertyUnitCount,
+        0
+    );
+
+    const noDataIndex = artifact.results.findIndex(
+        (result) => result.outcome === 'NO_DATA'
+    );
+    assert.notEqual(noDataIndex, -1);
+    for (const forgedResult of [
+        {
+            ...artifact.results[noDataIndex],
+            strategy: 'LADFRL' as const,
+        },
+        {
+            ...artifact.results[noDataIndex],
+            writerJobId: APPLY_JOB_ID,
+        },
+        {
+            ...artifact.results[noDataIndex],
+            updatedPropertyUnits: 1,
+            unchangedPropertyUnits: 6,
+        },
+    ]) {
+        const forged = structuredClone(artifact);
+        forged.results[noDataIndex] = forgedResult;
+        assert.throws(
+            () =>
+                validateDevelopmentRunArtifact(
+                    forged,
+                    targetManifest
+                ),
+            /RUN_ARTIFACT_RESULT_WRITER_INVALID/
+        );
+    }
+
+    assert.throws(
+        () =>
+            validateDevelopmentRunArtifact(
+                {
+                    ...artifact,
+                    writeAttribution: {
+                        ...artifact.writeAttribution!,
+                        attributedPropertyUnitCount: 429,
+                    },
+                },
+                targetManifest
+            ),
+        /RUN_ARTIFACT_WRITE_ATTRIBUTION_INVALID/
+    );
 });
 
 test('미아7 전체 공개 artifact는 relation/rights 누락 또는 변조 digest를 PASS로 공개하지 않는다', () => {
@@ -1237,7 +1389,7 @@ test('미아7 전체 공개 artifact는 relation/rights 누락 또는 변조 dig
         validFullRefreshRunArtifact();
     const publicArtifact = createDevelopmentPublicRunArtifact(
         artifact,
-        'mia-seven-full-295-components-api-readonly-20260728'
+        'mia-seven-full-279-official-components-api-readonly-20260728'
     );
     assert.throws(
         () =>
@@ -1249,7 +1401,7 @@ test('미아7 전체 공개 artifact는 relation/rights 누락 또는 변조 dig
                         preflight: null,
                     },
                 },
-                'mia-seven-full-295-components-api-readonly-20260728'
+                'mia-seven-full-279-official-components-api-readonly-20260728'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1267,7 +1419,7 @@ test('미아7 전체 공개 artifact는 relation/rights 누락 또는 변조 dig
                         },
                     },
                 },
-                'mia-seven-full-295-components-api-readonly-20260728'
+                'mia-seven-full-279-official-components-api-readonly-20260728'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1282,7 +1434,7 @@ test('미아7 전체 공개 artifact는 relation/rights 누락 또는 변조 dig
                         writeAttribution: null,
                     },
                 },
-                'mia-seven-full-295-components-api-readonly-20260728'
+                'mia-seven-full-279-official-components-api-readonly-20260728'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1327,7 +1479,7 @@ test('relation/GIS 변이는 정확한 FAIL code로만 artifact에 남고 PASS �
         () =>
             createDevelopmentPublicRunArtifact(
                 passMutation,
-                'mia-seven-full-295-components-api-readonly-20260728'
+                'mia-seven-full-279-official-components-api-readonly-20260728'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1349,7 +1501,7 @@ test('relation/GIS 변이는 정확한 FAIL code로만 artifact에 남고 PASS �
     assert.doesNotThrow(() =>
         createDevelopmentPublicRunArtifact(
             truthfulFailure,
-            'mia-seven-full-295-components-api-readonly-20260728'
+            'mia-seven-full-279-official-components-api-readonly-20260728'
         )
     );
 });
@@ -1381,7 +1533,7 @@ test('비대상 대지권 변이는 정확한 FAIL로만 보존되고 PASS 위�
         () =>
             createDevelopmentPublicRunArtifact(
                 passMutation,
-                'mia-seven-full-295-components-api-readonly-20260728'
+                'mia-seven-full-279-official-components-api-readonly-20260728'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1404,7 +1556,7 @@ test('비대상 대지권 변이는 정확한 FAIL로만 보존되고 PASS 위�
     assert.doesNotThrow(() =>
         createDevelopmentPublicRunArtifact(
             truthfulFailure,
-            'mia-seven-full-295-components-api-readonly-20260728'
+            'mia-seven-full-279-official-components-api-readonly-20260728'
         )
     );
 });
@@ -1440,9 +1592,12 @@ test('전체 재조회 runtime은 relation/GIS postflight 변이를 정확한 FA
     } = await runFullRefreshRuntime({
         mutateRelationPost: true,
     });
-    assert.equal(admissionCount, 295);
+    assert.equal(admissionCount, targetManifest.targetCount);
     assert.equal(latestReadCount, 0);
-    assert.equal(artifact.results.length, 295);
+    assert.equal(
+        artifact.results.length,
+        targetManifest.targetCount
+    );
     assert.equal(artifact.gate.status, 'FAIL');
     assert.equal(
         artifact.gate.failureCode,
@@ -1458,7 +1613,7 @@ test('전체 재조회 runtime은 relation/GIS postflight 변이를 정확한 FA
     assert.doesNotThrow(() =>
         createDevelopmentPublicRunArtifact(
             artifact,
-            'mia-seven-full-295-components-api-readonly-20260728'
+            'mia-seven-full-279-official-components-api-readonly-20260728'
         )
     );
 });
@@ -1472,7 +1627,7 @@ test('전체 재조회 runtime은 LDAREG 권리원장 writer 전이를 attributi
     } = await runFullRefreshRuntime({
         ldaregAnchorIndex: 1,
     });
-    assert.equal(admissionCount, 295);
+    assert.equal(admissionCount, targetManifest.targetCount);
     assert.equal(latestReadCount, 0);
     assert.deepEqual(artifact.gate, {
         status: 'PASS',
@@ -1497,7 +1652,7 @@ test('전체 재조회 runtime은 LDAREG 권리원장 writer 전이를 attributi
     assert.doesNotThrow(() =>
         createDevelopmentPublicRunArtifact(
             artifact,
-            'mia-seven-full-295-components-api-readonly-20260728'
+            'mia-seven-full-279-official-components-api-readonly-20260728'
         )
     );
 });
@@ -1508,7 +1663,7 @@ test('전체 재조회 runtime은 LDAREG 권리원장 writer 불일치를 FAIL�
             ldaregAnchorIndex: 1,
             wrongLandRightWriter: true,
         });
-    assert.equal(admissionCount, 295);
+    assert.equal(admissionCount, targetManifest.targetCount);
     assert.equal(artifact.gate.status, 'FAIL');
     assert.equal(
         artifact.gate.failureCode,
@@ -1521,7 +1676,7 @@ test('전체 재조회 runtime은 LDAREG 권리원장 writer 불일치를 FAIL�
     assert.doesNotThrow(() =>
         createDevelopmentPublicRunArtifact(
             artifact,
-            'mia-seven-full-295-components-api-readonly-20260728'
+            'mia-seven-full-279-official-components-api-readonly-20260728'
         )
     );
 });
@@ -1553,7 +1708,7 @@ test('LDAREG synthetic PASS artifact는 권리원장 attribution exact count 없
         () =>
             createDevelopmentPublicRunArtifact(
                 tampered,
-                'mia-seven-full-295-components-api-readonly-20260728'
+                'mia-seven-full-279-official-components-api-readonly-20260728'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1914,9 +2069,9 @@ test('repo-pinned v3 전체 갱신 target만 정책 marker로 승격하고 임�
     assert.deepEqual(marker, {
         profile: 'DEVELOPMENT_FULL_REFRESH_API_REQUERY_V1',
         manifestDigest:
-            '02bf999d970a9f0228a0bc683cc630fb157e5f4becb8576d0f4aa5b4dec1d3db',
+            '4235381c31245833b944c09664499f69aedd71282560f42807cb5c379bffa3b3',
         scopeDigest:
-            '8c87b46f17416cd5aad9aaa242f09ff04aefb4186f74b72370ebb9c1407caa73',
+            'c661e864d20342519cf7d453454ead53d9279a21c37cdfaa87b8e68f5e2a7eb9',
     });
     assert.throws(
         () =>

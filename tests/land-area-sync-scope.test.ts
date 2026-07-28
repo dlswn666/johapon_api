@@ -285,6 +285,66 @@ test('DEV 전체 갱신은 classification conflict와 분리해 1→2/1→3 offi
         THIRD_PNU,
     ]);
     assert.equal(two.pairCount, 2);
+
+    const singleton =
+        resolveSameRunOfficialDevelopmentFullRefreshComponent({
+            ...gate({
+                baseScans: [
+                    base({
+                        title: titleComplete(
+                            conflictTitles('0')
+                        ),
+                        attached:
+                            zero<BrAtchJibunRow>(),
+                    }),
+                ],
+            }),
+            anchorPnu: ANCHOR,
+        });
+    assert.ok(singleton);
+    assert.deepEqual(singleton.memberPnus, [ANCHOR]);
+    assert.equal(singleton.pairCount, 0);
+    assert.equal(singleton.managementPk, PK);
+});
+
+test('DEV 전체 갱신만 공식 LADFRL multi-PNU title/attached/bylot component를 확정한다', () => {
+    const input = gate({
+        baseScans: [
+            base({
+                title: titleComplete([
+                    titleRow(PK, '2', DETACHED),
+                ]),
+                attached: attachedComplete([
+                    attachedRow(ANCHOR, THIRD_PNU, PK),
+                    attachedRow(ANCHOR, OTHER_PNU, PK),
+                ]),
+            }),
+        ],
+    });
+    assert.equal(
+        resolveSameRunOfficialReadOnlyComponent({
+            ...input,
+            anchorPnu: ANCHOR,
+        }),
+        null,
+        '일반 read-only LDAREG closure에는 LADFRL multi component를 전파하지 않는다'
+    );
+    const component =
+        resolveSameRunOfficialDevelopmentFullRefreshComponent({
+            ...input,
+            anchorPnu: ANCHOR,
+        });
+    assert.ok(component);
+    assert.deepEqual(component.memberPnus, [
+        ANCHOR,
+        OTHER_PNU,
+        THIRD_PNU,
+    ]);
+    assert.equal(component.pairCount, 2);
+    assert.match(
+        component.officialComponentDigest,
+        /^[0-9a-f]{64}$/
+    );
 });
 
 test('DEV classification-independent component scope는 root conflict·duplicate·count mismatch·provider incomplete를 승격하지 않는다', () => {
@@ -420,7 +480,7 @@ test('DEV 전체 갱신은 LADFRL과 LDAREG singleton을 모두 pairCount=0 공�
     );
 });
 
-test('DEV 전체 갱신 parcel singleton은 분류 conflict와 title zero를 공식 pairCount=0으로 고정한다', () => {
+test('DEV 전체 갱신 parcel singleton은 공식 분류 conflict title만 pairCount=0으로 고정하고 title zero는 차단한다', () => {
     const classificationConflict =
         resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
             {
@@ -481,17 +541,7 @@ test('DEV 전체 갱신 parcel singleton은 분류 conflict와 title zero를 공
                     'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON',
             }
         );
-    assert.ok(titleZero);
-    assert.equal(titleZero.pairCount, 0);
-    assert.deepEqual(titleZero.memberPnus, [ANCHOR]);
-    assert.match(
-        titleZero.managementPk,
-        /^full-refresh-singleton:[0-9a-f]{64}$/
-    );
-    assert.match(
-        titleZero.officialComponentDigest,
-        /^[0-9a-f]{64}$/
-    );
+    assert.equal(titleZero, null);
 });
 
 test('DEV parcel singleton의 복수 title PK synthetic identity와 digest는 provider row 순서에 무관하다', () => {

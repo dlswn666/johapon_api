@@ -45,8 +45,8 @@ const MIA_FULL_299_TARGET_URL = new URL(
     '../development-land-area-sync-manifests/mia-seven-full-299-api-readonly-target-20260728.json',
     import.meta.url
 );
-const MIA_FULL_295_COMPONENT_TARGET_URL = new URL(
-    '../development-land-area-sync-manifests/mia-seven-full-295-components-api-readonly-target-20260728.json',
+const MIA_FULL_279_OFFICIAL_COMPONENT_TARGET_URL = new URL(
+    '../development-land-area-sync-manifests/mia-seven-full-279-official-components-api-readonly-target-20260728.json',
     import.meta.url
 );
 const MIA_FULL_299_DELTA = [
@@ -287,88 +287,127 @@ test('미아7 전체 API 재조회 target은 활성 anchor 299건과 property un
     );
 });
 
-test('미아7 component target은 활성 299 PNU를 295 anchor·300 allowed scope로 고정한다', () => {
+test('미아7 component target은 활성 299 PNU를 공식 279 component·301 조회 scope로 고정한다', () => {
     const full299 = parseDevelopmentTargetManifest(
         JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
     );
-    const component295 = parseDevelopmentTargetManifest(
+    const component279 = parseDevelopmentTargetManifest(
         JSON.parse(
-            readFileSync(MIA_FULL_295_COMPONENT_TARGET_URL, 'utf8')
+            readFileSync(MIA_FULL_279_OFFICIAL_COMPONENT_TARGET_URL, 'utf8')
         )
     );
     assert.equal(
-        component295.version,
+        component279.version,
         DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
     );
     if (
         full299.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 ||
-        component295.version !==
+        component279.version !==
             DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
     ) {
         throw new Error('v2 full manifests expected');
     }
 
-    assert.equal(component295.anchors.length, 295);
-    assert.equal(component295.targetCount, 295);
-    assert.equal(component295.allowedScopePnus.length, 300);
-    assert.equal(component295.expectedPropertyUnitCount, 429);
+    assert.equal(component279.anchors.length, 279);
+    assert.equal(component279.targetCount, 279);
+    assert.equal(component279.allowedScopePnus.length, 301);
+    assert.equal(component279.expectedPropertyUnitCount, 429);
     assert.equal(
-        component295.expectedUnionActivePropertyUnitCount,
+        component279.expectedUnionActivePropertyUnitCount,
         429
     );
-    assert.equal(component295.expectedUnionActivePnuCount, 299);
+    assert.equal(component279.expectedUnionActivePnuCount, 299);
     assert.deepEqual(
-        component295.expectedUnionActivePnus,
+        component279.expectedUnionActivePnus,
         full299.anchors
     );
     assert.equal(
-        component295.expectedUnionActivePnuDigest,
+        component279.expectedUnionActivePnuDigest,
         computeDevelopmentActivePnuDigest(
             UNION_ID,
             full299.anchors
         )
     );
     assert.deepEqual(
-        component295.allowedScopePnus.filter(
+        component279.allowedScopePnus.filter(
             (pnu) =>
-                !component295.expectedUnionActivePnus.includes(pnu)
+                !component279.expectedUnionActivePnus.includes(pnu)
         ),
-        ['1130510100107912281']
+        [
+            '1130510100107030130',
+            '1130510100107912281',
+        ]
     );
+    const officialAttachedActivePnus = [
+        '1130510100107912216',
+        '1130510100107912218',
+        '1130510100107912228',
+        '1130510100107912229',
+        '1130510100107912245',
+        '1130510100107912246',
+        '1130510100107912247',
+        '1130510100107912248',
+        '1130510100107912249',
+        '1130510100107912250',
+        '1130510100107912339',
+        '1130510100107912474',
+        '1130510100107912918',
+        '1130510100107912937',
+        '1130510100107912953',
+        '1130510100107912954',
+    ];
     assert.deepEqual(
         full299.anchors.filter(
-            (pnu) => !component295.anchors.includes(pnu)
+            (pnu) => !component279.anchors.includes(pnu)
         ),
         [
             '1130510100107450052',
             '1130510100107912212',
             '1130510100107912213',
+            ...officialAttachedActivePnus,
             '1130510100107912344',
-        ]
+        ].sort()
     );
-    assert.deepEqual(
-        component295.allowedScopePnus,
-        full299.allowedScopePnus
+    for (const attachedPnu of officialAttachedActivePnus) {
+        assert.ok(
+            component279.allowedScopePnus.includes(attachedPnu)
+        );
+        assert.ok(
+            component279.expectedUnionActivePnus.includes(
+                attachedPnu
+            )
+        );
+    }
+    assert.ok(
+        component279.allowedScopePnus.includes(
+            '1130510100107030130'
+        ),
+        '791-2244의 공식 query-only 부지번 703-130도 조회 scope에 포함한다'
     );
-    assert.equal(
-        component295.scopeDigest,
-        computeDevelopmentTargetDigest(
-            UNION_ID,
-            component295.allowedScopePnus
+    assert.ok(
+        !component279.expectedUnionActivePnus.includes(
+            '1130510100107030130'
         )
     );
     assert.equal(
-        component295.manifestDigest,
-        computeDevelopmentTargetV3ManifestDigest(component295)
+        component279.scopeDigest,
+        computeDevelopmentTargetDigest(
+            UNION_ID,
+            component279.allowedScopePnus
+        )
     );
-    const changedActivePnus = component295.expectedUnionActivePnus
+    assert.equal(
+        component279.manifestDigest,
+        computeDevelopmentTargetV3ManifestDigest(component279)
+    );
+    const changedActivePnus = component279.expectedUnionActivePnus
         .filter((pnu) => pnu !== '1130510100107450052')
         .concat('1130510100107912281')
         .sort();
     assert.throws(
         () =>
             parseDevelopmentTargetManifest({
-                ...component295,
+                ...component279,
                 expectedUnionActivePnus: changedActivePnus,
                 expectedUnionActivePnuDigest:
                     computeDevelopmentActivePnuDigest(
@@ -381,7 +420,7 @@ test('미아7 component target은 활성 299 PNU를 295 anchor·300 allowed scop
     assert.throws(
         () =>
             parseDevelopmentTargetManifest({
-                ...component295,
+                ...component279,
                 expectedUnionActivePnuDigest: '0'.repeat(64),
             }),
         /TARGET_MANIFEST_INVALID/
@@ -389,16 +428,16 @@ test('미아7 component target은 활성 299 PNU를 295 anchor·300 allowed scop
 });
 
 test('pinned v3 capture snapshot은 singleton까지 full-refresh official digest provenance로 기록한다', () => {
-    const component295 = parseDevelopmentTargetManifest(
+    const component279 = parseDevelopmentTargetManifest(
         JSON.parse(
             readFileSync(
-                MIA_FULL_295_COMPONENT_TARGET_URL,
+                MIA_FULL_279_OFFICIAL_COMPONENT_TARGET_URL,
                 'utf8'
             )
         )
     );
     if (
-        component295.version !==
+        component279.version !==
         DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
     ) {
         throw new Error('v3 full target expected');
@@ -413,12 +452,12 @@ test('pinned v3 capture snapshot은 singleton까지 full-refresh official digest
             managementPk: '1010111038',
             pairCount: 0,
             officialComponentDigest: 'a'.repeat(64),
-            manifestDigest: component295.manifestDigest,
-            scopeDigest: component295.scopeDigest,
+            manifestDigest: component279.manifestDigest,
+            scopeDigest: component279.scopeDigest,
         },
     };
     const entry = developmentEvidenceEntryFromSnapshot({
-        target: component295,
+        target: component279,
         captureRunId: '30118336235',
         anchorPnu: PNU,
         snapshot: fullSnapshot,
@@ -440,22 +479,22 @@ test('v3 전체 capture는 실행 직전 DEV 활성 429호·299 PNU exact 집합
     const full299 = parseDevelopmentTargetManifest(
         JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
     );
-    const component295 = parseDevelopmentTargetManifest(
+    const component279 = parseDevelopmentTargetManifest(
         JSON.parse(
-            readFileSync(MIA_FULL_295_COMPONENT_TARGET_URL, 'utf8')
+            readFileSync(MIA_FULL_279_OFFICIAL_COMPONENT_TARGET_URL, 'utf8')
         )
     );
     if (
         full299.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 ||
-        component295.version !==
+        component279.version !==
             DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
     ) {
-        throw new Error('v2 full299 and v3 full295 expected');
+        throw new Error('v2 full299 and v3 full279 expected');
     }
     const rows = Array.from(
         {
             length:
-                component295.expectedUnionActivePropertyUnitCount,
+                component279.expectedUnionActivePropertyUnitCount,
         },
         (_, index) => ({
             id: `00000000-0000-4000-a000-${String(index + 1).padStart(12, '0')}`,
@@ -468,7 +507,7 @@ test('v3 전체 capture는 실행 직전 DEV 활성 429호·299 PNU exact 집합
     );
     assert.doesNotThrow(() =>
         assertDevelopmentEvidenceCaptureActiveIdentity({
-            target: component295,
+            target: component279,
             rows,
         })
     );
@@ -488,7 +527,7 @@ test('v3 전체 capture는 실행 직전 DEV 활성 429호·299 PNU exact 집합
     assert.throws(
         () =>
             assertDevelopmentEvidenceCaptureActiveIdentity({
-                target: component295,
+                target: component279,
                 rows: sameCountsDifferentPnu,
             }),
         /CAPTURE_UNION_ACTIVE_PNU_SET_MISMATCH/
@@ -496,25 +535,25 @@ test('v3 전체 capture는 실행 직전 DEV 활성 429호·299 PNU exact 집합
     assert.throws(
         () =>
             assertDevelopmentEvidenceCaptureActiveIdentity({
-                target: component295,
+                target: component279,
                 rows: rows.slice(0, -1),
             }),
         /CAPTURE_UNION_ACTIVE_PROPERTY_SET_MISMATCH/
     );
 });
 
-test('295 component capture는 anchor 밖 active PNU 4개를 허용하되 300 scope 밖 PNU는 거부한다', () => {
+test('279 official component capture는 anchor 밖 active PNU 20개를 허용하되 301 조회 scope 밖 PNU는 거부한다', () => {
     const full299 = parseDevelopmentTargetManifest(
         JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
     );
-    const component295 = parseDevelopmentTargetManifest(
+    const component279 = parseDevelopmentTargetManifest(
         JSON.parse(
-            readFileSync(MIA_FULL_295_COMPONENT_TARGET_URL, 'utf8')
+            readFileSync(MIA_FULL_279_OFFICIAL_COMPONENT_TARGET_URL, 'utf8')
         )
     );
     if (
         full299.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 ||
-        component295.version !==
+        component279.version !==
             DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
     ) {
         throw new Error('v2 full manifests expected');
@@ -522,7 +561,7 @@ test('295 component capture는 anchor 밖 active PNU 4개를 허용하되 300 sc
     const rows = Array.from(
         {
             length:
-                component295.expectedUnionActivePropertyUnitCount,
+                component279.expectedUnionActivePropertyUnitCount,
         },
         (_, index) => ({
             id: `00000000-0000-4000-a000-${String(index + 1).padStart(12, '0')}`,
@@ -532,7 +571,7 @@ test('295 component capture는 anchor 밖 active PNU 4개를 허용하되 300 sc
 
     assert.doesNotThrow(() =>
         assertDevelopmentEvidenceCaptureActiveIdentity({
-            target: component295,
+            target: component279,
             rows,
         })
     );
@@ -547,7 +586,7 @@ test('295 component capture는 anchor 밖 active PNU 4개를 허용하되 300 sc
     assert.throws(
         () =>
             assertDevelopmentEvidenceCaptureActiveIdentity({
-                target: component295,
+                target: component279,
                 rows: outsideScope,
             }),
         /CAPTURE_UNION_ACTIVE_PNU_SET_MISMATCH/
@@ -612,6 +651,12 @@ test('read-only audit 집계는 식별자 없이 CAPTURED/NO_DATA/REVIEW/FAILED�
         { ...base, status: 'CAPTURED' },
         {
             ...base,
+            status: 'VERIFIED_NO_DATA',
+            terminalOutcome: 'NO_DATA',
+            scopeResolutionSource: 'VERIFIED_NO_DATA',
+        },
+        {
+            ...base,
             status: 'FAILED',
             terminalOutcome: 'NO_DATA',
         },
@@ -630,7 +675,7 @@ test('read-only audit 집계는 식별자 없이 CAPTURED/NO_DATA/REVIEW/FAILED�
     ]);
     assert.deepEqual(aggregate, {
         CAPTURED: 1,
-        NO_DATA: 1,
+        NO_DATA: 2,
         REVIEW: 1,
         FAILED: 1,
     });
@@ -1025,6 +1070,7 @@ test('READ_ONLY same-run 1→3 official component는 전 PNU를 LDAREG/LADFRL sc
     );
     assert.equal(result.audit.scannedPnuCount, 3);
     assert.equal(result.audit.sameRunOfficialComponentCount, 1);
+    assert.equal(result.audit.verifiedNoDataCount, 0);
     assert.deepEqual(result.audit.promotionGate, {
         status: 'BLOCKED',
         writeEligible: false,
