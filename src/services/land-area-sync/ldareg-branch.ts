@@ -79,11 +79,12 @@ export interface LdaregBranchInput {
     buildingUnits: BuildingUnitCandidate[];
     propertyUnits: PropertyUnitCandidate[];
     /**
-     * repo-pinned DEV full-refresh에서만 켜는 active-PNU property replica 모드.
-     * 각 logical unit을 property-bearing PNU 안에서 각각 exact match한 뒤, 각 물리
-     * property item에 component 전체 query-PNU provenance를 붙인다.
+     * repo-pinned DEV full-refresh에서만 켜는 active property 전수 membership 모드.
+     * SINGLE도 exact bijection을 강제하고, PNU replica는 각 logical unit을
+     * property-bearing PNU 안에서 각각 match한 뒤 각 물리 property item에 component
+     * 전체 query-PNU provenance를 붙인다.
      */
-    propertyReplicaMode?: 'PER_ACTIVE_PNU';
+    officialPropertyMembershipMode?: LdaregPropertyMembershipMode;
 }
 
 const LDAREG_REPEAT_FIELDS = [
@@ -554,7 +555,15 @@ function collectScopeExposUnits(
 export function selectCanonicalExposSourcePnu(
     basePnus: string[],
     perPnu: LdaregPnuScan[],
-    acceptedRootIdentities: readonly string[]
+    acceptedRootIdentities: readonly string[],
+    options?: {
+        /**
+         * DEV full-refresh official positive component 전용. canonical base EXPOS가
+         * zero여도 component 전체 complete scan aggregate가 nonzero이면 base PNU를
+         * canonical LDAREG source로 유지한다.
+         */
+        allowComponentWideAggregateForEmptyBase?: boolean;
+    }
 ): string | null {
     const basisRootIndex = buildScopeBasisRootIndex(
         perPnu,
@@ -565,9 +574,30 @@ export function selectCanonicalExposSourcePnu(
     const candidates = [...new Set(basePnus)].sort();
     if (
         candidates.length === 0 ||
-        candidates.some((pnu) => (scansByPnu.get(pnu)?.exposRows.length ?? 0) === 0)
+        scansByPnu.size !== perPnu.length ||
+        candidates.some((pnu) => !scansByPnu.has(pnu))
     ) {
         return null;
+    }
+    const emptyBasePnus = candidates.filter(
+        (pnu) =>
+            (scansByPnu.get(pnu)?.exposRows.length ?? 0) === 0
+    );
+    if (emptyBasePnus.length > 0) {
+        if (
+            options?.allowComponentWideAggregateForEmptyBase !==
+                true ||
+            candidates.length !== 1
+        ) {
+            return null;
+        }
+        const aggregate = collectScopeExposUnits(
+            perPnu,
+            basisRootIndex
+        );
+        return aggregate.ok && aggregate.units.length > 0
+            ? candidates[0]
+            : null;
     }
 
     const digestFor = (pnu: string): string | null => {
@@ -1172,13 +1202,18 @@ function evaluateExposProviderShapeBridge(
 export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResult {
     const { unionId, scannedPnus, rootIdentity, perPnu, propertyUnits } = input;
     const expectedTargetPnus = [...new Set(scannedPnus)].sort();
-    const propertyReplicaCohort =
-        input.propertyReplicaMode === 'PER_ACTIVE_PNU'
+    const officialPropertyMembershipLayout =
+        input.officialPropertyMembershipMode
             ? resolveLdaregPropertyMembershipLayout({
                   unionId,
                   expectedTargetPnus,
                   propertyUnits,
               })
+            : null;
+    const propertyReplicaCohort =
+        officialPropertyMembershipLayout?.mode ===
+        'PER_ACTIVE_PNU_REPLICA'
+            ? officialPropertyMembershipLayout
             : null;
     const scopeLadfrlAreas = [...input.scopeLadfrlAreas].sort((a, b) => a.pnu.localeCompare(b.pnu));
     const scopeLadfrlTotal = Number(input.scopeLadfrlTotal);
@@ -1201,9 +1236,9 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         !canonicalScan ||
         !scopeExpos.ok ||
         scopeExpos.units.length === 0 ||
-        (input.propertyReplicaMode === 'PER_ACTIVE_PNU' &&
-            propertyReplicaCohort?.mode !==
-                'PER_ACTIVE_PNU_REPLICA')
+        (input.officialPropertyMembershipMode !== undefined &&
+            officialPropertyMembershipLayout?.mode !==
+                input.officialPropertyMembershipMode)
     ) {
         return {
             items: [],
@@ -1344,7 +1379,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         rowsByPnuAndKey.set(scan.pnu, byKey);
     }
 
-    const matchedReplicaPropertyIds = new Set<string>();
+    const matchedOfficialPropertyIds = new Set<string>();
     for (const record of dedup.records) {
         const canonicalRaw =
             record.sourceRowIndex >= 0
@@ -1497,7 +1532,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         }
 
         for (const decision of matchedDecisions) {
-            matchedReplicaPropertyIds.add(
+            matchedOfficialPropertyIds.add(
                 decision.propertyUnitId
             );
             for (const targetPnu of expectedTargetPnus) {
@@ -1578,14 +1613,14 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         }
     }
 
-    let propertyReplicaBijectionMismatch = false;
+    let officialPropertyBijectionMismatch = false;
     if (
-        propertyReplicaCohort &&
+        officialPropertyMembershipLayout &&
         replication.evidence.rowCount > 0
     ) {
-        const matched = [...matchedReplicaPropertyIds].sort();
+        const matched = [...matchedOfficialPropertyIds].sort();
         const expected =
-            propertyReplicaCohort.activePropertyIds;
+            officialPropertyMembershipLayout.activePropertyIds;
         if (
             matched.length !== expected.length ||
             matched.some(
@@ -1593,7 +1628,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
                     propertyUnitId !== expected[index]
             )
         ) {
-            propertyReplicaBijectionMismatch = true;
+            officialPropertyBijectionMismatch = true;
             issues.push({ code: 'PROPERTY_UNIT_NOT_FOUND' });
         }
     }
@@ -1701,7 +1736,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             sourceStateAmbiguous ||
             componentReplicaMismatch ||
             ambiguousPropertyIdentity ||
-            propertyReplicaBijectionMismatch ||
+            officialPropertyBijectionMismatch ||
             nonzeroWithoutMatchedItem ||
             unitMatchIncomplete ||
             dedupConflict,

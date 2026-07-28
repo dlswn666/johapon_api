@@ -1097,7 +1097,13 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
     const canonicalSourcePnu = selectCanonicalExposSourcePnu(
         canonicalBasePnus,
         perPnu,
-        acceptedRootIdentities
+        acceptedRootIdentities,
+        {
+            allowComponentWideAggregateForEmptyBase:
+                ctx.developmentFullRefresh !== null &&
+                (ctx.developmentFullRefreshScopeResolution
+                    ?.pairCount ?? 0) > 0,
+        }
     );
     if (
         !expectedCanonicalSourcePnu ||
@@ -1124,11 +1130,9 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
         canonicalSourcePnu,
         buildingUnits,
         propertyUnits,
-        propertyReplicaMode:
-            ctx.developmentFullRefreshLdaregPropertyMembershipMode ===
-            'PER_ACTIVE_PNU_REPLICA'
-                ? 'PER_ACTIVE_PNU'
-                : undefined,
+        officialPropertyMembershipMode:
+            ctx.developmentFullRefreshLdaregPropertyMembershipMode ??
+            undefined,
     });
 
     const counts: LandAreaSyncCounts = {

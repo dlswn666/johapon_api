@@ -1852,7 +1852,8 @@ test('DEV opt-in active-PNU replica는 1→3 동일 호실 property를 PNU별 ex
             area: '50',
         })),
         scopeLadfrlTotal: '150',
-        propertyReplicaMode: 'PER_ACTIVE_PNU',
+        officialPropertyMembershipMode:
+            'PER_ACTIVE_PNU_REPLICA',
     });
 
     assert.equal(result.blocking, false);
@@ -1973,7 +1974,8 @@ test('DEV active-PNU replica는 한 PNU의 호실 누락·중복 room ambiguity�
                 area: '50',
             })),
             scopeLadfrlTotal: '100',
-            propertyReplicaMode: 'PER_ACTIVE_PNU',
+            officialPropertyMembershipMode:
+                'PER_ACTIVE_PNU_REPLICA',
         });
 
     const missing = run(baseProperties);
@@ -1993,6 +1995,73 @@ test('DEV active-PNU replica는 한 PNU의 호실 누락·중복 room ambiguity�
     ]);
     assert.equal(ambiguous.blocking, true);
     assert.equal(ambiguous.items.length, 0);
+});
+
+test('DEV query-only attached + SINGLE cohort도 unmatched active property를 whole-component blocking한다', () => {
+    const queryOnlyAttached = '1168010100107360025';
+    const targetPnus = [ANCHOR, queryOnlyAttached];
+    const perPnu = targetPnus.map((pnu) => ({
+        pnu,
+        ldaregRows: [
+            {
+                pnu,
+                agbldgSn: '1',
+                buldFloorNm: '3',
+                buldHoNm: '301',
+                ldaQotaRate: '10/100',
+                clsSeCode: '0',
+            },
+        ],
+        exposRows:
+            pnu === ANCHOR
+                ? [
+                      {
+                          pnu,
+                          mgmBldrgstPk: PK,
+                          flrNoNm: '3',
+                          hoNm: '301',
+                      },
+                  ]
+                : [],
+    }));
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: targetPnus,
+        rootIdentity: PK,
+        perPnu,
+        buildingUnits: [],
+        propertyUnits: [
+            {
+                id: 'matched-301',
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                ho: '301',
+            },
+            {
+                id: 'unmatched-401',
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                ho: '401',
+            },
+        ],
+        scopeLadfrlAreas: [
+            { pnu: ANCHOR, area: '50' },
+            { pnu: queryOnlyAttached, area: '50' },
+        ],
+        scopeLadfrlTotal: '100',
+        officialPropertyMembershipMode: 'SINGLE_LOGICAL_SET',
+    });
+
+    assert.equal(result.blocking, true);
+    assert.ok(
+        result.issues.some(
+            (issue) => issue.code === 'PROPERTY_UNIT_NOT_FOUND'
+        )
+    );
 });
 
 test('비적용 placeholder가 아닌 CURRENT 비율 파싱 실패는 전체 blocking한다', () => {
@@ -2924,6 +2993,63 @@ test('canonical expos source는 linked base의 nonzero exact dataset만 허용�
         ),
         null,
         '두 번째 base의 expos zero를 attached zero처럼 무시하지 않는다'
+    );
+});
+
+test('DEV official component만 base EXPOS zero + attached nonzero aggregate를 허용하고 all-zero는 차단한다', () => {
+    const attached = '1168010100107360025';
+    const attachedOnly = [
+        {
+            pnu: ANCHOR,
+            ldaregRows: [],
+            exposRows: [],
+        },
+        {
+            pnu: attached,
+            ldaregRows: [],
+            exposRows: [
+                {
+                    pnu: attached,
+                    mgmBldrgstPk: PK,
+                    flrNoNm: '3',
+                    hoNm: '301',
+                },
+            ],
+        },
+    ];
+    assert.equal(
+        selectCanonicalExposSourcePnu(
+            [ANCHOR],
+            attachedOnly,
+            [PK]
+        ),
+        null,
+        'normal/prod 계약은 base EXPOS zero를 계속 차단한다'
+    );
+    assert.equal(
+        selectCanonicalExposSourcePnu(
+            [ANCHOR],
+            attachedOnly,
+            [PK],
+            {
+                allowComponentWideAggregateForEmptyBase: true,
+            }
+        ),
+        ANCHOR
+    );
+    assert.equal(
+        selectCanonicalExposSourcePnu(
+            [ANCHOR],
+            attachedOnly.map((scan) => ({
+                ...scan,
+                exposRows: [],
+            })),
+            [PK],
+            {
+                allowComponentWideAggregateForEmptyBase: true,
+            }
+        ),
+        null
     );
 });
 

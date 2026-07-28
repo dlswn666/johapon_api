@@ -1581,6 +1581,209 @@ test('DEV positive official component라도 active PNU 호실 identity가 하나
     ]);
 });
 
+test('DEV official component는 base EXPOS zero라도 attached-only room으로 exact prepare/apply하고 all-zero는 차단한다', async () => {
+    const attachedPnu = '1168010100107360025';
+    const marker = developmentFullRefreshMarker();
+    const baseScans = officialTwoPnuLdaregScans(attachedPnu);
+    const attachedOnlyScans: Partial<
+        LandAreaSyncDeps['scans']
+    > = {
+        ...baseScans,
+        scanExpos: async (pnu) =>
+            pnu === ANCHOR
+                ? zero<BrExposRow>()
+                : exposComplete([
+                      {
+                          pnu,
+                          mgmBldrgstPk: PK,
+                          dongNm: '101',
+                          flrNoNm: '3',
+                          hoNm: '301',
+                      },
+                  ]),
+    };
+    const propertyUnits = [
+        {
+            id: PROP_ID,
+            unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+            buildingUnitId: 'attached-evidence-unit',
+            pnu: ANCHOR,
+            isDeleted: false,
+            dong: '101',
+            ho: '301',
+        },
+    ];
+    const common = {
+        databaseTarget: 'development' as const,
+        resolver: noEvidence(MEMBER),
+        scans: attachedOnlyScans,
+        propertyUnits,
+        buildingUnits: [
+            {
+                id: 'attached-evidence-unit',
+                dong: '101',
+                floor: '3',
+                ho: '301',
+            },
+        ],
+    };
+    const discoverySpy = emptySpy();
+    const discoveryDeps = makeDeps({
+        ...common,
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy: discoverySpy,
+    });
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: discoveryDeps,
+    });
+
+    assert.equal(discoverySpy.freezeCalls, 1);
+    assert.equal(discoverySpy.applyCalls, 0);
+    const prepared =
+        discoverySpy.frozenSnapshots[0].scopeSnapshot;
+    assert.deepEqual(prepared.candidatePropertyUnitIds, [
+        PROP_ID,
+    ]);
+    assert.deepEqual(prepared.proposedLandAreas, [
+        { propertyUnitId: PROP_ID, landArea: '10' },
+    ]);
+
+    const applySpy = emptySpy();
+    const applyPreview = applyJobPreview({
+        confirmedDiscoveryScopeHash: prepared.scopeHash,
+        confirmedPropertyMembershipHash:
+            prepared.propertyMembershipHash,
+    });
+    const applyDeps = makeDeps({
+        ...common,
+        jobPreviewData: {
+            ...applyPreview,
+            landAreaSync: {
+                ...(applyPreview.landAreaSync as Record<
+                    string,
+                    unknown
+                >),
+                developmentFullRefresh: marker,
+            },
+        },
+        applyResult: {
+            data: { outcome: 'APPLIED', issues: [] },
+            error: null,
+        },
+        spy: applySpy,
+    });
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: applyDeps,
+    });
+    assert.equal(applySpy.applyCalls, 1);
+    const applyParams = applySpy.lastApplyParams as {
+        p_items: Array<{ propertyUnitId: string }>;
+    };
+    assert.deepEqual(
+        applyParams.p_items.map((item) => item.propertyUnitId),
+        [PROP_ID]
+    );
+
+    const allZeroSpy = emptySpy();
+    const allZeroDeps = makeDeps({
+        ...common,
+        scans: {
+            ...attachedOnlyScans,
+            scanExpos: async () => zero<BrExposRow>(),
+        },
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy: allZeroSpy,
+    });
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: allZeroDeps,
+    });
+    assert.equal(allZeroSpy.freezeCalls, 0);
+    assert.equal(allZeroSpy.applyCalls, 0);
+    assert.equal(
+        allZeroSpy.terminalCalls[0]?.scopeState,
+        'REVIEW_REQUIRED'
+    );
+});
+
+test('DEV query-only attached의 SINGLE cohort도 official unit에 없는 extra active property가 있으면 whole-component REVIEW다', async () => {
+    const attachedPnu = '1168010100107360025';
+    const marker = developmentFullRefreshMarker();
+    const spy = emptySpy();
+    const deps = makeDeps({
+        databaseTarget: 'development',
+        resolver: noEvidence(MEMBER),
+        scans: officialTwoPnuLdaregScans(attachedPnu),
+        propertyUnits: [
+            {
+                id: PROP_ID,
+                unionId:
+                    MIA_SEVEN_DEVELOPMENT_UNION_ID,
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: '101',
+                ho: '301',
+            },
+            {
+                id: '22222222-2222-4222-8222-222222222222',
+                unionId:
+                    MIA_SEVEN_DEVELOPMENT_UNION_ID,
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: '101',
+                ho: '401',
+            },
+        ],
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps,
+    });
+    assert.equal(spy.freezeCalls, 0);
+    assert.equal(spy.applyCalls, 0);
+    assert.equal(
+        spy.terminalCalls[0]?.scopeState,
+        'REVIEW_REQUIRED'
+    );
+    assert.ok(
+        spy.terminalIssues[0].some(
+            (issue) => issue.code === 'PROPERTY_UNIT_NOT_FOUND'
+        )
+    );
+});
+
 test('DEV 전체 갱신 표식은 production target에서 worker 진입 전에 거부한다', async () => {
     const spy = emptySpy();
     const deps = makeDeps({
