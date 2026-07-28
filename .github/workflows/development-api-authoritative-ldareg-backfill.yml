@@ -211,6 +211,90 @@ jobs:
             exit 1
           fi
 
+      - name: Materialize ephemeral development credentials
+        shell: bash
+        env:
+          PRIVATE_TARGET_ROOT: ${{ steps.target.outputs.private_root }}
+          DEV_SUPABASE_URL: ${{ secrets.DEV_SUPABASE_URL }}
+          DEV_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.DEV_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          expected_development_url="https://yxypndgipnxrdfyctmvh.supabase.co"
+          private_directory="${PRIVATE_TARGET_ROOT}/.development-api-authoritative-ldareg-backfill"
+          credential_path="${private_directory}/development.env"
+          development_service_role_key="${DEV_SUPABASE_SERVICE_ROLE_KEY:-}"
+          development_url_prefix="DEV_SUPABASE_URL="
+          development_key_prefix="DEV_SUPABASE_SERVICE_ROLE_KEY="
+          expected_credentials_size=$((
+            ${#DEV_SUPABASE_URL}
+            + ${#development_service_role_key}
+            + ${#development_url_prefix}
+            + ${#development_key_prefix}
+            + 2
+          ))
+          if [[
+            "${DEV_SUPABASE_URL:-}" != "${expected_development_url}"
+            || ${#development_service_role_key} -lt 32
+            || ${#development_service_role_key} -gt 4096
+            || "${development_service_role_key}" =~ [[:space:]]
+            || ! "${development_service_role_key}" =~ ^[A-Za-z0-9._-]+$
+          ]]; then
+            echo "::error::Pinned development credential configuration is invalid."
+            exit 1
+          fi
+          if [[
+            ! "${PRIVATE_TARGET_ROOT}" =~ ^/dev/shm/development-api-ldareg-private-target\.[A-Za-z0-9]{6}$
+            || ! -d "${PRIVATE_TARGET_ROOT}"
+            || -L "${PRIVATE_TARGET_ROOT}"
+            || "$(stat -c '%u' "${PRIVATE_TARGET_ROOT}")" != "$(id -u)"
+            || "$(stat -c '%a' "${PRIVATE_TARGET_ROOT}")" != "700"
+            || "$(stat -f -c '%T' "${PRIVATE_TARGET_ROOT}")" != "tmpfs"
+            || ! -d "${private_directory}"
+            || -L "${private_directory}"
+            || "$(stat -c '%u' "${private_directory}")" != "$(id -u)"
+            || "$(stat -c '%a' "${private_directory}")" != "700"
+            || "$(stat -f -c '%T' "${private_directory}")" != "tmpfs"
+            || -e "${credential_path}"
+            || -L "${credential_path}"
+          ]]; then
+            echo "::error::Ephemeral development credential path is invalid."
+            exit 1
+          fi
+          materialize_output="$(
+            printf '%s\n%s\n' \
+              "DEV_SUPABASE_URL=${DEV_SUPABASE_URL}" \
+              "DEV_SUPABASE_SERVICE_ROLE_KEY=${development_service_role_key}" \
+              | env \
+                  -u DEV_SUPABASE_URL \
+                  -u DEV_SUPABASE_SERVICE_ROLE_KEY \
+                  node "${GITHUB_WORKSPACE}/dist/cli/development-api-authoritative-ldareg-private-file-materialize.js" \
+                  --out "${credential_path}" \
+                  --encoding raw \
+                  --max-bytes 8192
+          )"
+          unset \
+            DEV_SUPABASE_URL \
+            DEV_SUPABASE_SERVICE_ROLE_KEY \
+            development_service_role_key
+          if [[ "${materialize_output}" != "DEVELOPMENT_API_AUTHORITATIVE_LDAREG_PRIVATE_FILE_MATERIALIZED" ]]; then
+            echo "::error::Ephemeral development credential materializer did not attest success."
+            exit 1
+          fi
+          if [[
+            ! -f "${credential_path}"
+            || -L "${credential_path}"
+            || "$(stat -c '%u' "${credential_path}")" != "$(id -u)"
+            || "$(stat -c '%a' "${credential_path}")" != "600"
+            || "$(stat -f -c '%T' "${credential_path}")" != "tmpfs"
+            || "$(stat -c '%s' "${credential_path}")" != "${expected_credentials_size}"
+            || "$(wc -l < "${credential_path}")" != "2"
+            || "$(grep -c '^DEV_SUPABASE_URL=' "${credential_path}" || true)" != "1"
+            || "$(grep -c '^DEV_SUPABASE_SERVICE_ROLE_KEY=' "${credential_path}" || true)" != "1"
+          ]]; then
+            echo "::error::Ephemeral development credential file validation failed."
+            exit 1
+          fi
+
       - name: Configure pinned EC2 SSH identity
         shell: bash
         env:
@@ -302,6 +386,29 @@ jobs:
           remote_root="/dev/shm/.development-api-authoritative-ldareg-backfill-${RUN_KEY}"
           cleanup_finished=0
 
+          cleanup_local_credentials() {
+            local private_directory="${PRIVATE_TARGET_ROOT}/.development-api-authoritative-ldareg-backfill"
+            local credential_path="${private_directory}/development.env"
+            if [[
+              ! "${PRIVATE_TARGET_ROOT}" =~ ^/dev/shm/development-api-ldareg-private-target\.[A-Za-z0-9]{6}$
+              || ! -d "${PRIVATE_TARGET_ROOT}"
+              || -L "${PRIVATE_TARGET_ROOT}"
+              || "$(stat -c '%u' "${PRIVATE_TARGET_ROOT}")" != "$(id -u)"
+              || "$(stat -c '%a' "${PRIVATE_TARGET_ROOT}")" != "700"
+              || "$(stat -f -c '%T' "${PRIVATE_TARGET_ROOT}")" != "tmpfs"
+              || ! -d "${private_directory}"
+              || -L "${private_directory}"
+              || "$(stat -c '%u' "${private_directory}")" != "$(id -u)"
+              || "$(stat -c '%a' "${private_directory}")" != "700"
+              || "$(stat -f -c '%T' "${private_directory}")" != "tmpfs"
+            ]]; then
+              return 1
+            fi
+            rm -f -- "${credential_path}"
+            test ! -e "${credential_path}"
+            test ! -L "${credential_path}"
+          }
+
           cleanup_remote() {
             ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
               "RUN_KEY='${RUN_KEY}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' MODE='${MODE}' bash -s" <<'REMOTE_CLEANUP'
@@ -323,9 +430,13 @@ jobs:
             rm -f -- \
               "${run_root}/target.json" \
               "${run_root}/target.json.tmp-${RUN_KEY}" \
+              "${run_root}/development.env" \
+              "${run_root}/development.env.incoming-${RUN_KEY}" \
               "${run_root}/guardian.sh" \
               "${run_root}/guardian.log" \
               "${run_root}/guardian-started.tmp-${RUN_KEY}" \
+              "${run_root}/ingress-janitor-started" \
+              "${run_root}/ingress-janitor-started.tmp-${RUN_KEY}" \
               "${run_root}/janitor-started" \
               "${run_root}/janitor-started.tmp-${RUN_KEY}" \
               "${run_root}/container-id" \
@@ -336,6 +447,8 @@ jobs:
               "${run_root}/approval-request.age.tmp-${RUN_KEY}" \
               "${run_root}/status" \
               "${run_root}/status.tmp-${RUN_KEY}" \
+              "${run_root}/safe-category" \
+              "${run_root}/safe-category.tmp-${RUN_KEY}" \
               "${run_root}/validated" \
               "${run_root}/validated.tmp-${RUN_KEY}" \
               "${run_root}/approval-ciphertext-validated" \
@@ -371,14 +484,17 @@ jobs:
             local prior_status="$?"
             trap - EXIT
             local cleanup_status=0
+            cleanup_local_credentials || cleanup_status=1
             if [[ "${cleanup_finished}" -ne 1 ]]; then
               set +e
               cleanup_remote
-              cleanup_status="$?"
+              if [[ "$?" -ne 0 ]]; then
+                cleanup_status=1
+              fi
               set -e
             fi
             if [[ "${cleanup_status}" -ne 0 ]]; then
-              echo "::error::Exact remote cleanup ACK failed; fixed 75-minute janitor TTL remains active."
+              echo "::error::Exact remote cleanup failed; a detached exact-run cleanup janitor remains active."
               if [[ "${prior_status}" -eq 0 ]]; then
                 prior_status=1
               fi
@@ -388,6 +504,7 @@ jobs:
           trap finish_step EXIT
 
           private_target_directory="${PRIVATE_TARGET_ROOT}/.development-api-authoritative-ldareg-backfill"
+          credential_path="${private_target_directory}/development.env"
           if [[
             ! "${PRIVATE_TARGET_ROOT}" =~ ^/dev/shm/development-api-ldareg-private-target\.[A-Za-z0-9]{6}$
             || "${TARGET_PATH}" != "${private_target_directory}/target.json"
@@ -406,8 +523,13 @@ jobs:
             || "$(stat -c '%u' "${TARGET_PATH}")" != "$(id -u)"
             || "$(stat -c '%a' "${TARGET_PATH}")" != "600"
             || "$(stat -f -c '%T' "${TARGET_PATH}")" != "tmpfs"
+            || ! -f "${credential_path}"
+            || -L "${credential_path}"
+            || "$(stat -c '%u' "${credential_path}")" != "$(id -u)"
+            || "$(stat -c '%a' "${credential_path}")" != "600"
+            || "$(stat -f -c '%T' "${credential_path}")" != "tmpfs"
           ]]; then
-            echo "::error::Private target changed before remote transfer."
+            echo "::error::Private runner input changed before remote transfer."
             exit 1
           fi
 
@@ -424,10 +546,154 @@ jobs:
           mkdir -m 700 -- "${run_root}"
           REMOTE_PREPARE
 
-          scp "${ssh_options[@]}" "${TARGET_PATH}" \
-            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/target.json"
           scp "${ssh_options[@]}" "${GUARDIAN_PATH}" \
             "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/guardian.sh"
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "RUN_KEY='${RUN_KEY}' bash -s" <<'REMOTE_START_INGRESS_JANITOR'
+          set -euo pipefail
+          run_root="/dev/shm/.development-api-authoritative-ldareg-backfill-${RUN_KEY}"
+          guardian_path="${run_root}/guardian.sh"
+          ingress_marker="${run_root}/ingress-janitor-started"
+          test -d "${run_root}"
+          test ! -L "${run_root}"
+          test "$(stat -f -c '%T' "${run_root}")" = "tmpfs"
+          test "$(stat -c '%u' "${run_root}")" = "$(id -u)"
+          test "$(stat -c '%a' "${run_root}")" = "700"
+          test -f "${guardian_path}"
+          test ! -L "${guardian_path}"
+          chmod 600 "${guardian_path}"
+          test ! -e "${ingress_marker}"
+          test ! -L "${ingress_marker}"
+          nohup setsid env -i \
+            HOME="${HOME}" \
+            PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            INGRESS_JANITOR_MODE=1 \
+            RUN_KEY="${RUN_KEY}" \
+            bash "${guardian_path}" \
+            >/dev/null 2>&1 < /dev/null &
+          ingress_launcher_pid="$!"
+          test "${ingress_launcher_pid}" -ge 1
+          ingress_started=0
+          for _attempt in $(seq 1 30); do
+            if [[ -f "${ingress_marker}" && ! -L "${ingress_marker}" ]]; then
+              ingress_identity="$(< "${ingress_marker}")"
+              ingress_pid=""
+              expected_start_ticks=""
+              expected_session_id=""
+              expected_process_group_id=""
+              ingress_uid=""
+              actual_start_ticks=""
+              ingress_session_id=""
+              ingress_process_group_id=""
+              if [[
+                "${ingress_identity}" =~ ^([1-9][0-9]*):([1-9][0-9]*):([1-9][0-9]*):([1-9][0-9]*)$
+                && "$(stat -c '%u' "${ingress_marker}")" = "$(id -u)"
+                && "$(stat -c '%a' "${ingress_marker}")" = "600"
+                && "$(stat -c '%s' "${ingress_marker}")" -ge 8
+                && "$(stat -c '%s' "${ingress_marker}")" -le 128
+              ]]; then
+                ingress_pid="${BASH_REMATCH[1]}"
+                expected_start_ticks="${BASH_REMATCH[2]}"
+                expected_session_id="${BASH_REMATCH[3]}"
+                expected_process_group_id="${BASH_REMATCH[4]}"
+              fi
+              if [[
+                -n "${ingress_pid}"
+                && -r "/proc/${ingress_pid}/status"
+                && -r "/proc/${ingress_pid}/stat"
+              ]]; then
+                ingress_uid="$(
+                  awk '/^Uid:/ {print $2; exit}' "/proc/${ingress_pid}/status"
+                )"
+                actual_start_ticks="$(
+                  awk '{print $22}' "/proc/${ingress_pid}/stat"
+                )"
+                ingress_session_id="$(
+                  ps -o sid= -p "${ingress_pid}" | tr -d '[:space:]'
+                )"
+                ingress_process_group_id="$(
+                  ps -o pgid= -p "${ingress_pid}" | tr -d '[:space:]'
+                )"
+                if [[
+                  "${ingress_uid}" = "$(id -u)"
+                  && "${actual_start_ticks}" = "${expected_start_ticks}"
+                  && "${ingress_session_id}" = "${expected_session_id}"
+                  && "${ingress_process_group_id}" = "${expected_process_group_id}"
+                  && "${expected_session_id}" = "${ingress_pid}"
+                  && "${expected_process_group_id}" = "${ingress_pid}"
+                ]]; then
+                  ingress_started=1
+                  break
+                fi
+              fi
+            fi
+            sleep 1
+          done
+          test "${ingress_started}" = "1"
+          REMOTE_START_INGRESS_JANITOR
+          scp "${ssh_options[@]}" "${TARGET_PATH}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/target.json"
+          scp "${ssh_options[@]}" "${credential_path}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/development.env.incoming-${RUN_KEY}"
+          cleanup_local_credentials
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "RUN_KEY='${RUN_KEY}' bash -s" <<'REMOTE_STAGE_CREDENTIALS'
+          set -euo pipefail
+          expected_development_url="https://yxypndgipnxrdfyctmvh.supabase.co"
+          run_root="/dev/shm/.development-api-authoritative-ldareg-backfill-${RUN_KEY}"
+          credential_temporary="${run_root}/development.env.incoming-${RUN_KEY}"
+          credential_path="${run_root}/development.env"
+          credential_lines=()
+          test -d "${run_root}"
+          test ! -L "${run_root}"
+          test "$(stat -f -c '%T' "${run_root}")" = "tmpfs"
+          test "$(stat -c '%u' "${run_root}")" = "$(id -u)"
+          test "$(stat -c '%a' "${run_root}")" = "700"
+          test -f "${credential_temporary}"
+          test ! -L "${credential_temporary}"
+          test "$(stat -c '%u' "${credential_temporary}")" = "$(id -u)"
+          test "$(stat -c '%a' "${credential_temporary}")" = "600"
+          test "$(stat -f -c '%T' "${credential_temporary}")" = "tmpfs"
+          test "$(wc -l < "${credential_temporary}")" = "2"
+          mapfile -t credential_lines < "${credential_temporary}"
+          test "${#credential_lines[@]}" = "2"
+          test "${credential_lines[0]}" = \
+            "DEV_SUPABASE_URL=${expected_development_url}"
+          case "${credential_lines[1]}" in
+            DEV_SUPABASE_SERVICE_ROLE_KEY=*)
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+          development_service_role_key="${credential_lines[1]#DEV_SUPABASE_SERVICE_ROLE_KEY=}"
+          if [[
+            ${#development_service_role_key} -lt 32
+            || ${#development_service_role_key} -gt 4096
+            || "${development_service_role_key}" =~ [[:space:]]
+            || ! "${development_service_role_key}" =~ ^[A-Za-z0-9._-]+$
+          ]]; then
+            exit 1
+          fi
+          expected_credentials_size=$((
+            ${#credential_lines[0]} + 1
+            + ${#credential_lines[1]} + 1
+          ))
+          test "$(stat -c '%s' "${credential_temporary}")" = \
+            "${expected_credentials_size}"
+          test ! -e "${credential_path}"
+          test ! -L "${credential_path}"
+          mv -- "${credential_temporary}" "${credential_path}"
+          chmod 600 "${credential_path}"
+          test -f "${credential_path}"
+          test ! -L "${credential_path}"
+          test "$(stat -c '%u' "${credential_path}")" = "$(id -u)"
+          test "$(stat -c '%a' "${credential_path}")" = "600"
+          test "$(stat -f -c '%T' "${credential_path}")" = "tmpfs"
+          test ! -e "${credential_temporary}"
+          test ! -L "${credential_temporary}"
+          unset development_service_role_key credential_lines
+          REMOTE_STAGE_CREDENTIALS
 
           if ! startup_state="$(
             ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
@@ -443,7 +709,9 @@ jobs:
           # guardian이 즉시 종료하며 run_root를 정리해도 부모가 삭제된 파일을
           # chmod하지 않도록 로그 inode와 mode를 launch 전에 고정한다.
           install -m 600 /dev/null "${guardian_log}"
-          nohup setsid env \
+          nohup setsid env -i \
+            HOME="${HOME}" \
+            PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
             RUN_KEY="${RUN_KEY}" \
             EXPECTED_GIT_SHA="${EXPECTED_GIT_SHA}" \
             EXPECTED_IMAGE_TAG="${EXPECTED_IMAGE_TAG}" \
@@ -554,10 +822,28 @@ jobs:
           scp "${ssh_options[@]}" \
             "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/status" \
             development-api-ldareg-output/status
+          scp "${ssh_options[@]}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/safe-category" \
+            development-api-ldareg-output/safe-category
+          chmod 600 \
+            development-api-ldareg-output/status \
+            development-api-ldareg-output/safe-category
           runner_status="$(
             tr -d '[:space:]' \
               < development-api-ldareg-output/status
           )"
+          safe_category="$(
+            tr -d '[:space:]' \
+              < development-api-ldareg-output/safe-category
+          )"
+          case "${runner_status}:${safe_category}" in
+            0:PASS|1:GATE_REJECTED|2:CLI_BOUNDARY_REJECTED|69:RUNNER_START_DEADLINE_EXCEEDED|90:GUARDIAN_OR_CLEANUP_FAILED|92:ARTIFACT_VALIDATION_REJECTED|93:CONTAINER_ID_CHANGED|94:APPROVAL_REQUEST_VALIDATION_REJECTED|95:MODE_OUTPUT_REJECTED|96:APPROVAL_ENCRYPTION_FAILED|124:RUNNER_TIMEOUT|137:RUNNER_TERMINATED)
+              ;;
+            *)
+              echo "::error::Runner published an invalid safe status category."
+              exit 1
+              ;;
+          esac
           if [[ "${runner_status}" == "0" || "${runner_status}" == "1" ]]; then
             scp "${ssh_options[@]}" \
               "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/artifact.json" \
@@ -708,22 +994,50 @@ jobs:
         run: |
           set -euo pipefail
           status_file="development-api-ldareg-output/status"
+          safe_category_file="development-api-ldareg-output/safe-category"
           artifact_file="development-api-ldareg-output/artifact.json"
           validation_file="development-api-ldareg-output/validated-runner"
           approval_ciphertext_file="development-api-ldareg-output/approval-request.age"
           approval_ciphertext_validation_file="development-api-ldareg-output/approval-ciphertext-validated-runner"
           if [[
             ! -f "${status_file}"
-            || ! -f "${artifact_file}"
-            || ! -f "${validation_file}"
+            || ! -f "${safe_category_file}"
             || -L "${status_file}"
-            || -L "${artifact_file}"
-            || -L "${validation_file}"
+            || -L "${safe_category_file}"
           ]]; then
-            echo "::error::Validated backfill output is incomplete."
+            echo "::error::Safe backfill status output is incomplete."
             exit 1
           fi
           runner_status="$(tr -d '[:space:]' < "${status_file}")"
+          safe_category="$(tr -d '[:space:]' < "${safe_category_file}")"
+          case "${runner_status}:${safe_category}" in
+            0:PASS|1:GATE_REJECTED|2:CLI_BOUNDARY_REJECTED|69:RUNNER_START_DEADLINE_EXCEEDED|90:GUARDIAN_OR_CLEANUP_FAILED|92:ARTIFACT_VALIDATION_REJECTED|93:CONTAINER_ID_CHANGED|94:APPROVAL_REQUEST_VALIDATION_REJECTED|95:MODE_OUTPUT_REJECTED|96:APPROVAL_ENCRYPTION_FAILED|124:RUNNER_TIMEOUT|137:RUNNER_TERMINATED)
+              ;;
+            *)
+              echo "::error::Safe backfill status category is invalid."
+              exit 1
+              ;;
+          esac
+          if [[
+            ! -f "${artifact_file}"
+            || ! -f "${validation_file}"
+            || -L "${artifact_file}"
+            || -L "${validation_file}"
+          ]]; then
+            {
+              echo "### Development API-authoritative LDAREG backfill"
+              echo
+              echo "- Mode: \`${{ inputs.mode }}\`"
+              echo "- Target: \`${{ inputs.target }}\`"
+              echo "- Runner status: \`${runner_status}\`"
+              echo "- Safe category: \`${safe_category}\`"
+              echo "- Artifact: \`not published\`"
+              echo "- Development writes: \`not inferred without a validated artifact\`"
+              echo "- Production writes: \`0 (no production client boundary)\`"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::error::Backfill stopped before publishing a validated artifact (${runner_status}/${safe_category})."
+            exit 1
+          fi
           gate_status="$(
             node -e '
               const fs = require("node:fs");
@@ -761,6 +1075,8 @@ jobs:
             echo
             echo "- Mode: \`${{ inputs.mode }}\`"
             echo "- Target: \`${{ inputs.target }}\`"
+            echo "- Runner status: \`${runner_status}\`"
+            echo "- Safe category: \`${safe_category}\`"
             echo "- Gate: \`${gate_status}\`"
             echo "- Source: \`LDAREG only; manual decision counters all zero\`"
             echo "- Approval: \`${approval_result}\`"
@@ -802,6 +1118,7 @@ jobs:
             private_directory="${PRIVATE_TARGET_ROOT}/.development-api-authoritative-ldareg-backfill"
             bundle_path="${private_directory}/bundle.json"
             target_path="${private_directory}/target.json"
+            credential_path="${private_directory}/development.env"
             artifact_path="${private_directory}/artifact.json"
             if [[
               "${TARGET_PATH}" != "${target_path}"
@@ -817,6 +1134,7 @@ jobs:
             rm -f -- \
               "${bundle_path}" \
               "${target_path}" \
+              "${credential_path}" \
               "${artifact_path}"
             rmdir -- "${private_directory}"
             rmdir -- "${PRIVATE_TARGET_ROOT}"
@@ -824,6 +1142,8 @@ jobs:
             test ! -L "${bundle_path}"
             test ! -e "${target_path}"
             test ! -L "${target_path}"
+            test ! -e "${credential_path}"
+            test ! -L "${credential_path}"
             test ! -e "${artifact_path}"
             test ! -L "${artifact_path}"
             test ! -e "${PRIVATE_TARGET_ROOT}"

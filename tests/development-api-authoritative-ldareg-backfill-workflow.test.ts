@@ -173,7 +173,7 @@ test('GitHub 평문 target은 검증된 tmpfs 한 위치에서만 FD-safe 검증
     );
     assert.match(
         remote,
-        /Private target changed before remote transfer\.[\s\S]+scp "\$\{ssh_options\[@\]\}" "\$\{TARGET_PATH\}"/
+        /Private runner input changed before remote transfer\.[\s\S]+scp "\$\{ssh_options\[@\]\}" "\$\{TARGET_PATH\}"/
     );
     assert.match(
         remote,
@@ -452,6 +452,354 @@ test('개발 DB pin, production hard deny, 일반 sync disabled/empty gate를 �
     );
 });
 
+test('DEV service credential은 GitHub owner-only tmpfs에 exact 두 줄로만 materialize한다', () => {
+    const materialize = workflow.slice(
+        workflow.indexOf(
+            '- name: Materialize ephemeral development credentials'
+        ),
+        workflow.indexOf(
+            '- name: Configure pinned EC2 SSH identity'
+        )
+    );
+    assert.match(
+        materialize,
+        /DEV_SUPABASE_URL: \$\{\{ secrets\.DEV_SUPABASE_URL \}\}/
+    );
+    assert.match(
+        materialize,
+        /DEV_SUPABASE_SERVICE_ROLE_KEY: \$\{\{ secrets\.DEV_SUPABASE_SERVICE_ROLE_KEY \}\}/
+    );
+    assert.match(
+        materialize,
+        /expected_development_url="https:\/\/yxypndgipnxrdfyctmvh\.supabase\.co"/
+    );
+    assert.match(
+        materialize,
+        /development_service_role_key\} -lt 32[\s\S]+development_service_role_key\} -gt 4096[\s\S]+development_service_role_key\}" =~ \[\[:space:\]\][\s\S]+development_service_role_key\}" =~ \^\[A-Za-z0-9\._-\]\+\$/
+    );
+    assert.match(
+        materialize,
+        /credential_path="\$\{private_directory\}\/development\.env"[\s\S]+stat -f -c '%T' "\$\{private_directory\}"[\s\S]+tmpfs/
+    );
+    assert.match(
+        materialize,
+        /private-file-materialize\.js[\s\S]+--encoding raw[\s\S]+--max-bytes 8192/
+    );
+    assert.match(
+        materialize,
+        /\| env[\s\S]+-u DEV_SUPABASE_URL[\s\S]+-u DEV_SUPABASE_SERVICE_ROLE_KEY[\s\S]+node/
+    );
+    assert.match(
+        materialize,
+        /stat -c '%u' "\$\{credential_path\}"[\s\S]+stat -c '%a' "\$\{credential_path\}"[\s\S]+"600"[\s\S]+stat -c '%s' "\$\{credential_path\}"[\s\S]+expected_credentials_size[\s\S]+wc -l < "\$\{credential_path\}"\)" != "2"/
+    );
+    assert.match(
+        materialize,
+        /unset[\s\S]+DEV_SUPABASE_URL[\s\S]+DEV_SUPABASE_SERVICE_ROLE_KEY[\s\S]+development_service_role_key/
+    );
+    assert.doesNotMatch(
+        materialize,
+        /sha256sum[\s\S]*DEV_SUPABASE|echo[^\n]*DEV_SUPABASE|GITHUB_(?:OUTPUT|STEP_SUMMARY)[^\n]*DEV_SUPABASE/
+    );
+});
+
+test('DEV service credential은 atomic remote stage 뒤 local copy를 즉시 지우고 guardian에서 재검증한다', () => {
+    const remote = workflow.slice(
+        workflow.indexOf(
+            '- name: Run exact deployed guarded backfill'
+        ),
+        workflow.indexOf(
+            '- name: Revalidate private redacted artifact'
+        )
+    );
+    const credentialScpIndex = remote.indexOf(
+        '${remote_root}/development.env.incoming-${RUN_KEY}'
+    );
+    const localCleanupIndex = remote.indexOf(
+        'cleanup_local_credentials',
+        credentialScpIndex
+    );
+    const remoteStageIndex = remote.indexOf(
+        "<<'REMOTE_STAGE_CREDENTIALS'",
+        localCleanupIndex
+    );
+    assert.ok(credentialScpIndex > 0);
+    assert.ok(localCleanupIndex > credentialScpIndex);
+    assert.ok(remoteStageIndex > localCleanupIndex);
+    assert.match(
+        remote,
+        /cleanup_local_credentials\(\)[\s\S]+rm -f -- "\$\{credential_path\}"[\s\S]+test ! -e "\$\{credential_path\}"[\s\S]+test ! -L "\$\{credential_path\}"/
+    );
+    assert.match(
+        remote,
+        /finish_step\(\)[\s\S]+cleanup_local_credentials \|\| cleanup_status=1/
+    );
+    const remoteStageEnd = remote.indexOf(
+        '\n          REMOTE_STAGE_CREDENTIALS',
+        remoteStageIndex
+    );
+    assert.ok(remoteStageEnd > remoteStageIndex);
+    const remoteStage = remote.slice(
+        remoteStageIndex,
+        remoteStageEnd
+    );
+    assert.match(
+        remoteStage,
+        /credential_temporary="\$\{run_root\}\/development\.env\.incoming-\$\{RUN_KEY\}"/
+    );
+    assert.match(
+        remoteStage,
+        /test -f "\$\{credential_temporary\}"[\s\S]+test ! -L "\$\{credential_temporary\}"[\s\S]+stat -c '%u'[\s\S]+stat -c '%a'[\s\S]+"600"[\s\S]+wc -l[\s\S]+"2"/
+    );
+    assert.match(
+        remoteStage,
+        /credential_lines\[0\][\s\S]+DEV_SUPABASE_URL=\$\{expected_development_url\}[\s\S]+credential_lines\[1\][\s\S]+DEV_SUPABASE_SERVICE_ROLE_KEY=\*/
+    );
+    assert.match(
+        remoteStage,
+        /mv -- "\$\{credential_temporary\}" "\$\{credential_path\}"[\s\S]+test ! -e "\$\{credential_temporary\}"[\s\S]+test ! -L "\$\{credential_temporary\}"/
+    );
+    assert.doesNotMatch(
+        remote,
+        /DEV_SUPABASE_(?:URL|SERVICE_ROLE_KEY): \$\{\{ secrets|RUN_KEY='[^']*'[^\n]*DEV_SUPABASE/
+    );
+    assert.match(
+        guardian,
+        /credentials_are_valid\(\)[\s\S]+wc -l < "\$\{host_credentials\}"\)" != "2"[\s\S]+credential_lines\[0\][\s\S]+DEV_SUPABASE_URL=\$\{expected_development_url\}[\s\S]+credential_lines\[1\][\s\S]+DEV_SUPABASE_SERVICE_ROLE_KEY=\*[\s\S]+expected_size/
+    );
+    assert.ok(
+        guardian.indexOf('credentials_are_valid') <
+            guardian.indexOf('start_cleanup_janitor')
+    );
+    assert.equal(
+        (guardian.match(/credentials_are_valid$/gm) ?? []).length,
+        2
+    );
+});
+
+test('민감 전송 전 ingress janitor가 hard-loss 구간을 exact 5분 TTL로 봉인한다', () => {
+    const remote = workflow.slice(
+        workflow.indexOf(
+            '- name: Run exact deployed guarded backfill'
+        ),
+        workflow.indexOf(
+            '- name: Revalidate private redacted artifact'
+        )
+    );
+    const guardianScpIndex = remote.indexOf(
+        '${remote_root}/guardian.sh'
+    );
+    const ingressLaunchIndex = remote.indexOf(
+        "<<'REMOTE_START_INGRESS_JANITOR'"
+    );
+    const targetScpIndex = remote.indexOf(
+        '${remote_root}/target.json',
+        ingressLaunchIndex
+    );
+    const credentialScpIndex = remote.indexOf(
+        '${remote_root}/development.env.incoming-${RUN_KEY}',
+        ingressLaunchIndex
+    );
+    assert.ok(guardianScpIndex > 0);
+    assert.ok(ingressLaunchIndex > guardianScpIndex);
+    assert.ok(targetScpIndex > ingressLaunchIndex);
+    assert.ok(credentialScpIndex > targetScpIndex);
+    const ingressLaunchEnd = remote.indexOf(
+        '\n          REMOTE_START_INGRESS_JANITOR',
+        ingressLaunchIndex
+    );
+    assert.ok(ingressLaunchEnd > ingressLaunchIndex);
+    const ingressLaunch = remote.slice(
+        ingressLaunchIndex,
+        ingressLaunchEnd
+    );
+    assert.match(
+        ingressLaunch,
+        /nohup setsid env -i[\s\S]+INGRESS_JANITOR_MODE=1[\s\S]+RUN_KEY="\$\{RUN_KEY\}"[\s\S]+>\/dev\/null 2>&1/
+    );
+    assert.doesNotMatch(
+        ingressLaunch,
+        /DEV_SUPABASE|OWNER_AGE_RECIPIENT|EXPECTED_GIT_SHA|EXPECTED_IMAGE_TAG/
+    );
+    assert.match(
+        ingressLaunch,
+        /ingress_identity[\s\S]+\^\(\[1-9\]\[0-9\]\*\):\(\[1-9\]\[0-9\]\*\):\(\[1-9\]\[0-9\]\*\):\(\[1-9\]\[0-9\]\*\)\$[\s\S]+actual_start_ticks[\s\S]+expected_start_ticks[\s\S]+expected_session_id[\s\S]+expected_process_group_id/
+    );
+    assert.match(
+        guardian,
+        /INGRESS_JANITOR_MODE:-0\}" == "1"[\s\S]+ingress_cleanup_ttl_seconds=300/
+    );
+    assert.match(
+        guardian,
+        /cleanup_ingress_run\(\)[\s\S]+development\.env[\s\S]+development\.env\.incoming-\$\{RUN_KEY\}[\s\S]+for _attempt in \$\(seq 1 30\)[\s\S]+rm -f -- "\$\{cleanup_paths\[@\]\}"[\s\S]+for candidate in "\$\{cleanup_paths\[@\]\}"[\s\S]+rmdir -- "\$\{ingress_root\}"[\s\S]+sleep 1/
+    );
+    const ingressCleanup = guardian.slice(
+        guardian.indexOf('cleanup_ingress_run()'),
+        guardian.indexOf('finish_ingress_janitor()')
+    );
+    assert.ok(
+        ingressCleanup.indexOf(
+            'for _attempt in $(seq 1 30)'
+        ) <
+            ingressCleanup.indexOf(
+                'rm -f -- "${cleanup_paths[@]}"'
+            )
+    );
+    assert.match(
+        remote,
+        /mv -- "\$\{credential_temporary\}" "\$\{credential_path\}"/
+    );
+    assert.match(
+        guardian,
+        /ingress_handoff_is_valid\(\)[\s\S]+ingress_handoff[\s\S]+\^\(\[1-9\]\[0-9\]\*\):\(\[1-9\]\[0-9\]\*\):\(\[1-9\]\[0-9\]\*\):\(\[1-9\]\[0-9\]\*\)\$[\s\S]+actual_start_ticks[\s\S]+expected_start_ticks[\s\S]+expected_session_id[\s\S]+expected_process_group_id/
+    );
+    assert.match(
+        guardian,
+        /write_private_line[\s\S]+host_janitor_started[\s\S]+janitor_pid\}:\$\{janitor_start_ticks\}:\$\{janitor_session_id\}:\$\{janitor_process_group_id\}/
+    );
+    assert.match(
+        guardian,
+        /start_cleanup_janitor\(\)[\s\S]+nohup setsid env -i[\s\S]+for _attempt in \$\(seq 1 50\)[\s\S]+janitor_identity_ready=1[\s\S]+sleep 0\.1[\s\S]+write_private_line/
+    );
+    assert.ok(
+        guardian.lastIndexOf('ingress_janitor_is_active') <
+            guardian.lastIndexOf('start_cleanup_janitor')
+    );
+    assert.doesNotMatch(guardian, /rm -rf/);
+    const earlyCleanup = remote.slice(
+        remote.indexOf('cleanup_remote()'),
+        remote.indexOf('finish_step()')
+    );
+    assert.match(
+        earlyCleanup,
+        /ingress-janitor-started[\s\S]+ingress-janitor-started\.tmp-\$\{RUN_KEY\}/
+    );
+});
+
+test('DEV service credential은 단일 docker exec env-file에만 주입되고 container/persistent env에 남지 않는다', () => {
+    const remoteStartMarker = workflow.indexOf("<<'REMOTE_START'");
+    const remoteStartEnd = workflow.indexOf(
+        '\n          REMOTE_START',
+        remoteStartMarker
+    );
+    const remoteStart = workflow.slice(
+        remoteStartMarker,
+        remoteStartEnd
+    );
+    assert.match(
+        remoteStart,
+        /nohup setsid env -i[\s\S]+HOME="\$\{HOME\}"[\s\S]+PATH="\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin"/
+    );
+    assert.doesNotMatch(
+        remoteStart,
+        /DEV_SUPABASE_URL|DEV_SUPABASE_SERVICE_ROLE_KEY/
+    );
+    assert.match(
+        guardian,
+        /nohup setsid env -i[\s\S]+HOME="\$\{HOME\}"[\s\S]+PATH="\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin"[\s\S]+JANITOR_MODE=1/
+    );
+    assert.equal(
+        (guardian.match(/--env-file "\$\{host_credentials\}"/g) ?? [])
+            .length,
+        1
+    );
+    assert.doesNotMatch(
+        guardian,
+        /-e "DEV_SUPABASE_(?:URL|SERVICE_ROLE_KEY)=/
+    );
+    assert.doesNotMatch(
+        guardian,
+        /docker (?:cp|exec -i)[^\n]*development\.env|application_root\}\/\.env|>\s*"\$\{application_root\}\/\.env"/
+    );
+    assert.match(
+        guardian,
+        /container_credentials="\$\{container_root\}\/development\.env"[\s\S]+test ! -e "\$\{container_credentials\}"/
+    );
+    assert.match(
+        guardian,
+        /verify_development_credentials_absent_from_container\(\)[\s\S]+test -z "\$\{DEV_SUPABASE_URL\+x\}"[\s\S]+test -z "\$\{DEV_SUPABASE_SERVICE_ROLE_KEY\+x\}"/
+    );
+    assert.equal(
+        (
+            guardian.match(
+                /^verify_development_credentials_absent_from_container(?:$| \|\|)/gm
+            ) ?? []
+        ).length,
+        2
+    );
+    const credentialExec = guardian.slice(
+        guardian.indexOf(
+            'docker exec \\\n  --env-file "${host_credentials}"'
+        ),
+        guardian.indexOf('runner_status="$?"')
+    );
+    assert.match(credentialExec, />\/dev\/null 2>&1/);
+    assert.doesNotMatch(
+        credentialExec,
+        /DEV_SUPABASE_URL=|DEV_SUPABASE_SERVICE_ROLE_KEY=/
+    );
+    assert.match(
+        guardian,
+        /runner_status="\$\?"[\s\S]+cleanup_host_credentials \|\| credential_cleanup_status=1[\s\S]+verify_development_credentials_absent_from_container \|\| credential_cleanup_status=1/
+    );
+});
+
+test('artifact 전 종료는 allowlisted numeric/safe category만 공개하고 raw log는 내보내지 않는다', () => {
+    const expectedPairs = [
+        '0:PASS',
+        '1:GATE_REJECTED',
+        '2:CLI_BOUNDARY_REJECTED',
+        '69:RUNNER_START_DEADLINE_EXCEEDED',
+        '90:GUARDIAN_OR_CLEANUP_FAILED',
+        '92:ARTIFACT_VALIDATION_REJECTED',
+        '93:CONTAINER_ID_CHANGED',
+        '94:APPROVAL_REQUEST_VALIDATION_REJECTED',
+        '95:MODE_OUTPUT_REJECTED',
+        '96:APPROVAL_ENCRYPTION_FAILED',
+        '124:RUNNER_TIMEOUT',
+        '137:RUNNER_TERMINATED',
+    ];
+    for (const pair of expectedPairs) {
+        assert.ok(workflow.includes(pair), pair);
+    }
+    assert.match(
+        guardian,
+        /safe_category_for_status\(\)[\s\S]+2\)[\s\S]+CLI_BOUNDARY_REJECTED/
+    );
+    assert.match(
+        guardian,
+        /case "\$\{runner_status\}" in[\s\S]+0\|1\|2\|124\|137\)[\s\S]+final_status="\$\{runner_status\}"/
+    );
+    assert.match(
+        guardian,
+        /write_private_line "\$\{host_safe_category\}" "\$\{safe_category\}"[\s\S]+write_private_line "\$\{host_status\}" "\$\{final_status\}"/
+    );
+    assert.match(
+        workflow,
+        /remote_root\}\/safe-category[\s\S]+Runner status:[\s\S]+Safe category:/
+    );
+    assert.match(
+        workflow,
+        /Development writes: \\`not inferred without a validated artifact\\`/
+    );
+    assert.doesNotMatch(
+        workflow,
+        /Development writes: \\`0 before validated artifact boundary\\`/
+    );
+    const upload = workflow.slice(
+        workflow.indexOf('- name: Upload private redacted artifact'),
+        workflow.indexOf('- name: Enforce API-authoritative backfill gate')
+    );
+    assert.doesNotMatch(
+        upload,
+        /safe-category|status\b|development\.env|guardian\.log/
+    );
+    assert.doesNotMatch(
+        workflow,
+        /scp[^\n]*(?:guardian\.log|development\.env)[^\n]*development-api-ldareg-output|tail[^\n]*guardian\.log/
+    );
+});
+
 test('guardian은 공통 operation lock, tmpfs, hard timeout, private cleanup을 보장한다', () => {
     assert.match(
         guardian,
@@ -482,7 +830,7 @@ test('guardian은 공통 operation lock, tmpfs, hard timeout, private cleanup을
     );
     assert.match(
         guardian,
-        /runner_start_elapsed_seconds=\$\(\( SECONDS - janitor_started_at_seconds \)\)[\s\S]+runner_start_elapsed_seconds >= max_runner_start_elapsed_seconds[\s\S]+exit 69/
+        /runner_start_elapsed_seconds=\$\(\( SECONDS - janitor_started_at_seconds \)\)[\s\S]+runner_start_elapsed_seconds >= max_runner_start_elapsed_seconds[\s\S]+final_status=69[\s\S]+exit 0/
     );
     assert.match(
         guardian,
