@@ -1,0 +1,238 @@
+/**
+ * Building HUB EXPOS와 V-World LDAREG의 실측 provider 표기 차이를 연결하는
+ * 방향성 있는 exact witness.
+ *
+ * 이 모듈은 일반 정규화기가 아니다. 아래에서 열거한 원문 shape만 증명하고,
+ * 행 순서·건수·근사 문자열·비율 값으로 호실을 추론하지 않는다. 호출측은 이 witness
+ * 외에도 single-root/building, unique 1:1 set, replica, ratio, denominator gate를
+ * 별도로 통과해야 한다.
+ */
+
+export const PROVIDER_UNIT_BRIDGE_ABOVE_NO_SUFFIX =
+    'PROVIDER_ABOVE_NO_SUFFIX' as const;
+export const PROVIDER_UNIT_BRIDGE_BASEMENT_B_HO =
+    'PROVIDER_BASEMENT_B_HO' as const;
+export const PROVIDER_UNIT_BRIDGE_FLOOR_AS_UNIT_ABOVE =
+    'FLOOR_AS_UNIT_ABOVE' as const;
+export const PROVIDER_UNIT_BRIDGE_FLOOR_AS_UNIT_BASEMENT =
+    'FLOOR_AS_UNIT_BASEMENT' as const;
+
+export type ProviderUnitShapeBridgeKind =
+    | typeof PROVIDER_UNIT_BRIDGE_ABOVE_NO_SUFFIX
+    | typeof PROVIDER_UNIT_BRIDGE_BASEMENT_B_HO
+    | typeof PROVIDER_UNIT_BRIDGE_FLOOR_AS_UNIT_ABOVE
+    | typeof PROVIDER_UNIT_BRIDGE_FLOOR_AS_UNIT_BASEMENT;
+
+export interface ProviderUnitShapeWitness {
+    kind: ProviderUnitShapeBridgeKind;
+    /**
+     * provider 양쪽에서 같은 호실일 때만 같아지는 내부 exact token.
+     * artifact에는 원문/token을 노출하지 않고 domain-separated hash만 기록한다.
+     */
+    token: string;
+    /** EXPOS/건축물대장 쪽 canonical tuple. runtime DB exact 매칭에만 사용한다. */
+    canonicalFloor: string;
+    canonicalHo: string;
+}
+
+export type ProviderUnitKind = 'EXPOS_UNIT' | 'LDAREG_UNIT';
+
+function exactAliasScalar(
+    row: Record<string, unknown>,
+    aliases: readonly string[]
+): string | null {
+    const present = aliases
+        .filter((alias) =>
+            Object.prototype.hasOwnProperty.call(row, alias)
+        )
+        .map((alias) => row[alias]);
+    if (
+        present.length === 0 ||
+        present.some(
+            (value) =>
+                typeof value !== 'string' &&
+                !(
+                    typeof value === 'number' &&
+                    Number.isSafeInteger(value)
+                )
+        )
+    ) {
+        return null;
+    }
+    const normalized = [
+        ...new Set(
+            present.map((value) =>
+                String(value).normalize('NFKC').trim()
+            )
+        ),
+    ];
+    return normalized.length === 1 && normalized[0] !== ''
+        ? normalized[0]
+        : null;
+}
+
+function positiveFloor(value: string | null): string | null {
+    return value !== null && /^[1-9]\d{0,2}$/u.test(value)
+        ? value
+        : null;
+}
+
+function positiveUnitNumber(value: string | null): string | null {
+    return value !== null && /^[1-9]\d{0,3}$/u.test(value)
+        ? value
+        : null;
+}
+
+function exposWitness(
+    row: Record<string, unknown>
+): ProviderUnitShapeWitness | null {
+    const floorType = exactAliasScalar(row, ['flrGbCd']);
+    const rawFloor = exactAliasScalar(row, [
+        'flrNoNm',
+        'buldFloorNm',
+        'flrNo',
+    ]);
+    const rawHo = exactAliasScalar(row, ['hoNm', 'buldHoNm']);
+    const floor = positiveFloor(rawFloor);
+
+    // 791-2172 실측: EXPOS 지상(20) 숫자 층 + 숫자 호.
+    const numericHo = positiveUnitNumber(rawHo);
+    if (floorType === '20' && floor !== null && numericHo !== null) {
+        return {
+            kind: PROVIDER_UNIT_BRIDGE_ABOVE_NO_SUFFIX,
+            token: `ABOVE_NO_SUFFIX:${floor}:${numericHo}`,
+            canonicalFloor: floor,
+            canonicalHo: numericHo,
+        };
+    }
+
+    // 791-2188 실측: EXPOS 지하(10) floor=1 + ho=BN. floor는 B1/B2
+    // 모두 1이고, 대응 identity는 LDAREG 비N과의 suffix N equality다.
+    const latinBasement = rawHo === null
+        ? null
+        : /^B([1-9]\d{0,2})$/u.exec(rawHo);
+    if (
+        floorType === '10' &&
+        rawFloor === '1' &&
+        latinBasement !== null
+    ) {
+        const suffix = latinBasement[1];
+        return {
+            kind: PROVIDER_UNIT_BRIDGE_BASEMENT_B_HO,
+            token: `BASEMENT_B_HO:${suffix}`,
+            canonicalFloor: '1',
+            canonicalHo: `B${suffix}`,
+        };
+    }
+
+    // 791-2191 실측 지상: EXPOS 지상(20) floor=N + ho=N층.
+    const floorAsUnit = rawHo === null
+        ? null
+        : /^([1-9]\d{0,2})층$/u.exec(rawHo);
+    if (
+        floorType === '20' &&
+        floor !== null &&
+        floorAsUnit !== null &&
+        floorAsUnit[1] === floor
+    ) {
+        return {
+            kind: PROVIDER_UNIT_BRIDGE_FLOOR_AS_UNIT_ABOVE,
+            token: `FLOOR_AS_UNIT_ABOVE:${floor}`,
+            canonicalFloor: floor,
+            canonicalHo: `${floor}층`,
+        };
+    }
+
+    // 791-2191 실측 지층: EXPOS 지하(10) floor=1 + exact ho=지층.
+    if (
+        floorType === '10' &&
+        rawFloor === '1' &&
+        rawHo === '지층'
+    ) {
+        return {
+            kind: PROVIDER_UNIT_BRIDGE_FLOOR_AS_UNIT_BASEMENT,
+            token: 'FLOOR_AS_UNIT_BASEMENT:1',
+            canonicalFloor: '1',
+            canonicalHo: '지층',
+        };
+    }
+
+    return null;
+}
+
+function ldaregWitness(
+    row: Record<string, unknown>
+): ProviderUnitShapeWitness | null {
+    const rawFloor = exactAliasScalar(row, [
+        'buldFloorNm',
+        'flrNoNm',
+    ]);
+    const rawHo = exactAliasScalar(row, ['buldHoNm', 'hoNm']);
+
+    // 791-2172 실측: LDAREG exact 지상N(층 접미사 없음) + 숫자 호.
+    const aboveNoSuffix = rawFloor === null
+        ? null
+        : /^지상([1-9]\d{0,2})$/u.exec(rawFloor);
+    const numericHo = positiveUnitNumber(rawHo);
+    if (aboveNoSuffix !== null && numericHo !== null) {
+        const floor = aboveNoSuffix[1];
+        return {
+            kind: PROVIDER_UNIT_BRIDGE_ABOVE_NO_SUFFIX,
+            token: `ABOVE_NO_SUFFIX:${floor}:${numericHo}`,
+            canonicalFloor: floor,
+            canonicalHo: numericHo,
+        };
+    }
+
+    // 791-2188 실측: LDAREG exact floor=지하 + ho=비N.
+    const koreanBasement = rawHo === null
+        ? null
+        : /^비([1-9]\d{0,2})$/u.exec(rawHo);
+    if (rawFloor === '지하' && koreanBasement !== null) {
+        const suffix = koreanBasement[1];
+        return {
+            kind: PROVIDER_UNIT_BRIDGE_BASEMENT_B_HO,
+            token: `BASEMENT_B_HO:${suffix}`,
+            canonicalFloor: '1',
+            canonicalHo: `B${suffix}`,
+        };
+    }
+
+    // 791-2191 실측 지상: LDAREG floor=N + exact ho=0000.
+    const floor = positiveFloor(rawFloor);
+    if (floor !== null && rawHo === '0000') {
+        return {
+            kind: PROVIDER_UNIT_BRIDGE_FLOOR_AS_UNIT_ABOVE,
+            token: `FLOOR_AS_UNIT_ABOVE:${floor}`,
+            canonicalFloor: floor,
+            canonicalHo: `${floor}층`,
+        };
+    }
+
+    // 791-2191 실측 지층: LDAREG exact floor=지 + exact ho=0000.
+    if (rawFloor === '지' && rawHo === '0000') {
+        return {
+            kind: PROVIDER_UNIT_BRIDGE_FLOOR_AS_UNIT_BASEMENT,
+            token: 'FLOOR_AS_UNIT_BASEMENT:1',
+            canonicalFloor: '1',
+            canonicalHo: '지층',
+        };
+    }
+
+    return null;
+}
+
+export function providerUnitShapeWitness(
+    kind: ProviderUnitKind,
+    row: Record<string, unknown>
+): ProviderUnitShapeWitness | null {
+    return kind === 'EXPOS_UNIT'
+        ? exposWitness(row)
+        : ldaregWitness(row);
+}
+
+export function providerUnitShapeWitnessKey(
+    witness: ProviderUnitShapeWitness
+): string {
+    return `${witness.kind}\u0001${witness.token}`;
+}

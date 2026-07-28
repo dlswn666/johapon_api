@@ -50,10 +50,18 @@ test('canonical v2 identity는 target PNU와 독립적이고 root가 바뀌면 �
 });
 
 test('동일 obs 반복은 1건으로 축약(stable identity, CURRENT)', () => {
-    const r = dedupLdaregObservations([obs({ agbldgSn: '1' }), obs({ agbldgSn: '1' })]);
+    const r = dedupLdaregObservations([
+        obs({ agbldgSn: '1', sourceIndex: 3 }),
+        obs({ agbldgSn: '1', sourceIndex: 1 }),
+    ]);
     // agbldgSn 중복 → PNU 내 유일 아님 → FALLBACK, 같은 unit → 같은 identity → 1건 축약
     assert.equal(r.records.length, 1);
     assert.equal(r.records[0].state, 'CURRENT');
+    assert.deepEqual(
+        r.records[0].sourceRowIndexes,
+        [1, 3],
+        '대표행 외 모든 raw member 인덱스를 정렬해 보존한다'
+    );
     assert.equal(r.issues.length, 0);
 });
 

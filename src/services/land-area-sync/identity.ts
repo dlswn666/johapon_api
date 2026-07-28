@@ -91,6 +91,11 @@ export interface LdaregSourceRecord {
      * fragile 한 find 대신 이 인덱스로 정확히 추출한다(I1). 운반값 없으면 -1.
      */
     sourceRowIndex: number;
+    /**
+     * 같은 logical identity로 축약된 모든 raw scan row 인덱스.
+     * 대표행 하나가 provider-shape variant를 숨기지 않도록 정렬·중복 제거한다.
+     */
+    sourceRowIndexes: number[];
     /** 대표 관측의 agbldgSn(별도 필드 운반 — identity 문자열 파싱 복원 제거, M5). */
     agbldgSn: string | null;
     /** clsSeCode 매핑 불명확 여부(§13.4 review 표시용). */
@@ -260,17 +265,41 @@ export function dedupLdaregObservations(
                 continue;
             }
             const rep = current[0];
-            records.push(buildRecord(rep, hasClosed ? 'CLOSED' : 'CURRENT'));
+            records.push(
+                buildRecord(
+                    rep,
+                    hasClosed ? 'CLOSED' : 'CURRENT',
+                    members
+                )
+            );
         } else {
             // CLOSED-only identity → 닫을 대상(동일 identity)만 CLOSED record로 표현
-            records.push(buildRecord(members[0], 'CLOSED'));
+            records.push(
+                buildRecord(members[0], 'CLOSED', members)
+            );
         }
     }
 
     return { records, excludedIdentities, issues };
 }
 
-function buildRecord(c: Candidate, state: LdaregSourceState): LdaregSourceRecord {
+function buildRecord(
+    c: Candidate,
+    state: LdaregSourceState,
+    members: Candidate[]
+): LdaregSourceRecord {
+    const sourceRowIndexes = [
+        ...new Set(
+            members
+                .map((member) => member.input.sourceIndex)
+                .filter(
+                    (index): index is number =>
+                        typeof index === 'number' &&
+                        Number.isInteger(index) &&
+                        index >= 0
+                )
+        ),
+    ].sort((left, right) => left - right);
     return {
         identity: c.identity,
         state,
@@ -280,6 +309,7 @@ function buildRecord(c: Candidate, state: LdaregSourceState): LdaregSourceRecord
         ldaQotaRateRaw: c.input.ldaQotaRate ?? null,
         propertyUnitId: c.input.propertyUnitId ?? null,
         sourceRowIndex: typeof c.input.sourceIndex === 'number' ? c.input.sourceIndex : -1,
+        sourceRowIndexes,
         agbldgSn: nfkcTrim(c.input.agbldgSn) || null,
         sourceStateAmbiguous: c.input.sourceStateAmbiguous === true,
     };

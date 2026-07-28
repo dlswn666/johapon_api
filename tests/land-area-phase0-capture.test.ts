@@ -78,21 +78,39 @@ function manifest(samples?: LandAreaPhase0CaptureManifest['samples']): LandAreaP
     };
 }
 
+function canonicalTestValue(candidate: unknown): unknown {
+    if (Array.isArray(candidate)) {
+        return candidate.map(canonicalTestValue);
+    }
+    if (candidate !== null && typeof candidate === 'object') {
+        return Object.fromEntries(
+            Object.entries(candidate as Record<string, unknown>)
+                .filter(([, nested]) => nested !== undefined)
+                .sort(([left], [right]) => left.localeCompare(right))
+                .map(([key, nested]) => [
+                    key,
+                    canonicalTestValue(nested),
+                ])
+        );
+    }
+    return candidate;
+}
+
+function canonicalTestString(value: unknown): string {
+    return JSON.stringify(canonicalTestValue(value));
+}
+
+function sortCanonicalTestRecords<T>(records: T[]): T[] {
+    return records.sort((left, right) =>
+        canonicalTestString(left).localeCompare(
+            canonicalTestString(right)
+        )
+    );
+}
+
 function sanitizedTestDigest(value: unknown): string {
-    const canonicalize = (candidate: unknown): unknown => {
-        if (Array.isArray(candidate)) return candidate.map(canonicalize);
-        if (candidate !== null && typeof candidate === 'object') {
-            return Object.fromEntries(
-                Object.entries(candidate as Record<string, unknown>)
-                    .filter(([, nested]) => nested !== undefined)
-                    .sort(([left], [right]) => left.localeCompare(right))
-                    .map(([key, nested]) => [key, canonicalize(nested)])
-            );
-        }
-        return candidate;
-    };
     return createHash('sha256')
-        .update(JSON.stringify(canonicalize(value)), 'utf8')
+        .update(canonicalTestString(value), 'utf8')
         .digest('hex');
 }
 
@@ -828,6 +846,14 @@ for (const target of [
         assert.deepEqual(sample.failureCodes, []);
         assert.equal(sample.evidence.ldaregReplication.status, 'PASS');
         assert.equal(
+            Object.prototype.hasOwnProperty.call(
+                sample.evidence.ldaregReplication,
+                'providerBuildingIdentity'
+            ),
+            false,
+            'provider witness가 없는 standard-only scope에는 proof를 추가하지 않는다'
+        );
+        assert.equal(
             validateLandAreaPhase0CaptureArtifact(
                 approvedManifest,
                 artifact
@@ -1019,13 +1045,13 @@ test('generic 공동주택 fallback은 집합 코드의 label 불일치를 fail-
     );
 });
 
-test('791-2172: Phase 0 v2는 LDAREG 지상#층과 EXPOS 숫자 층을 exact 정규화한다', async () => {
+test('791-2172: Phase 0 v2는 LDAREG exact 지상#(접미사 없음)과 EXPOS 숫자 층·호를 raw unit로 결속한다', async () => {
     const units = [
-        { floor: '2', ho: '201', numerator: '27.5' },
-        { floor: '2', ho: '202', numerator: '17.26' },
-        { floor: '3', ho: '301', numerator: '19.9' },
-        { floor: '4', ho: '401', numerator: '19.97' },
-        { floor: '5', ho: '501', numerator: '16.87' },
+        { floor: '3', ho: '301', numerator: '27.5' },
+        { floor: '5', ho: '501', numerator: '17.26' },
+        { floor: '4', ho: '401', numerator: '19.9' },
+        { floor: '2', ho: '201', numerator: '19.97' },
+        { floor: '2', ho: '202', numerator: '16.87' },
     ] as const;
     const targetAdapter = singleParcelTargetAdapter({
         pnu: MIA7_2172_PNU,
@@ -1038,13 +1064,17 @@ test('791-2172: Phase 0 v2는 LDAREG 지상#층과 EXPOS 숫자 층을 exact 정
             flrNo: Number(unit.floor),
             hoNm: unit.ho,
         })),
-        ldareg: units.map((unit) => ({
+        // provider row 순서와 ratio 크기는 identity가 아니다.
+        ldareg: [...units].reverse().map((unit) => ({
             agbldgSn: 'MIA7-2172',
             buldNm: '월드빌라',
+            // producer/validator 동 parity: A↔A + A↔missing 혼합 허용.
+            buldDongNm:
+                unit.ho === '301' ? '월드빌라' : undefined,
             ldaQotaRate: `${unit.numerator}/121`,
             clsSeCode: '0',
             clsSeCodeNm: '현재',
-            buldFloorNm: `지상${unit.floor}층`,
+            buldFloorNm: `지상${unit.floor}`,
             buldHoNm: unit.ho,
         })),
     });
@@ -1080,12 +1110,22 @@ test('791-2172: Phase 0 v2는 LDAREG 지상#층과 EXPOS 숫자 층을 exact 정
     assert.equal(artifact.gate.status, 'PASS');
     assert.deepEqual(targetSample.failureCodes, []);
     assert.deepEqual(
-        new Set(expos.records.map((record) => record.floorHoIdentityHash)),
-        new Set(ldareg.records.map((record) => record.floorHoIdentityHash))
+        new Set(
+            expos.records.map(
+                (record) => record.providerUnitBridgeHash
+            )
+        ),
+        new Set(
+            ldareg.records.map(
+                (record) => record.providerUnitBridgeHash
+            )
+        )
     );
     assert.ok(
         ldareg.records.every(
-            (record) => record.floorShape === '지상#층'
+            (record) =>
+                record.providerUnitBridgeKind ===
+                'PROVIDER_ABOVE_NO_SUFFIX'
         )
     );
     assert.equal(
@@ -1097,7 +1137,7 @@ test('791-2172: Phase 0 v2는 LDAREG 지상#층과 EXPOS 숫자 층을 exact 정
     );
 });
 
-test('791-2172: 층 접미사가 없는 LDAREG 지상# 표기는 fail-closed한다', async () => {
+test('791-2172: live와 다른 LDAREG 지상#층 접미사 표기는 fail-closed한다', async () => {
     const targetAdapter = singleParcelTargetAdapter({
         pnu: MIA7_2172_PNU,
         rootPk: '3010101010201',
@@ -1118,13 +1158,13 @@ test('791-2172: 층 접미사가 없는 LDAREG 지상# 표기는 fail-closed한�
                 ldaQotaRate: '27.5/121',
                 clsSeCode: '0',
                 clsSeCodeNm: '현재',
-                buldFloorNm: '지상2',
+                buldFloorNm: '지상2층',
                 buldHoNm: '201',
             },
         ],
     });
     const approvedManifest = v2TargetManifest(
-        'mia7-2172-floor-suffix-required',
+        'mia7-2172-floor-suffix-near-miss',
         MIA7_2172_PNU
     );
     const artifact = await captureLandAreaPhase0({
@@ -1214,6 +1254,447 @@ test('791-2172: EXPOS 지상#층과 LDAREG 숫자 층의 역방향 표기는 접
         artifact
     );
 });
+
+function mia72188ProviderShapeRows(): {
+    expos: BrExposRow[];
+    ldareg: LdaregRow[];
+} {
+    const regular = [
+        { floor: 1, ho: '101', numerator: '40' },
+        { floor: 2, ho: '201', numerator: '35' },
+        { floor: 3, ho: '301', numerator: '45' },
+        { floor: 4, ho: '401', numerator: '51.27' },
+    ] as const;
+    return {
+        expos: [
+            ...regular.map((unit) => ({
+                dongNm: 'A',
+                flrGbCd: '20',
+                flrNo: unit.floor,
+                hoNm: unit.ho,
+            })),
+            {
+                dongNm: 'A',
+                flrGbCd: '10',
+                flrNo: 1,
+                hoNm: 'B1',
+            },
+            {
+                dongNm: 'A',
+                flrGbCd: '10',
+                flrNo: 1,
+                hoNm: 'B2',
+            },
+        ],
+        ldareg: [
+            ...regular.map((unit) => ({
+                agbldgSn: 'MIA7-2188',
+                buldNm: 'MIA7-2188',
+                ldaQotaRate: `${unit.numerator}/221`,
+                clsSeCode: '0',
+                clsSeCodeNm: '현재',
+                buldDongNm:
+                    unit.ho === '201' ? undefined : 'A',
+                buldFloorNm: String(unit.floor),
+                buldHoNm: unit.ho,
+            })),
+            {
+                agbldgSn: 'MIA7-2188',
+                buldNm: 'MIA7-2188',
+                ldaQotaRate: '20.18/221',
+                clsSeCode: '0',
+                clsSeCodeNm: '현재',
+                buldDongNm: 'A',
+                buldFloorNm: '지하',
+                buldHoNm: '비1',
+            },
+            {
+                agbldgSn: 'MIA7-2188',
+                buldNm: 'MIA7-2188',
+                ldaQotaRate: '29.55/221',
+                clsSeCode: '0',
+                clsSeCodeNm: '현재',
+                buldDongNm: 'A',
+                buldFloorNm: '지하',
+                buldHoNm: '비2',
+            },
+            {
+                agbldgSn: 'MIA7-2188',
+                buldNm: 'MIA7-2188',
+                ldaQotaRate: '',
+                clsSeCode: '0',
+                clsSeCodeNm: '현재',
+                buldDongNm: '0000',
+                buldFloorNm: '0000',
+                buldHoNm: '0000',
+                buldRoomNm: '0000',
+            },
+        ],
+    };
+}
+
+test('791-2188: EXPOS 지하 1/Bn과 LDAREG exact 지하/비n을 suffix equality로 결속한다', async () => {
+    const rows = mia72188ProviderShapeRows();
+    const targetAdapter = singleParcelTargetAdapter({
+        pnu: MIA7_2188_PNU,
+        rootPk: '3010101010208',
+        etcPurps: '다세대주택',
+        landArea: '221',
+        ...rows,
+    });
+    const approvedManifest = v2TargetManifest(
+        'mia7-2188-basement',
+        MIA7_2188_PNU
+    );
+    const artifact = await captureLandAreaPhase0({
+        manifest: approvedManifest,
+        adapter: targetAdapter.implementation,
+        buildingHubAuth: HUB_AUTH,
+        vworldAuth: VWORLD_AUTH,
+    });
+    const targetSample = artifact.samples.find(
+        (sample) =>
+            sample.pnuHash ===
+            createHash('sha256')
+                .update(`PNU\u0000${MIA7_2188_PNU}`)
+                .digest('hex')
+    )!;
+    const ldareg = targetSample.endpoints.find(
+        (endpoint) => endpoint.endpoint === 'ldaregList'
+    )!.inventory;
+    assert.equal(ldareg.kind, 'LDAREG');
+    if (ldareg.kind !== 'LDAREG') assert.fail('unexpected inventory');
+
+    assert.equal(
+        artifact.gate.status,
+        'PASS',
+        JSON.stringify(targetSample.failureCodes)
+    );
+    assert.deepEqual(targetSample.failureCodes, []);
+    assert.equal(
+        ldareg.records.filter(
+            (record) =>
+                record.providerUnitBridgeKind ===
+                'PROVIDER_BASEMENT_B_HO'
+        ).length,
+        2
+    );
+    assert.deepEqual(
+        ldareg.records
+            .filter(
+                (record) =>
+                    record.providerUnitBridgeKind ===
+                    'PROVIDER_BASEMENT_B_HO'
+            )
+            .map((record) => record.quotaRatio)
+            .sort(),
+        ['20.18/221', '29.55/221']
+    );
+    assert.deepEqual(
+        targetSample.evidence.ldaregReplication
+            .providerBuildingIdentity,
+        {
+            aggregateBuildingSerialHash:
+                ldareg.records[0]
+                    .aggregateBuildingSerialHash,
+            buildingNameHash:
+                ldareg.records[0].buildingNameHash,
+            observedRowCount: rows.ldareg.length,
+        }
+    );
+    assert.equal(
+        validateLandAreaPhase0CaptureArtifact(
+            approvedManifest,
+            artifact
+        ),
+        artifact
+    );
+});
+
+test('provider bridge artifact validator는 witness·unique set·canonical order 변조를 fail-closed한다', async () => {
+    const rows = mia72188ProviderShapeRows();
+    const approvedManifest = v2TargetManifest(
+        'mia7-2188-artifact-tamper',
+        MIA7_2188_PNU
+    );
+    const targetAdapter = singleParcelTargetAdapter({
+        pnu: MIA7_2188_PNU,
+        rootPk: '3010101010210',
+        etcPurps: '다세대주택',
+        landArea: '221',
+        ...rows,
+    });
+    const artifact = await captureLandAreaPhase0({
+        manifest: approvedManifest,
+        adapter: targetAdapter.implementation,
+        buildingHubAuth: HUB_AUTH,
+        vworldAuth: VWORLD_AUTH,
+    });
+    const targetPnuHash = createHash('sha256')
+        .update(`PNU\u0000${MIA7_2188_PNU}`)
+        .digest('hex');
+    const targetSample = (candidate: any) =>
+        candidate.samples.find(
+            (sample: any) => sample.pnuHash === targetPnuHash
+        );
+    const endpoint = (sample: any, endpointName: string) =>
+        sample.endpoints.find(
+            (candidate: any) =>
+                candidate.endpoint === endpointName
+        );
+    const rejected = (
+        mutate: (candidate: any) => void,
+        pattern: RegExp
+    ) => {
+        const candidate = structuredClone(artifact) as any;
+        mutate(candidate);
+        assert.throws(
+            () =>
+                validateLandAreaPhase0CaptureArtifact(
+                    approvedManifest,
+                    candidate
+                ),
+            pattern
+        );
+    };
+
+    rejected((candidate) => {
+        candidate.schemaHash =
+            '99d06939e77afcf8220fc1b6cef55ea22315f11b38a24a13aeecb45a47c49e16';
+    }, /legacy artifact schema/);
+
+    rejected((candidate) => {
+        delete targetSample(candidate).evidence
+            .ldaregReplication.providerBuildingIdentity;
+    }, /provider building identity applicability/);
+
+    rejected((candidate) => {
+        targetSample(
+            candidate
+        ).evidence.ldaregReplication.providerBuildingIdentity.buildingNameHash =
+            '0'.repeat(64);
+    }, /provider building identity proof/);
+
+    rejected((candidate) => {
+        targetSample(
+            candidate
+        ).evidence.ldaregReplication.providerBuildingIdentity.observedRowCount +=
+            1;
+    }, /provider building identity proof/);
+
+    rejected((candidate) => {
+        const inventory = endpoint(
+            targetSample(candidate),
+            'getBrExposInfo'
+        ).inventory;
+        const record = inventory.records.find(
+            (entry: any) =>
+                entry.providerUnitBridgeKind ===
+                'PROVIDER_BASEMENT_B_HO'
+        );
+        delete record.providerUnitBridgeKind;
+        inventory.sanitizedDigest = sanitizedTestDigest(
+            inventory.records
+        );
+    }, /provider unit bridge witness is inconsistent/);
+
+    rejected((candidate) => {
+        const scopeExpos =
+            targetSample(candidate).evidence.scopeExpos;
+        const record = scopeExpos.records.find(
+            (entry: any) =>
+                entry.providerUnitBridgeKind ===
+                'PROVIDER_BASEMENT_B_HO'
+        );
+        delete record.providerUnitBridgeHash;
+        scopeExpos.sanitizedDigest = sanitizedTestDigest(
+            scopeExpos.records
+        );
+    }, /provider unit bridge witness is inconsistent/);
+
+    rejected((candidate) => {
+        const inventory = endpoint(
+            targetSample(candidate),
+            'ldaregList'
+        ).inventory;
+        const record = inventory.records.find(
+            (entry: any) =>
+                entry.providerUnitBridgeKind ===
+                'PROVIDER_BASEMENT_B_HO'
+        );
+        record.providerUnitBridgeKind =
+            'FLOOR_AS_UNIT_ABOVE';
+        sortCanonicalTestRecords(inventory.records);
+        inventory.sanitizedDigest = sanitizedTestDigest(
+            inventory.records
+        );
+    }, /semantic failure|unit correlation|failureCodes omits|provider building identity proof/);
+
+    rejected((candidate) => {
+        const inventory = endpoint(
+            targetSample(candidate),
+            'ldaregList'
+        ).inventory;
+        inventory.records.reverse();
+        inventory.sanitizedDigest = sanitizedTestDigest(
+            inventory.records
+        );
+    }, /canonical producer ordering/);
+
+    rejected((candidate) => {
+        const sample = targetSample(candidate);
+        const scopeExpos = sample.evidence.scopeExpos;
+        const exposEndpoint = endpoint(
+            sample,
+            'getBrExposInfo'
+        );
+        const exposInventory = exposEndpoint.inventory;
+        const ldaregEndpoint = endpoint(sample, 'ldaregList');
+        const ldaregInventory = ldaregEndpoint.inventory;
+        const exposRecord = exposInventory.records.find(
+            (entry: any) =>
+                entry.providerUnitBridgeKind ===
+                'PROVIDER_BASEMENT_B_HO'
+        );
+        const scopeRecord = scopeExpos.records.find(
+            (entry: any) =>
+                entry.providerUnitBridgeHash ===
+                exposRecord.providerUnitBridgeHash
+        );
+        const ldaregRecord = ldaregInventory.records.find(
+            (entry: any) =>
+                entry.providerUnitBridgeHash ===
+                    exposRecord.providerUnitBridgeHash &&
+                entry.quotaRatio === '20.18/221'
+        );
+
+        exposInventory.records.push(
+            structuredClone(exposRecord)
+        );
+        sortCanonicalTestRecords(exposInventory.records);
+        exposInventory.totalRecords += 1;
+        exposInventory.sanitizedDigest = sanitizedTestDigest(
+            exposInventory.records
+        );
+        exposEndpoint.totalCount += 1;
+
+        scopeExpos.records.push(structuredClone(scopeRecord));
+        sortCanonicalTestRecords(scopeExpos.records);
+        scopeExpos.totalRecords += 1;
+        scopeExpos.queries[0].totalCount += 1;
+        scopeExpos.sanitizedDigest = sanitizedTestDigest(
+            scopeExpos.records
+        );
+
+        ldaregRecord.quotaRatio = '10.09/221';
+        const duplicateLdaregRecord =
+            structuredClone(ldaregRecord);
+        ldaregInventory.records.push(
+            duplicateLdaregRecord
+        );
+        sortCanonicalTestRecords(ldaregInventory.records);
+        ldaregInventory.totalRecords += 1;
+        ldaregInventory.sanitizedDigest = sanitizedTestDigest(
+            ldaregInventory.records
+        );
+        ldaregEndpoint.totalCount += 1;
+        sample.evidence.ldaregReplication.rowCount += 1;
+        sample.evidence.ldaregReplication.rowMultisetDigest =
+            sanitizedTestDigest(ldaregInventory.records);
+    }, /semantic failure|unit correlation|failureCodes omits|provider building identity proof/);
+});
+
+for (const invalidCase of [
+    {
+        name: 'Bn과 비n suffix가 다름',
+        mutate: (rows: ReturnType<typeof mia72188ProviderShapeRows>) => {
+            rows.ldareg[5] = {
+                ...rows.ldareg[5],
+                buldHoNm: '비3',
+            };
+        },
+    },
+    {
+        name: 'EXPOS basement floor type이 10이 아님',
+        mutate: (rows: ReturnType<typeof mia72188ProviderShapeRows>) => {
+            rows.expos[4] = {
+                ...rows.expos[4],
+                flrGbCd: '20',
+            };
+        },
+    },
+    {
+        name: 'EXPOS B2의 실측 floor가 exact 1이 아님',
+        mutate: (rows: ReturnType<typeof mia72188ProviderShapeRows>) => {
+            rows.expos[5] = {
+                ...rows.expos[5],
+                flrNo: 2,
+            };
+        },
+    },
+    {
+        name: 'LDAREG floor가 exact 지하가 아님',
+        mutate: (rows: ReturnType<typeof mia72188ProviderShapeRows>) => {
+            rows.ldareg[4] = {
+                ...rows.ldareg[4],
+                buldFloorNm: '지하1',
+            };
+        },
+    },
+    {
+        name: 'mixed exact 소진 뒤 residual bridge가 같은 unit을 다시 가리킴',
+        mutate: (rows: ReturnType<typeof mia72188ProviderShapeRows>) => {
+            rows.ldareg[1] = {
+                ...rows.ldareg[1],
+                buldFloorNm: '지상1',
+                buldHoNm: '101',
+            };
+        },
+    },
+] as const) {
+    test(`791-2188 provider bridge는 ${invalidCase.name}이면 fail-closed한다`, async () => {
+        const rows = mia72188ProviderShapeRows();
+        invalidCase.mutate(rows);
+        const targetAdapter = singleParcelTargetAdapter({
+            pnu: MIA7_2188_PNU,
+            rootPk: '3010101010209',
+            etcPurps: '다세대주택',
+            landArea: '221',
+            ...rows,
+        });
+        const approvedManifest = v2TargetManifest(
+            'mia7-2188-provider-near-miss',
+            MIA7_2188_PNU
+        );
+        const artifact = await captureLandAreaPhase0({
+            manifest: approvedManifest,
+            adapter: targetAdapter.implementation,
+            buildingHubAuth: HUB_AUTH,
+            vworldAuth: VWORLD_AUTH,
+        });
+        const targetSample = artifact.samples.find(
+            (sample) =>
+                sample.pnuHash ===
+                createHash('sha256')
+                    .update(`PNU\u0000${MIA7_2188_PNU}`)
+                    .digest('hex')
+        )!;
+
+        assert.equal(artifact.gate.status, 'FAIL');
+        assert.ok(
+            targetSample.failureCodes.includes(
+                'LDAREG_EXPOS_UNIT_CORRELATION_MISMATCH'
+            )
+        );
+        assert.equal(
+            validateLandAreaPhase0CaptureArtifact(
+                approvedManifest,
+                artifact
+            ),
+            artifact
+        );
+    });
+}
 
 test('v1 및 input@2 expectedFamily=LADFRL은 generic/floor-as-unit 보강을 사용하지 않는다', async () => {
     const targetAdapter = singleParcelTargetAdapter({
@@ -1360,7 +1841,7 @@ function mia72191FloorAsUnitRows(): {
                 buldHoNm: '0000',
             },
             ...[
-                { floor: '지층', numerator: '33.67' },
+                { floor: '지', numerator: '33.67' },
                 { floor: '1', numerator: '33.67' },
                 { floor: '2', numerator: '33.67' },
             ].map((entry) => ({
@@ -1376,7 +1857,7 @@ function mia72191FloorAsUnitRows(): {
     };
 }
 
-test('791-2191: LDAREG 0000호와 EXPOS exact 층 라벨을 unique one-per-floor로 상관한다', async () => {
+test('791-2191: LDAREG 지/0000 및 숫자층/0000을 EXPOS exact 지층·N층과 unique one-per-floor로 상관한다', async () => {
     const rows = mia72191FloorAsUnitRows();
     const targetAdapter = singleParcelTargetAdapter({
         pnu: MIA7_2191_PNU,
@@ -1420,13 +1901,23 @@ test('791-2191: LDAREG 0000호와 EXPOS exact 층 라벨을 unique one-per-floor
     assert.equal(artifact.gate.status, 'PASS');
     assert.deepEqual(targetSample.failureCodes, []);
     assert.deepEqual(
-        new Set(expos.records.map((record) => record.floorHoIdentityHash)),
         new Set(
-            validLdareg.map((record) => record.floorHoIdentityHash)
+            expos.records.map(
+                (record) => record.providerUnitBridgeHash
+            )
+        ),
+        new Set(
+            validLdareg.map(
+                (record) => record.providerUnitBridgeHash
+            )
         )
     );
     assert.deepEqual(
-        new Set(expos.records.map((record) => record.floorShape)),
+        new Set(
+            expos.records.map(
+                (record) => record.providerUnitBridgeKind
+            )
+        ),
         new Set([
             'FLOOR_AS_UNIT_ABOVE',
             'FLOOR_AS_UNIT_BASEMENT',
@@ -1467,10 +1958,12 @@ for (const invalidCase of [
         },
     },
     {
-        name: 'EXPOS 지상 flrNo가 없고 이름 alias만 있음',
+        name: 'EXPOS 지상 floor alias가 서로 충돌함',
         mutate: (rows: ReturnType<typeof mia72191FloorAsUnitRows>) => {
-            const { flrNo: _omitted, ...rest } = rows.expos[1];
-            rows.expos[1] = { ...rest, flrNoNm: '1' };
+            rows.expos[1] = {
+                ...rows.expos[1],
+                flrNoNm: '2',
+            };
         },
     },
     {
@@ -1491,6 +1984,15 @@ for (const invalidCase of [
             rows.ldareg[2] = {
                 ...rows.ldareg[2],
                 buldFloorNm: '1층',
+            };
+        },
+    },
+    {
+        name: 'LDAREG 지층 floor가 live exact 지가 아님',
+        mutate: (rows: ReturnType<typeof mia72191FloorAsUnitRows>) => {
+            rows.ldareg[1] = {
+                ...rows.ldareg[1],
+                buldFloorNm: '지층',
             };
         },
     },
@@ -1990,6 +2492,183 @@ test('scope EXPOS는 cross-PNU exact replica만 1건으로 접고 같은 PNU 중
             duplicateArtifact
         ),
         duplicateArtifact
+    );
+});
+
+function providerReplicaV2Manifest(): LandAreaPhase0CaptureManifest {
+    return {
+        version: LAND_AREA_PHASE0_MANIFEST_VERSION_V2,
+        samples: [
+            {
+                alias: 'zero-control',
+                expectedBylot: 'ZERO',
+                expectedFamily: 'LADFRL',
+                pnu: ZERO_PNU,
+            },
+            {
+                alias: 'provider-expos-replica',
+                expectedBylot: 'POSITIVE',
+                expectedFamily: 'LDAREG',
+                pnu: POSITIVE_PNU,
+            },
+        ],
+    };
+}
+
+function providerExposReplicaAdapter(input: {
+    baseFloor: number | string;
+    attachedFloor: number | string;
+}) {
+    const target = adapter({
+        async scanExpos(pnu) {
+            target.calls.push({
+                endpoint: 'getBrExposInfo',
+                pnu,
+            });
+            if (pnu === ZERO_PNU) {
+                return complete(exposRows(pnu));
+            }
+            if (
+                pnu !== POSITIVE_PNU &&
+                pnu !== ATTACHED_PNU
+            ) {
+                return complete([]);
+            }
+            return complete([
+                {
+                    pnu,
+                    mgmBldrgstPk: POSITIVE_PK,
+                    dongNm: 'A',
+                    flrGbCd: '20',
+                    flrNo:
+                        pnu === POSITIVE_PNU
+                            ? input.baseFloor
+                            : input.attachedFloor,
+                    hoNm: '201',
+                },
+            ]);
+        },
+        async scanLdareg(pnu) {
+            target.calls.push({
+                endpoint: 'ldaregList',
+                pnu,
+            });
+            if (
+                pnu !== POSITIVE_PNU &&
+                pnu !== ATTACHED_PNU
+            ) {
+                return complete(ldaregRows(pnu));
+            }
+            return complete([
+                {
+                    pnu,
+                    agbldgSn: 'MIA7-EXPOS-REPLICA',
+                    buldNm: 'A',
+                    buldDongNm: 'A',
+                    buldFloorNm: '지상2',
+                    buldHoNm: '201',
+                    buldRoomNm: '201',
+                    ldaQotaRate: '24.6/364.6',
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                },
+            ]);
+        },
+    });
+    return target;
+}
+
+for (const variant of [
+    {
+        name: 'base valid/attached near-miss',
+        baseFloor: 2,
+        attachedFloor: '02',
+    },
+    {
+        name: 'base near-miss/attached valid',
+        baseFloor: '02',
+        attachedFloor: 2,
+    },
+] as const) {
+    test(`scope EXPOS provider witness variant는 PNU 방향과 무관하게 replica로 접지 않는다 (${variant.name})`, async () => {
+        const target = providerExposReplicaAdapter(variant);
+        const approvedManifest =
+            providerReplicaV2Manifest();
+        const artifact = await captureLandAreaPhase0({
+            manifest: approvedManifest,
+            adapter: target.implementation,
+            buildingHubAuth: HUB_AUTH,
+            vworldAuth: VWORLD_AUTH,
+        });
+        const positive = artifact.samples.find(
+            (sample) =>
+                sample.expectedBylot === 'POSITIVE'
+        )!;
+        assert.equal(
+            positive.evidence.scopeExpos.totalRecords,
+            2
+        );
+        assert.ok(
+            positive.failureCodes.includes(
+                'LDAREG_EXPOS_UNIT_CORRELATION_MISMATCH'
+            )
+        );
+        assert.equal(artifact.gate.status, 'FAIL');
+        assert.equal(
+            validateLandAreaPhase0CaptureArtifact(
+                approvedManifest,
+                artifact
+            ),
+            artifact
+        );
+    });
+}
+
+test('artifact validator는 attached EXPOS의 provider witness만 제거한 cross-PNU tamper를 replica로 접지 않는다', async () => {
+    const target = providerExposReplicaAdapter({
+        baseFloor: 2,
+        attachedFloor: 2,
+    });
+    const approvedManifest = providerReplicaV2Manifest();
+    const artifact = await captureLandAreaPhase0({
+        manifest: approvedManifest,
+        adapter: target.implementation,
+        buildingHubAuth: HUB_AUTH,
+        vworldAuth: VWORLD_AUTH,
+    });
+    assert.equal(artifact.gate.status, 'PASS');
+
+    const candidate = structuredClone(artifact) as any;
+    const positive = candidate.samples.find(
+        (sample: any) =>
+            sample.expectedBylot === 'POSITIVE'
+    );
+    const attachedPnuHash = createHash('sha256')
+        .update(`PNU\u0000${ATTACHED_PNU}`)
+        .digest('hex');
+    const attachedRecord =
+        positive.evidence.scopeExpos.records.find(
+            (record: any) =>
+                record.queryPnuHash === attachedPnuHash
+        );
+    assert.ok(attachedRecord);
+    delete attachedRecord.providerUnitBridgeHash;
+    delete attachedRecord.providerUnitBridgeKind;
+    sortCanonicalTestRecords(
+        positive.evidence.scopeExpos.records
+    );
+    positive.evidence.scopeExpos.sanitizedDigest =
+        sanitizedTestDigest(
+            positive.evidence.scopeExpos.records
+        );
+
+    assert.throws(
+        () =>
+            validateLandAreaPhase0CaptureArtifact(
+                approvedManifest,
+                candidate
+            ),
+        /semantic failure|unit correlation|failureCodes omits/
     );
 });
 
@@ -3343,6 +4022,283 @@ test('linked PNU의 LDAREG ratio가 base canonical multiset과 다르면 Phase 0
     assert.equal(artifact.gate.status, 'FAIL');
 });
 
+for (const replicaVariant of [
+    {
+        name: 'base valid/attached near-miss',
+        baseFloor: '지상2',
+        attachedFloor: '지상02',
+        baseBuildingName: 'A',
+        attachedBuildingName: 'A',
+    },
+    {
+        name: 'base near-miss/attached valid',
+        baseFloor: '지상02',
+        attachedFloor: '지상2',
+        baseBuildingName: 'A',
+        attachedBuildingName: 'A',
+    },
+    {
+        name: 'attached building identity NFKC variant',
+        baseFloor: '지상2',
+        attachedFloor: '지상2',
+        baseBuildingName: 'A',
+        attachedBuildingName: 'Ａ',
+    },
+] as const) {
+    test(`Phase 0 shared replica helper는 provider raw variant를 fail-closed한다 (${replicaVariant.name})`, async () => {
+        const mutated = adapter({
+            async scanExpos(pnu) {
+                mutated.calls.push({
+                    endpoint: 'getBrExposInfo',
+                    pnu,
+                });
+                if (pnu === POSITIVE_PNU) {
+                    return complete([
+                        {
+                            pnu,
+                            mgmBldrgstPk: POSITIVE_PK,
+                            dongNm: 'A',
+                            flrGbCd: '20',
+                            flrNo: 2,
+                            hoNm: '201',
+                        },
+                    ]);
+                }
+                return complete(exposRows(pnu));
+            },
+            async scanLdareg(pnu) {
+                mutated.calls.push({
+                    endpoint: 'ldaregList',
+                    pnu,
+                });
+                if (
+                    pnu !== POSITIVE_PNU &&
+                    pnu !== ATTACHED_PNU
+                ) {
+                    return complete(ldaregRows(pnu));
+                }
+                const base = pnu === POSITIVE_PNU;
+                return complete([
+                    {
+                        pnu,
+                        agbldgSn: 'MIA7-REPLICA-V3',
+                        buldNm: base
+                            ? replicaVariant.baseBuildingName
+                            : replicaVariant.attachedBuildingName,
+                        buldDongNm: 'A',
+                        buldFloorNm: base
+                            ? replicaVariant.baseFloor
+                            : replicaVariant.attachedFloor,
+                        buldHoNm: '201',
+                        buldRoomNm: '201',
+                        ldaQotaRate: '24.6/364.6',
+                        clsSeCode: '0',
+                        clsSeCodeNm: '현재',
+                    },
+                ]);
+            },
+        });
+        const v2Manifest: LandAreaPhase0CaptureManifest = {
+            version: LAND_AREA_PHASE0_MANIFEST_VERSION_V2,
+            samples: [
+                {
+                    alias: 'zero-control',
+                    expectedBylot: 'ZERO',
+                    expectedFamily: 'LADFRL',
+                    pnu: ZERO_PNU,
+                },
+                {
+                    alias: 'provider-replica-variant',
+                    expectedBylot: 'POSITIVE',
+                    expectedFamily: 'LDAREG',
+                    pnu: POSITIVE_PNU,
+                },
+            ],
+        };
+        const artifact = await captureLandAreaPhase0({
+            manifest: v2Manifest,
+            adapter: mutated.implementation,
+            buildingHubAuth: HUB_AUTH,
+            vworldAuth: VWORLD_AUTH,
+        });
+        const positive = artifact.samples.find(
+            (sample) =>
+                sample.expectedBylot === 'POSITIVE'
+        )!;
+        assert.equal(
+            positive.evidence.ldaregReplication.status,
+            'FAIL'
+        );
+        assert.ok(
+            positive.failureCodes.includes(
+                'LDAREG_SCOPE_REPLICA_INVALID'
+            )
+        );
+        assert.equal(artifact.gate.status, 'FAIL');
+        assert.equal(
+            validateLandAreaPhase0CaptureArtifact(
+                v2Manifest,
+                artifact
+            ),
+            artifact
+        );
+    });
+}
+
+for (const mixedVariant of [
+    {
+        name: 'attached standard row NFKC building name',
+        mutate: (rows: Array<Record<string, unknown>>) => {
+            rows[0].buldNm = 'Ａ';
+        },
+    },
+    {
+        name: 'attached placeholder numeric aggregate serial',
+        mutate: (rows: Array<Record<string, unknown>>) => {
+            rows[2].agbldgSn = 1;
+        },
+    },
+] as const) {
+    test(`Phase 0 mixed standard+bridge replica는 ${mixedVariant.name}도 all-row proof에서 차단한다`, async () => {
+        const mixedRows = (pnu: string) =>
+            [
+                {
+                    pnu,
+                    agbldgSn: '1',
+                    buldNm: 'A',
+                    buldFloorNm: '1',
+                    buldHoNm: '101',
+                    buldRoomNm: '101',
+                    ldaQotaRate: '200/364.6',
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                },
+                {
+                    pnu,
+                    agbldgSn: '1',
+                    buldNm: 'A',
+                    buldFloorNm: '지하',
+                    buldHoNm: '비1',
+                    buldRoomNm: '비1',
+                    ldaQotaRate: '164.6/364.6',
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                },
+                {
+                    pnu,
+                    agbldgSn: '1',
+                    buldNm: 'A',
+                    buldDongNm: '0000',
+                    buldFloorNm: '0000',
+                    buldHoNm: '0000',
+                    buldRoomNm: '0000',
+                    ldaQotaRate: '',
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                },
+            ] as Array<Record<string, unknown>>;
+        const attachedRows = mixedRows(ATTACHED_PNU);
+        mixedVariant.mutate(attachedRows);
+        const mutated = adapter({
+            async scanExpos(pnu) {
+                mutated.calls.push({
+                    endpoint: 'getBrExposInfo',
+                    pnu,
+                });
+                if (pnu === POSITIVE_PNU) {
+                    return complete([
+                        {
+                            pnu,
+                            mgmBldrgstPk: POSITIVE_PK,
+                            flrGbCd: '20',
+                            flrNo: 1,
+                            hoNm: '101',
+                        },
+                        {
+                            pnu,
+                            mgmBldrgstPk: POSITIVE_PK,
+                            flrGbCd: '10',
+                            flrNo: 1,
+                            hoNm: 'B1',
+                        },
+                    ]);
+                }
+                return complete(exposRows(pnu));
+            },
+            async scanLdareg(pnu) {
+                mutated.calls.push({
+                    endpoint: 'ldaregList',
+                    pnu,
+                });
+                if (pnu === POSITIVE_PNU) {
+                    return complete(
+                        mixedRows(
+                            pnu
+                        ) as unknown as LdaregRow[]
+                    );
+                }
+                if (pnu === ATTACHED_PNU) {
+                    return complete(
+                        attachedRows as unknown as LdaregRow[]
+                    );
+                }
+                return complete(ldaregRows(pnu));
+            },
+        });
+        const v2Manifest: LandAreaPhase0CaptureManifest = {
+            version: LAND_AREA_PHASE0_MANIFEST_VERSION_V2,
+            samples: [
+                {
+                    alias: 'zero-control',
+                    expectedBylot: 'ZERO',
+                    expectedFamily: 'LADFRL',
+                    pnu: ZERO_PNU,
+                },
+                {
+                    alias: 'mixed-provider-identity-variant',
+                    expectedBylot: 'POSITIVE',
+                    expectedFamily: 'LDAREG',
+                    pnu: POSITIVE_PNU,
+                },
+            ],
+        };
+        const artifact = await captureLandAreaPhase0({
+            manifest: v2Manifest,
+            adapter: mutated.implementation,
+            buildingHubAuth: HUB_AUTH,
+            vworldAuth: VWORLD_AUTH,
+        });
+        const positive = artifact.samples.find(
+            (sample) =>
+                sample.expectedBylot === 'POSITIVE'
+        )!;
+        assert.equal(
+            positive.evidence.ldaregReplication.status,
+            'FAIL'
+        );
+        assert.equal(
+            Object.prototype.hasOwnProperty.call(
+                positive.evidence.ldaregReplication,
+                'providerBuildingIdentity'
+            ),
+            false
+        );
+        assert.ok(
+            positive.failureCodes.includes(
+                'LDAREG_SCOPE_REPLICA_INVALID'
+            )
+        );
+        assert.equal(artifact.gate.status, 'FAIL');
+        assert.equal(
+            validateLandAreaPhase0CaptureArtifact(
+                v2Manifest,
+                artifact
+            ),
+            artifact
+        );
+    });
+}
+
 test('sanitized inventory는 200건으로 제한하고 전체 수·digest·truncated를 남긴다', async () => {
     const oversized = adapter({
         async scanExpos(pnu) {
@@ -3572,11 +4528,22 @@ test('strict artifact validator는 exact manifest/sample/endpoint/schema 계약�
     );
     assert.equal(
         LAND_AREA_PHASE0_ARTIFACT_SCHEMA_HASH,
-        '99d06939e77afcf8220fc1b6cef55ea22315f11b38a24a13aeecb45a47c49e16'
+        '0909518650db9d6330549bf67998a75b1c17378ece1dd14473be5f3c3cb3a05a'
     );
     assert.equal(
         validateLandAreaPhase0CaptureArtifact(passManifest, passArtifact),
         passArtifact
+    );
+    const legacySchemaArtifact =
+        structuredClone(passArtifact) as any;
+    legacySchemaArtifact.schemaHash =
+        '99d06939e77afcf8220fc1b6cef55ea22315f11b38a24a13aeecb45a47c49e16';
+    assert.equal(
+        validateLandAreaPhase0CaptureArtifact(
+            passManifest,
+            legacySchemaArtifact
+        ),
+        legacySchemaArtifact
     );
 
     // 최초 관찰의 expectedBylot은 아직 입증값이 아니다. 관찰 결과가 가설과

@@ -19,13 +19,17 @@ import {
 } from './land-area-phase0-capture';
 import {
     hasPhase0GenericLdaregTitleEvidence,
+    hasPhase0ProviderUnitBridgeCorrelation,
     isPhase0FloorAsUnitShape,
+    isPhase0LegacyFloorAsUnitShape,
 } from './land-area-phase0-evidence';
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,127}$/;
 const SAFE_DECIMAL_PATTERN = /^(?:0|[1-9]\d{0,7})(?:\.\d{1,6})?$/;
 const MAX_INVENTORY_RECORDS = 200;
+const LEGACY_LAND_AREA_PHASE0_ARTIFACT_SCHEMA_HASH =
+    '99d06939e77afcf8220fc1b6cef55ea22315f11b38a24a13aeecb45a47c49e16';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -557,6 +561,8 @@ function validateInventory(value: unknown, endpoint: string, path: string): void
                 'unitIdentityHash',
                 'floorHoIdentityHash',
                 'dongIdentityHash',
+                'providerUnitBridgeHash',
+                'providerUnitBridgeKind',
                 'mainAttachedTypeCode',
                 'floorTypeCode',
                 'floorShape',
@@ -568,6 +574,7 @@ function validateInventory(value: unknown, endpoint: string, path: string): void
                 'unitIdentityHash',
                 'floorHoIdentityHash',
                 'dongIdentityHash',
+                'providerUnitBridgeHash',
             ],
             decimal: ['area'],
         },
@@ -590,6 +597,8 @@ function validateInventory(value: unknown, endpoint: string, path: string): void
                 'unitIdentityHash',
                 'floorHoIdentityHash',
                 'dongIdentityHash',
+                'providerUnitBridgeHash',
+                'providerUnitBridgeKind',
                 'quotaRatio',
                 'classificationCode',
                 'classificationLabel',
@@ -602,6 +611,7 @@ function validateInventory(value: unknown, endpoint: string, path: string): void
                 'unitIdentityHash',
                 'floorHoIdentityHash',
                 'dongIdentityHash',
+                'providerUnitBridgeHash',
             ],
             decimal: [],
         },
@@ -755,7 +765,28 @@ function validateInventory(value: unknown, endpoint: string, path: string): void
         ) {
             reject(`${recordPath}.unitIdentityShape conflicts with hash`);
         }
+        if (
+            value.kind === 'EXPOS' ||
+            value.kind === 'LDAREG'
+        ) {
+            const hasProviderBridgeHash =
+                record.providerUnitBridgeHash !== undefined;
+            const hasProviderBridgeKind =
+                record.providerUnitBridgeKind !== undefined;
+            if (
+                hasProviderBridgeHash !== hasProviderBridgeKind ||
+                (hasProviderBridgeKind &&
+                    !isPhase0FloorAsUnitShape(
+                        record.providerUnitBridgeKind
+                    ))
+            ) {
+                reject(
+                    `${recordPath}.provider unit bridge witness is inconsistent`
+                );
+            }
+        }
     });
+    assertCanonicalOrder(value.records, `${path}.records`);
     validateBoundedRecordEnvelope(value, value.records, path);
 }
 
@@ -1160,6 +1191,8 @@ function validateScopeExposEvidence(value: unknown, path: string): void {
                 'unitIdentityHash',
                 'floorHoIdentityHash',
                 'dongIdentityHash',
+                'providerUnitBridgeHash',
+                'providerUnitBridgeKind',
             ],
             recordPath
         );
@@ -1172,6 +1205,7 @@ function validateScopeExposEvidence(value: unknown, path: string): void {
             'unitIdentityHash',
             'floorHoIdentityHash',
             'dongIdentityHash',
+            'providerUnitBridgeHash',
         ] as const) {
             if (record[field] !== undefined) {
                 assertHash(record[field], `${recordPath}.${field}`);
@@ -1198,6 +1232,21 @@ function validateScopeExposEvidence(value: unknown, path: string): void {
                 (record.dongIdentityHash !== undefined)
         ) {
             reject(`${recordPath}.unitIdentityShape conflicts with hash`);
+        }
+        const hasProviderBridgeHash =
+            record.providerUnitBridgeHash !== undefined;
+        const hasProviderBridgeKind =
+            record.providerUnitBridgeKind !== undefined;
+        if (
+            hasProviderBridgeHash !== hasProviderBridgeKind ||
+            (hasProviderBridgeKind &&
+                !isPhase0FloorAsUnitShape(
+                    record.providerUnitBridgeKind
+                ))
+        ) {
+            reject(
+                `${recordPath}.provider unit bridge witness is inconsistent`
+            );
         }
         const hasResolvedRoot =
             typeof record.rootManagementPkHash === 'string';
@@ -1309,6 +1358,10 @@ function resolvedScopeExposRecords(
             unitIdentityHash: record.unitIdentityHash,
             floorHoIdentityHash: record.floorHoIdentityHash,
             dongIdentityHash: record.dongIdentityHash ?? null,
+            providerUnitBridgeHash:
+                record.providerUnitBridgeHash ?? null,
+            providerUnitBridgeKind:
+                record.providerUnitBridgeKind ?? null,
         });
         representativeByKey.set(
             key,
@@ -1424,6 +1477,18 @@ function hasLdaregExposUnitCorrelation(
             new Set(buildingNameHashes).size === 1
         );
     };
+    if (
+        hasPhase0ProviderUnitBridgeCorrelation({
+            scopeExposRecords: exposRecords,
+            exposInventoryRecords,
+            validLdaregRecords,
+            missingLdaregRecords,
+            singleLdaregBuildingIdentity:
+                singleLdaregBuildingIdentity(),
+        })
+    ) {
+        return true;
+    }
 
     const scopeFloorUnitHashes = exposRecords.map(
         (record) => record.floorHoIdentityHash as string
@@ -1442,7 +1507,9 @@ function hasLdaregExposUnitCorrelation(
             .filter(
                 (record) =>
                     typeof record.floorHoIdentityHash === 'string' &&
-                    isPhase0FloorAsUnitShape(record.floorShape)
+                    isPhase0LegacyFloorAsUnitShape(
+                        record.floorShape
+                    )
             )
             .map((record) => [
                 record.floorHoIdentityHash as string,
@@ -1454,7 +1521,9 @@ function hasLdaregExposUnitCorrelation(
             .filter(
                 (record) =>
                     typeof record.floorHoIdentityHash === 'string' &&
-                    isPhase0FloorAsUnitShape(record.floorShape)
+                    isPhase0LegacyFloorAsUnitShape(
+                        record.floorShape
+                    )
             )
             .map((record) => [
                 record.floorHoIdentityHash as string,
@@ -1470,17 +1539,24 @@ function hasLdaregExposUnitCorrelation(
             (record) =>
                 record.unitIdentityShape === 'FLOOR_HO' &&
                 typeof record.floorHoIdentityHash === 'string' &&
-                isPhase0FloorAsUnitShape(record.floorShape)
+                isPhase0LegacyFloorAsUnitShape(
+                    record.floorShape
+                )
         ) &&
         validLdaregRecords.length === exposRecords.length &&
         validLdaregRecords.every(
             (record) =>
                 record.unitIdentityShape === 'FLOOR_HO' &&
                 typeof record.floorHoIdentityHash === 'string' &&
-                isPhase0FloorAsUnitShape(record.floorShape)
+                isPhase0LegacyFloorAsUnitShape(
+                    record.floorShape
+                )
         ) &&
         missingLdaregRecords.every(
-            (record) => !isPhase0FloorAsUnitShape(record.floorShape)
+            (record) =>
+                !isPhase0LegacyFloorAsUnitShape(
+                    record.floorShape
+                )
         ) &&
         hasExactUniqueSetMatch(
             scopeFloorUnitHashes,
@@ -1632,7 +1708,7 @@ function validateEvidence(value: unknown, path: string): void {
             'rowCount',
             'rowMultisetDigest',
         ],
-        [],
+        ['providerBuildingIdentity'],
         `${path}.ldaregReplication`
     );
     assertEnum(
@@ -1665,6 +1741,53 @@ function validateEvidence(value: unknown, path: string): void {
             replicationHasResult)
     ) {
         reject(`${path}.ldaregReplication status is inconsistent`);
+    }
+    if (
+        value.ldaregReplication.providerBuildingIdentity !==
+        undefined
+    ) {
+        if (value.ldaregReplication.status !== 'PASS') {
+            reject(
+                `${path}.ldaregReplication provider building identity requires PASS`
+            );
+        }
+        assertRecord(
+            value.ldaregReplication.providerBuildingIdentity,
+            `${path}.ldaregReplication.providerBuildingIdentity`
+        );
+        assertExactKeys(
+            value.ldaregReplication.providerBuildingIdentity,
+            [
+                'aggregateBuildingSerialHash',
+                'buildingNameHash',
+                'observedRowCount',
+            ],
+            [],
+            `${path}.ldaregReplication.providerBuildingIdentity`
+        );
+        assertHash(
+            value.ldaregReplication.providerBuildingIdentity
+                .aggregateBuildingSerialHash,
+            `${path}.ldaregReplication.providerBuildingIdentity.aggregateBuildingSerialHash`
+        );
+        assertHash(
+            value.ldaregReplication.providerBuildingIdentity
+                .buildingNameHash,
+            `${path}.ldaregReplication.providerBuildingIdentity.buildingNameHash`
+        );
+        assertNonNegativeInteger(
+            value.ldaregReplication.providerBuildingIdentity
+                .observedRowCount,
+            `${path}.ldaregReplication.providerBuildingIdentity.observedRowCount`
+        );
+        if (
+            value.ldaregReplication.providerBuildingIdentity
+                .observedRowCount === 0
+        ) {
+            reject(
+                `${path}.ldaregReplication.providerBuildingIdentity lacks rows`
+            );
+        }
     }
 }
 
@@ -2228,6 +2351,59 @@ function requireSemanticFailureCodes(
     const ldaregInventory = endpointByName('ldaregList')
         .inventory as JsonRecord;
     const ldaregRecords = ldaregInventory.records as JsonRecord[];
+    const providerBuildingIdentity =
+        ldaregReplication.providerBuildingIdentity as
+            | JsonRecord
+            | undefined;
+    const hasLdaregProviderWitness =
+        allowPhase0V2LdaregEvidence &&
+        ldaregRecords.some(
+            (record) =>
+                typeof record.providerUnitBridgeHash ===
+                    'string' &&
+                typeof record.providerUnitBridgeKind ===
+                    'string'
+        );
+    if (ldaregReplication.status === 'PASS') {
+        if (
+            hasLdaregProviderWitness !==
+            (providerBuildingIdentity !== undefined)
+        ) {
+            reject(
+                `${path}.ldaregReplication provider building identity applicability is inconsistent`
+            );
+        }
+        if (providerBuildingIdentity !== undefined) {
+            const aggregateBuildingSerialHash =
+                providerBuildingIdentity
+                    .aggregateBuildingSerialHash;
+            const buildingNameHash =
+                providerBuildingIdentity.buildingNameHash;
+            if (
+                ldaregRecords.length === 0 ||
+                ldaregRecords.some(
+                    (record) =>
+                        record.aggregateBuildingSerialHash !==
+                            aggregateBuildingSerialHash ||
+                        record.buildingNameHash !==
+                            buildingNameHash
+                ) ||
+                providerBuildingIdentity.observedRowCount !==
+                    (ldaregReplication.rowCount as number) *
+                        (
+                            ldaregReplication.comparedPnuHashes as string[]
+                        ).length
+            ) {
+                reject(
+                    `${path}.ldaregReplication provider building identity proof is inconsistent`
+                );
+            }
+        }
+    } else if (providerBuildingIdentity !== undefined) {
+        reject(
+            `${path}.ldaregReplication provider building identity requires PASS`
+        );
+    }
     const scopeTotal =
         scopeLadfrl.status === 'PASS' &&
         typeof scopeLadfrl.totalArea === 'string'
@@ -3035,6 +3211,33 @@ function exactSortedUnion(codeLists: string[][]): string[] {
     return [...new Set(codeLists.flat())].sort();
 }
 
+function containsProviderUnitBridgeField(value: unknown): boolean {
+    const pending: unknown[] = [value];
+    while (pending.length > 0) {
+        const current = pending.pop();
+        if (Array.isArray(current)) {
+            pending.push(...current);
+            continue;
+        }
+        if (current === null || typeof current !== 'object') {
+            continue;
+        }
+        for (const [key, nested] of Object.entries(
+            current as JsonRecord
+        )) {
+            if (
+                key === 'providerUnitBridgeHash' ||
+                key === 'providerUnitBridgeKind' ||
+                key === 'providerBuildingIdentity'
+            ) {
+                return true;
+            }
+            pending.push(nested);
+        }
+    }
+    return false;
+}
+
 /**
  * Manifest의 raw alias/PNU를 출력하지 않은 채 비식별 artifact 전체를 검증한다.
  * 유효한 FAIL artifact도 관찰 근거이므로 반환하며, PASS/FAIL 여부는 gate에 보존한다.
@@ -3055,8 +3258,22 @@ export function validateLandAreaPhase0CaptureArtifact(
     if (artifactInput.version !== LAND_AREA_PHASE0_ARTIFACT_VERSION) {
         reject('artifact version is not approved');
     }
-    if (artifactInput.schemaHash !== LAND_AREA_PHASE0_ARTIFACT_SCHEMA_HASH) {
+    if (
+        artifactInput.schemaHash !==
+            LAND_AREA_PHASE0_ARTIFACT_SCHEMA_HASH &&
+        artifactInput.schemaHash !==
+            LEGACY_LAND_AREA_PHASE0_ARTIFACT_SCHEMA_HASH
+    ) {
         reject('artifact schema hash is not approved');
+    }
+    if (
+        artifactInput.schemaHash ===
+            LEGACY_LAND_AREA_PHASE0_ARTIFACT_SCHEMA_HASH &&
+        containsProviderUnitBridgeField(artifactInput)
+    ) {
+        reject(
+            'legacy artifact schema cannot contain provider unit bridge evidence'
+        );
     }
 
     assertRecord(artifactInput.gate, 'artifact.gate');

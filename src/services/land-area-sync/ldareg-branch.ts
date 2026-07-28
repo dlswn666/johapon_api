@@ -46,6 +46,10 @@ import {
     type BasisRootIndex,
     type ExposRootIdentitySource,
 } from './expos-root';
+import {
+    providerUnitShapeWitness,
+    providerUnitShapeWitnessKey,
+} from './provider-unit-shape-bridge';
 
 /** 한 대상 PNU 의 LDAREG·전유부 raw scan 묶음. */
 export interface LdaregPnuScan {
@@ -97,6 +101,15 @@ export interface LdaregReplicationEvidence {
     /** canonical logical row multiset 수(중복 포함). */
     rowCount: number;
     rowMultisetDigest: string;
+    /**
+     * provider bridge witness가 scope에 실제 존재할 때만 생성되는 all-PNU
+     * building identity 증거. 일반 2280 v2 replica digest/shape에는 추가하지 않는다.
+     */
+    providerBuildingIdentity?: {
+        aggregateBuildingSerialHash: string;
+        buildingNameHash: string;
+        observedRowCount: number;
+    };
 }
 
 export type LdaregReplicationResult =
@@ -121,8 +134,13 @@ function canonicalDecimalToken(value: string): string {
 }
 
 /**
- * query-dependent pnu를 제외한 LDAREG logical row v2. 고정 allowlist의 상태·기준일을
+ * query-dependent pnu를 제외한 LDAREG logical row. 고정 allowlist의 상태·기준일을
  * 보존하되 ratio와 unit tuple은 비교 의미에 맞게 canonicalize한다.
+ *
+ * 일반 행은 기존 v2 JSON을 byte-for-byte 유지한다(기존 2280 replica digest 호환).
+ * provider bridge가 인정하는 exact 원문 shape만 v3 witness로 별도 고정한다.
+ * 따라서 base/attached PNU의 논리 tuple이 같더라도 `지상2`와 `지상02`처럼
+ * recognized/non-recognized 상태가 달라지면 replica로 인정하지 않는다.
  */
 function canonicalLdaregRowKey(row: LdaregRow): string | null {
     const record = row as Record<string, unknown>;
@@ -140,7 +158,11 @@ function canonicalLdaregRowKey(row: LdaregRow): string | null {
         ho: raw.buldHoNm,
         room: raw.buldRoomNm,
     });
-    return JSON.stringify({
+    const providerShapeWitness = providerUnitShapeWitness(
+        'LDAREG_UNIT',
+        record
+    );
+    const v2Key = {
         v: 2,
         agbldgSn: raw.agbldgSn,
         buildingName: raw.buldNm,
@@ -157,6 +179,19 @@ function canonicalLdaregRowKey(row: LdaregRow): string | null {
         clsSeCodeNm: raw.clsSeCodeNm,
         relateLdEmdLiCode: raw.relateLdEmdLiCode,
         lastUpdtDt: raw.lastUpdtDt,
+    };
+    if (providerShapeWitness === null) {
+        return JSON.stringify(v2Key);
+    }
+    return JSON.stringify({
+        ...v2Key,
+        v: 3,
+        providerShape: {
+            recognized: true,
+            key: providerUnitShapeWitnessKey(
+                providerShapeWitness
+            ),
+        },
     });
 }
 
@@ -180,6 +215,79 @@ export function validateLdaregReplication(
         !expected.includes(canonicalSourcePnu)
     ) {
         return { ok: false };
+    }
+
+    const replicatedRows = perPnu.flatMap(
+        (scan) => scan.ldaregRows
+    );
+    const providerIdentityRequired = replicatedRows.some(
+        (row) =>
+            providerUnitShapeWitness(
+                'LDAREG_UNIT',
+                row as Record<string, unknown>
+            ) !== null
+    );
+    let providerBuildingIdentity:
+        | NonNullable<
+              LdaregReplicationEvidence['providerBuildingIdentity']
+          >
+        | undefined;
+    if (providerIdentityRequired) {
+        const identities = replicatedRows.map((row) => {
+            const raw = row as Record<string, unknown>;
+            return {
+                aggregateSerial:
+                    typeof raw.agbldgSn === 'string'
+                        ? raw.agbldgSn.trim()
+                        : null,
+                buildingName:
+                    typeof raw.buldNm === 'string'
+                        ? raw.buldNm.trim()
+                        : null,
+            };
+        });
+        const aggregateSerials = new Set(
+            identities.map(
+                (identity) => identity.aggregateSerial
+            )
+        );
+        const buildingNames = new Set(
+            identities.map(
+                (identity) => identity.buildingName
+            )
+        );
+        if (
+            identities.length === 0 ||
+            identities.some(
+                (identity) =>
+                    identity.aggregateSerial === null ||
+                    identity.aggregateSerial === '' ||
+                    identity.buildingName === null ||
+                    identity.buildingName === ''
+            ) ||
+            aggregateSerials.size !== 1 ||
+            buildingNames.size !== 1
+        ) {
+            return { ok: false };
+        }
+        const aggregateSerial = identities[0]
+            .aggregateSerial!;
+        const buildingName = identities[0].buildingName!;
+        providerBuildingIdentity = {
+            aggregateBuildingSerialHash: createHash('sha256')
+                .update(
+                    `AGBLDG_SN\u0000${aggregateSerial}`,
+                    'utf8'
+                )
+                .digest('hex'),
+            buildingNameHash: createHash('sha256')
+                .update(
+                    `BUILDING_NAME\u0000${buildingName}`,
+                    'utf8'
+                )
+                .digest('hex'),
+            observedRowCount: replicatedRows.length,
+        };
     }
 
     const keysByPnu = new Map<string, string[]>();
@@ -218,6 +326,9 @@ export function validateLdaregReplication(
             exactReplica: true,
             rowCount: canonical.length,
             rowMultisetDigest,
+            ...(providerBuildingIdentity
+                ? { providerBuildingIdentity }
+                : {}),
         },
     };
 }
@@ -323,6 +434,10 @@ function toExposCandidate(
         selfIdentity: resolved.evidence.selfIdentity,
         rawUpIdentity: resolved.evidence.rawUpIdentity,
         rootIdentitySource: resolved.evidence.source,
+        providerShapeWitness: providerUnitShapeWitness(
+            'EXPOS_UNIT',
+            r
+        ),
     };
 }
 
@@ -373,6 +488,11 @@ function collectScopeExposUnits(
                 dong: normalized.dong,
                 floor: normalized.floor,
                 ho: normalized.ho,
+                providerShapeWitness: candidate.providerShapeWitness
+                    ? providerUnitShapeWitnessKey(
+                          candidate.providerShapeWitness
+                      )
+                    : null,
             });
             rootEvidence.push({
                 queryPnu: scan.pnu,
@@ -455,6 +575,11 @@ export function selectCanonicalExposSourcePnu(
                 rawUpIdentity: candidate.rawUpIdentity ?? null,
                 rootIdentitySource: candidate.rootIdentitySource,
                 normalized: normalizeUnitTuple(candidate),
+                providerShapeWitness: candidate.providerShapeWitness
+                    ? providerUnitShapeWitnessKey(
+                          candidate.providerShapeWitness
+                      )
+                    : null,
             });
         }
         return JSON.stringify(
@@ -641,6 +766,312 @@ function evaluateExposFloorHoFallback(
     };
 }
 
+interface ExposProviderShapeBridgeEvidence {
+    kind: 'EXPOS_PROVIDER_SHAPE_BRIDGE_GATE';
+    allowed: boolean;
+    bridgeRequiredCount: number;
+    singleRoot: boolean;
+    singleLdaregBuildingIdentity: boolean;
+    standardExactOneToOne: boolean;
+    sourceRawWitnessConsistent: boolean;
+    sourceWitnessUnique: boolean;
+    exposWitnessOneToOne: boolean;
+    dongCompatible: boolean;
+}
+
+/**
+ * 공용 exact witness를 runtime matcher에 열기 전 scope 전체 gate.
+ *
+ * 일반 DFH exact 행은 먼저 unique하게 소진하되 matcher에서는 기존 경로를
+ * 그대로 사용한다. 남은 양쪽 witness set이 extra 없이 unique 1:1일 때만 bridge를
+ * 연다. count/order/ratio를 호실 identity로 쓰지 않는다.
+ */
+function evaluateExposProviderShapeBridge(
+    records: readonly LdaregSourceRecord[],
+    canonicalRows: readonly LdaregRow[],
+    replicatedRows: readonly LdaregRow[],
+    exposUnits: readonly ExposUnitCandidate[],
+    scopeRootIdentity: string
+): ExposProviderShapeBridgeEvidence {
+    const rootSet = new Set(
+        exposUnits
+            .map((unit) => unit.rootIdentity.trim())
+            .filter(Boolean)
+    );
+    const singleRoot =
+        scopeRootIdentity.trim() !== '' &&
+        rootSet.size === 1 &&
+        rootSet.has(scopeRootIdentity.trim()) &&
+        exposUnits.every(
+            (unit) => unit.rootIdentity.trim() !== ''
+        );
+    const replicatedBuildingIdentities = replicatedRows.map(
+        (row) => {
+            const raw = row as Record<string, unknown>;
+            const exactIdentityScalar = (
+                value: unknown
+            ): string | null =>
+                typeof value === 'string' &&
+                value.trim() !== ''
+                    ? value.trim()
+                    : null;
+            return {
+                buildingName: exactIdentityScalar(raw.buldNm),
+                aggregateSerial: exactIdentityScalar(
+                    raw.agbldgSn
+                ),
+            };
+        }
+    );
+    const buildingNames = new Set(
+        replicatedBuildingIdentities.map(
+            (identity) => identity.buildingName
+        )
+    );
+    const aggregateSerials = new Set(
+        replicatedBuildingIdentities.map(
+            (identity) => identity.aggregateSerial
+        )
+    );
+    const singleLdaregBuildingIdentity =
+        replicatedBuildingIdentities.length > 0 &&
+        replicatedBuildingIdentities.every(
+            (identity) =>
+                typeof identity.buildingName === 'string' &&
+                identity.buildingName !== '' &&
+                typeof identity.aggregateSerial === 'string' &&
+                identity.aggregateSerial !== ''
+        ) &&
+        buildingNames.size === 1 &&
+        aggregateSerials.size === 1;
+
+    const standardMatchedExposIndexes: number[] = [];
+    const residualSources: Array<{
+        record: LdaregSourceRecord;
+        witness: NonNullable<
+            ReturnType<typeof providerUnitShapeWitness>
+        >;
+        witnessKey: string;
+    }> = [];
+    const dongPairs: Array<{
+        sourceDong: string;
+        exposDong: string;
+    }> = [];
+    let standardExactOneToOne = true;
+    let sourceRawWitnessConsistent = true;
+    let dongCompatible = true;
+
+    for (const record of records) {
+        const standardMatches = exposUnits
+            .map((candidate, index) => ({ candidate, index }))
+            .filter(
+                ({ candidate }) =>
+                    floorHoKey(candidate) ===
+                    floorHoKey(record.normalized)
+            );
+        if (standardMatches.length === 1) {
+            standardMatchedExposIndexes.push(
+                standardMatches[0].index
+            );
+            dongPairs.push({
+                sourceDong: record.normalized.dong,
+                exposDong: normalizeUnitTuple(
+                    standardMatches[0].candidate
+                ).dong,
+            });
+            continue;
+        }
+        if (standardMatches.length > 1) {
+            standardExactOneToOne = false;
+            continue;
+        }
+
+        const memberIndexes = record.sourceRowIndexes;
+        const memberWitnesses = memberIndexes.map((index) => {
+            const raw =
+                Number.isInteger(index) && index >= 0
+                    ? canonicalRows[index]
+                    : undefined;
+            return raw
+                ? providerUnitShapeWitness(
+                      'LDAREG_UNIT',
+                      raw as Record<string, unknown>
+                  )
+                : null;
+        });
+        const witnessKeys = memberWitnesses.map((witness) =>
+            witness
+                ? providerUnitShapeWitnessKey(witness)
+                : null
+        );
+        const canonicalWitnesses = memberWitnesses.map(
+            (witness) =>
+                witness === null
+                    ? null
+                    : JSON.stringify([
+                          witness.canonicalFloor,
+                          witness.canonicalHo,
+                      ])
+        );
+        if (
+            memberIndexes.length === 0 ||
+            !memberIndexes.includes(record.sourceRowIndex) ||
+            memberWitnesses.some((witness) => witness === null) ||
+            new Set(witnessKeys).size !== 1 ||
+            new Set(canonicalWitnesses).size !== 1
+        ) {
+            sourceRawWitnessConsistent = false;
+            continue;
+        }
+        const sourceWitness = memberWitnesses[0]!;
+        const witnessKey =
+            providerUnitShapeWitnessKey(sourceWitness);
+        residualSources.push({
+            record,
+            witness: sourceWitness,
+            witnessKey,
+        });
+    }
+
+    standardExactOneToOne =
+        standardExactOneToOne &&
+        new Set(standardMatchedExposIndexes).size ===
+            standardMatchedExposIndexes.length;
+    const standardMatchedIndexSet = new Set(
+        standardMatchedExposIndexes
+    );
+    const residualExpos = exposUnits
+        .map((candidate, index) => ({
+            candidate,
+            index,
+            witness: candidate.providerShapeWitness,
+        }))
+        .filter(
+            (entry) => !standardMatchedIndexSet.has(entry.index)
+        );
+    const sourceWitnessKeys = residualSources.map(
+        (source) => source.witnessKey
+    );
+    const residualExposWitnessKeys = residualExpos.map(
+        (entry) =>
+            entry.witness
+                ? providerUnitShapeWitnessKey(entry.witness)
+                : null
+    );
+    const sourceWitnessUnique =
+        sourceRawWitnessConsistent &&
+        sourceWitnessKeys.length > 0 &&
+        new Set(sourceWitnessKeys).size ===
+            sourceWitnessKeys.length;
+    const residualExposWitnessUnique =
+        residualExposWitnessKeys.every(
+            (key): key is string => key !== null
+        ) &&
+        new Set(residualExposWitnessKeys).size ===
+            residualExposWitnessKeys.length;
+    const residualExposWitnessSet = new Set(
+        residualExposWitnessKeys.filter(
+            (key): key is string => key !== null
+        )
+    );
+    const exposWitnessOneToOne =
+        standardExactOneToOne &&
+        residualExposWitnessUnique &&
+        residualExpos.length === residualSources.length &&
+        residualSources.every((source) =>
+            residualExposWitnessSet.has(source.witnessKey)
+        );
+
+    if (exposWitnessOneToOne) {
+        for (const source of residualSources) {
+            const matched = residualExpos.find(
+                (entry) =>
+                    entry.witness !== null &&
+                    entry.witness !== undefined &&
+                    providerUnitShapeWitnessKey(
+                        entry.witness
+                    ) === source.witnessKey &&
+                    entry.witness.canonicalFloor ===
+                        source.witness.canonicalFloor &&
+                    entry.witness.canonicalHo ===
+                        source.witness.canonicalHo
+            );
+            if (!matched) {
+                dongCompatible = false;
+                continue;
+            }
+            const sourceDong = source.record.normalized.dong;
+            const exposDong = normalizeUnitTuple(
+                matched.candidate
+            ).dong;
+            dongPairs.push({
+                sourceDong,
+                exposDong,
+            });
+            if (
+                sourceDong !== '' &&
+                exposDong !== '' &&
+                sourceDong !== exposDong
+            ) {
+                dongCompatible = false;
+            }
+        }
+    } else {
+        dongCompatible = false;
+    }
+    const bridgeRequiredCount = residualSources.length;
+
+    const oneSidedDirections = new Set<string>();
+    const oneSidedDongTokens = new Set<string>();
+    const allDongTokens = new Set<string>();
+    for (const { sourceDong, exposDong } of dongPairs) {
+        if (sourceDong !== '' && exposDong !== '') {
+            if (sourceDong !== exposDong) {
+                dongCompatible = false;
+            }
+            allDongTokens.add(sourceDong);
+            continue;
+        }
+        if (sourceDong === '' && exposDong === '') continue;
+        oneSidedDirections.add(
+            exposDong !== '' ? 'EXPOS_ONLY' : 'LDAREG_ONLY'
+        );
+        const presentDong = exposDong || sourceDong;
+        oneSidedDongTokens.add(presentDong);
+        allDongTokens.add(presentDong);
+    }
+    if (
+        oneSidedDirections.size > 1 ||
+        oneSidedDongTokens.size > 1 ||
+        (oneSidedDongTokens.size > 0 &&
+            allDongTokens.size > 1)
+    ) {
+        dongCompatible = false;
+    }
+
+    const allowed =
+        bridgeRequiredCount > 0 &&
+        singleRoot &&
+        singleLdaregBuildingIdentity &&
+        standardExactOneToOne &&
+        sourceRawWitnessConsistent &&
+        sourceWitnessUnique &&
+        exposWitnessOneToOne &&
+        dongCompatible;
+    return {
+        kind: 'EXPOS_PROVIDER_SHAPE_BRIDGE_GATE',
+        allowed,
+        bridgeRequiredCount,
+        singleRoot,
+        singleLdaregBuildingIdentity,
+        standardExactOneToOne,
+        sourceRawWitnessConsistent,
+        sourceWitnessUnique,
+        exposWitnessOneToOne,
+        dongCompatible,
+    };
+}
+
 /**
  * LDAREG 분기 p_items 를 조립한다.
  */
@@ -764,12 +1195,21 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         exposUnits,
         rootIdentity
     );
+    const providerShapeBridge =
+        evaluateExposProviderShapeBridge(
+            dedup.records,
+            canonicalScan.ldaregRows,
+            perPnu.flatMap((scan) => scan.ldaregRows),
+            exposUnits,
+            rootIdentity
+        );
     componentMatchDigest.push(
         {
             kind: 'EXPOS_ROOT_RESOLUTION',
             rows: scopeExpos.rootEvidence,
         },
-        { ...floorHoFallback }
+        { ...floorHoFallback },
+        { ...providerShapeBridge }
     );
     const dedupConflict = dedup.issues.some(
         (issue) => issue.code === 'LDAREG_IDENTITY_CONFLICT'
@@ -812,6 +1252,12 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             ho: record.normalized.ho || null,
             room: record.normalized.room || null,
             registryExternalId: null,
+            providerShapeWitness: canonicalRaw
+                ? providerUnitShapeWitness(
+                      'LDAREG_UNIT',
+                      canonicalRaw as Record<string, unknown>
+                  )
+                : null,
             expectedPnuScope: expectedTargetPnus,
         };
         const decision = matchLdaregUnit({
@@ -822,6 +1268,8 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             propertyUnits,
             unionId,
             allowExposFloorHoFallback: floorHoFallback.allowed,
+            allowProviderShapeBridge:
+                providerShapeBridge.allowed,
         });
         if (decision.kind === 'NO_CHANGE') {
             unitMatchIncomplete = true;

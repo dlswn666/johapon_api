@@ -150,6 +150,16 @@ test('LDAREG 매칭 happy path: 문자열 numeratorText/denominatorText 로 comp
     assert.equal(c.matchedBuildingUnitId, null);
     assert.equal(result.counts.parsedRows, 1);
     assert.deepEqual(result.matchedPropertyUnitIds, [PROP_ID]);
+    const providerBridgeGate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_PROVIDER_SHAPE_BRIDGE_GATE'
+    ) as { allowed: boolean; bridgeRequiredCount: number };
+    assert.deepEqual(providerBridgeGate, {
+        ...providerBridgeGate,
+        allowed: false,
+        bridgeRequiredCount: 0,
+    });
 });
 
 test('미아7 실응답형: 0000 동 sentinel·숫자 층·ratio 없는 0000 placeholder를 분리해 7개 유효 호를 막지 않는다', () => {
@@ -299,6 +309,1036 @@ test('미아7 실응답형: 0000 동 sentinel·숫자 층·ratio 없는 0000 pla
         1
     );
 });
+
+function linkedCandidates(
+    units: Array<{
+        floor: string | null;
+        ho: string;
+        propertyId: string;
+        buildingUnitId: string;
+    }>
+): {
+    buildingUnits: BuildingUnitCandidate[];
+    propertyUnits: PropertyUnitCandidate[];
+} {
+    return {
+        buildingUnits: units.map((unit) => ({
+            id: unit.buildingUnitId,
+            buildingId:
+                '33333333-3333-4333-8333-333333333333',
+            dong: null,
+            floor: unit.floor,
+            ho: unit.ho,
+            registryExternalId: null,
+        })),
+        propertyUnits: units.map((unit) => ({
+            id: unit.propertyId,
+            unionId: 'union-1',
+            buildingUnitId: unit.buildingUnitId,
+            pnu: ANCHOR,
+            isDeleted: false,
+            dong: null,
+            ho: unit.ho,
+        })),
+    };
+}
+
+test('runtime 791-2172: exact 지상N(no suffix)↔EXPOS numeric N을 raw unit로 결속하고 live ratio association을 보존한다', () => {
+    const units = [
+        {
+            floor: '3',
+            ho: '301',
+            numerator: '27.5',
+            propertyId: 'PU-2172-301',
+            buildingUnitId: 'BU-2172-301',
+        },
+        {
+            floor: '5',
+            ho: '501',
+            numerator: '17.26',
+            propertyId: 'PU-2172-501',
+            buildingUnitId: 'BU-2172-501',
+        },
+        {
+            floor: '4',
+            ho: '401',
+            numerator: '19.9',
+            propertyId: 'PU-2172-401',
+            buildingUnitId: 'BU-2172-401',
+        },
+        {
+            floor: '2',
+            ho: '201',
+            numerator: '19.97',
+            propertyId: 'PU-2172-201',
+            buildingUnitId: 'BU-2172-201',
+        },
+        {
+            floor: '2',
+            ho: '202',
+            numerator: '16.87',
+            propertyId: 'PU-2172-202',
+            buildingUnitId: 'BU-2172-202',
+        },
+    ];
+    const candidates = linkedCandidates(
+        units.map((unit) => ({ ...unit, floor: null }))
+    );
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                // 순서를 뒤집어 ratio/order 기반 연결이 아님을 고정한다.
+                ldaregRows: [...units].reverse().map((unit) => ({
+                    pnu: ANCHOR,
+                    agbldgSn: 'MIA7-2172',
+                    buldNm: '월드빌라',
+                    // A↔A와 A↔missing 혼합도 동일 단일 동이면 허용한다.
+                    buldDongNm:
+                        unit.ho === '301'
+                            ? '월드빌라'
+                            : '0000',
+                    buldFloorNm: `지상${unit.floor}`,
+                    buldHoNm: unit.ho,
+                    buldRoomNm: unit.ho,
+                    ldaQotaRate: `${unit.numerator}/121`,
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                })),
+                exposRows: units.map((unit) => ({
+                    mgmBldrgstPk: PK,
+                    dongNm: '월드빌라',
+                    flrGbCd: '20',
+                    flrNo: Number(unit.floor),
+                    hoNm: unit.ho,
+                })),
+            },
+        ],
+        ...candidates,
+        scopeLadfrlAreas: [{ pnu: ANCHOR, area: '121' }],
+        scopeLadfrlTotal: '121',
+    });
+
+    assert.equal(result.blocking, false);
+    assert.equal(result.items.length, 5);
+    const numeratorByProperty = new Map(
+        result.items.map((item) => [
+            item.propertyUnitId,
+            item.components[0].ratioNumerator,
+        ])
+    );
+    assert.deepEqual(
+        [...numeratorByProperty.entries()].sort(),
+        units
+            .map((unit) => [
+                unit.propertyId,
+                unit.numerator,
+            ])
+            .sort()
+    );
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_PROVIDER_SHAPE_BRIDGE_GATE'
+    ) as {
+        allowed: boolean;
+        bridgeRequiredCount: number;
+        sourceWitnessUnique: boolean;
+        exposWitnessOneToOne: boolean;
+    };
+    assert.deepEqual(gate, {
+        ...gate,
+        allowed: true,
+        bridgeRequiredCount: 5,
+        sourceWitnessUnique: true,
+        exposWitnessOneToOne: true,
+    });
+});
+
+test('runtime provider bridge는 root가 같아도 LDAREG building name이 둘이면 닫힌다', () => {
+    const units = [
+        {
+            floor: '2',
+            ho: '201',
+            propertyId: 'PU-BUILDING-A',
+            buildingUnitId: 'BU-BUILDING-A',
+        },
+        {
+            floor: '3',
+            ho: '301',
+            propertyId: 'PU-BUILDING-B',
+            buildingUnitId: 'BU-BUILDING-B',
+        },
+    ];
+    const candidates = linkedCandidates(
+        units.map((unit) => ({ ...unit, floor: null }))
+    );
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                ldaregRows: units.map((unit, index) => ({
+                    pnu: ANCHOR,
+                    agbldgSn: 'MIA7-MIXED',
+                    buldNm: index === 0 ? 'A동' : 'B동',
+                    buldFloorNm: `지상${unit.floor}`,
+                    buldHoNm: unit.ho,
+                    ldaQotaRate: '50/100',
+                    clsSeCode: '0',
+                })),
+                exposRows: units.map((unit) => ({
+                    mgmBldrgstPk: PK,
+                    dongNm: '단일동',
+                    flrGbCd: '20',
+                    flrNo: Number(unit.floor),
+                    hoNm: unit.ho,
+                })),
+            },
+        ],
+        ...candidates,
+        scopeLadfrlAreas: [{ pnu: ANCHOR, area: '100' }],
+        scopeLadfrlTotal: '100',
+    });
+    assert.equal(
+        result.replicationEvidence,
+        null,
+        'provider scope all-row building identity proof가 먼저 차단한다'
+    );
+    assert.equal(result.blocking, true);
+    assert.equal(result.items.length, 0);
+});
+
+for (const rawFloors of [
+    ['지상2', '지상02'],
+    ['지상02', '지상2'],
+] as const) {
+    test(`runtime provider bridge는 dedup raw member 전수 witness가 다르면 순서와 무관하게 닫힌다 (${rawFloors.join(
+        '→'
+    )})`, () => {
+        const candidates = linkedCandidates([
+            {
+                floor: null,
+                ho: '201',
+                propertyId: 'PU-RAW-MEMBER-201',
+                buildingUnitId: 'BU-RAW-MEMBER-201',
+            },
+        ]);
+        const result = assemble({
+            unionId: 'union-1',
+            scannedPnus: [ANCHOR],
+            rootIdentity: PK,
+            perPnu: [
+                {
+                    pnu: ANCHOR,
+                    ldaregRows: rawFloors.map((floor) => ({
+                        pnu: ANCHOR,
+                        agbldgSn: 'MIA7-RAW-MEMBER',
+                        buldNm: 'MIA7-RAW-MEMBER',
+                        buldFloorNm: floor,
+                        buldHoNm: '201',
+                        buldRoomNm: '201',
+                        ldaQotaRate: '20/121',
+                        clsSeCode: '0',
+                        clsSeCodeNm: '현재',
+                    })),
+                    exposRows: [
+                        {
+                            mgmBldrgstPk: PK,
+                            flrGbCd: '20',
+                            flrNo: 2,
+                            hoNm: '201',
+                        },
+                    ],
+                },
+            ],
+            ...candidates,
+            scopeLadfrlAreas: [
+                { pnu: ANCHOR, area: '121' },
+            ],
+            scopeLadfrlTotal: '121',
+        });
+        const gate = result.componentMatchDigest.find(
+            (entry) =>
+                (entry as { kind?: string }).kind ===
+                'EXPOS_PROVIDER_SHAPE_BRIDGE_GATE'
+        ) as {
+            allowed: boolean;
+            sourceRawWitnessConsistent: boolean;
+        };
+        assert.equal(
+            gate.sourceRawWitnessConsistent,
+            false
+        );
+        assert.equal(gate.allowed, false);
+        assert.equal(result.blocking, true);
+        assert.equal(result.items.length, 0);
+    });
+}
+
+for (const placeholderFirst of [false, true]) {
+    test(`runtime provider bridge는 ${
+        placeholderFirst ? '앞' : '뒤'
+    }의 missing placeholder까지 단일 building identity가 아니면 닫힌다`, () => {
+        const candidates = linkedCandidates([
+            {
+                floor: null,
+                ho: '201',
+                propertyId: 'PU-PLACEHOLDER-201',
+                buildingUnitId: 'BU-PLACEHOLDER-201',
+            },
+        ]);
+        const validRow = {
+            pnu: ANCHOR,
+            agbldgSn: 'MIA7-PLACEHOLDER-A',
+            buldNm: 'MIA7-PLACEHOLDER-A',
+            buldDongNm: '0000',
+            buldFloorNm: '지상2',
+            buldHoNm: '201',
+            buldRoomNm: '201',
+            ldaQotaRate: '20/121',
+            clsSeCode: '0',
+            clsSeCodeNm: '현재',
+        };
+        const placeholderRow = {
+            pnu: ANCHOR,
+            agbldgSn: 'MIA7-PLACEHOLDER-B',
+            buldNm: 'MIA7-PLACEHOLDER-B',
+            buldDongNm: '0000',
+            buldFloorNm: '0000',
+            buldHoNm: '0000',
+            buldRoomNm: '0000',
+            ldaQotaRate: '',
+            clsSeCode: '0',
+            clsSeCodeNm: '현재',
+        };
+        const result = assemble({
+            unionId: 'union-1',
+            scannedPnus: [ANCHOR],
+            rootIdentity: PK,
+            perPnu: [
+                {
+                    pnu: ANCHOR,
+                    ldaregRows: placeholderFirst
+                        ? [placeholderRow, validRow]
+                        : [validRow, placeholderRow],
+                    exposRows: [
+                        {
+                            mgmBldrgstPk: PK,
+                            flrGbCd: '20',
+                            flrNo: 2,
+                            hoNm: '201',
+                        },
+                    ],
+                },
+            ],
+            ...candidates,
+            scopeLadfrlAreas: [
+                { pnu: ANCHOR, area: '121' },
+            ],
+            scopeLadfrlTotal: '121',
+        });
+        assert.equal(
+            result.replicationEvidence,
+            null,
+            'placeholder도 provider scope all-row identity에 포함한다'
+        );
+        assert.equal(result.blocking, true);
+        assert.equal(result.items.length, 0);
+    });
+}
+
+for (const identityVariant of [
+    {
+        name: '부지번 building name의 NFKC variant',
+        canonical: {
+            agbldgSn: '1' as unknown,
+            buldNm: 'A' as unknown,
+        },
+        attached: {
+            agbldgSn: '1' as unknown,
+            buldNm: 'Ａ' as unknown,
+        },
+    },
+    {
+        name: '부지번 aggregate serial의 numeric variant',
+        canonical: {
+            agbldgSn: '1' as unknown,
+            buldNm: 'A' as unknown,
+        },
+        attached: {
+            agbldgSn: 1 as unknown,
+            buldNm: 'A' as unknown,
+        },
+    },
+] as const) {
+    test(`runtime provider bridge는 ${identityVariant.name}를 exact building identity로 접지 않는다`, () => {
+        const sibling = '1168010100107360025';
+        const row = (
+            pnu: string,
+            identity: {
+                agbldgSn: unknown;
+                buldNm: unknown;
+            }
+        ) =>
+            ({
+                pnu,
+                agbldgSn: identity.agbldgSn,
+                buldNm: identity.buldNm,
+                buldFloorNm: '지상2',
+                buldHoNm: '201',
+                buldRoomNm: '201',
+                ldaQotaRate: '20/121',
+                clsSeCode: '0',
+                clsSeCodeNm: '현재',
+            }) as unknown as LdaregBranchInput['perPnu'][number]['ldaregRows'][number];
+        const result = assemble({
+            unionId: 'union-1',
+            scannedPnus: [ANCHOR, sibling],
+            rootIdentity: PK,
+            perPnu: [
+                {
+                    pnu: ANCHOR,
+                    ldaregRows: [
+                        row(
+                            ANCHOR,
+                            identityVariant.canonical
+                        ),
+                    ],
+                    exposRows: [
+                        {
+                            mgmBldrgstPk: PK,
+                            flrGbCd: '20',
+                            flrNo: 2,
+                            hoNm: '201',
+                        },
+                    ],
+                },
+                {
+                    pnu: sibling,
+                    ldaregRows: [
+                        row(
+                            sibling,
+                            identityVariant.attached
+                        ),
+                    ],
+                    exposRows: [],
+                },
+            ],
+            ...linkedCandidates([
+                {
+                    floor: null,
+                    ho: '201',
+                    propertyId: 'PU-IDENTITY-201',
+                    buildingUnitId: 'BU-IDENTITY-201',
+                },
+            ]),
+            scopeLadfrlAreas: [
+                { pnu: ANCHOR, area: '60' },
+                { pnu: sibling, area: '61' },
+            ],
+            scopeLadfrlTotal: '121',
+        });
+        assert.equal(
+            result.replicationEvidence,
+            null,
+            'provider v3 replica key가 대표/부지번 raw string identity variant를 먼저 차단한다'
+        );
+        assert.equal(result.blocking, true);
+        assert.equal(result.items.length, 0);
+    });
+}
+
+for (const identityVariant of [
+    {
+        name: 'NFKC로만 같아지는 building name',
+        buildingNames: ['A', 'Ａ'] as const,
+        aggregateSerials: ['1', '1'] as const,
+    },
+    {
+        name: 'string/number aggregate serial',
+        buildingNames: ['A', 'A'] as const,
+        aggregateSerials: ['1', 1] as const,
+    },
+] as const) {
+    test(`runtime provider bridge gate는 단일 PNU의 ${identityVariant.name}을 exact identity로 접지 않는다`, () => {
+        const units = [
+            {
+                floor: '2',
+                ho: '201',
+                propertyId: 'PU-IDENTITY-GATE-201',
+                buildingUnitId: 'BU-IDENTITY-GATE-201',
+            },
+            {
+                floor: '3',
+                ho: '301',
+                propertyId: 'PU-IDENTITY-GATE-301',
+                buildingUnitId: 'BU-IDENTITY-GATE-301',
+            },
+        ] as const;
+        const result = assemble({
+            unionId: 'union-1',
+            scannedPnus: [ANCHOR],
+            rootIdentity: PK,
+            perPnu: [
+                {
+                    pnu: ANCHOR,
+                    ldaregRows: units.map(
+                        (unit, index) =>
+                            ({
+                                pnu: ANCHOR,
+                                agbldgSn:
+                                    identityVariant
+                                        .aggregateSerials[index],
+                                buldNm:
+                                    identityVariant
+                                        .buildingNames[index],
+                                buldFloorNm: `지상${unit.floor}`,
+                                buldHoNm: unit.ho,
+                                buldRoomNm: unit.ho,
+                                ldaQotaRate: '50/100',
+                                clsSeCode: '0',
+                                clsSeCodeNm: '현재',
+                            }) as unknown as LdaregBranchInput['perPnu'][number]['ldaregRows'][number]
+                    ),
+                    exposRows: units.map((unit) => ({
+                        mgmBldrgstPk: PK,
+                        flrGbCd: '20',
+                        flrNo: Number(unit.floor),
+                        hoNm: unit.ho,
+                    })),
+                },
+            ],
+            ...linkedCandidates(
+                units.map((unit) => ({
+                    ...unit,
+                    floor: null,
+                }))
+            ),
+            scopeLadfrlAreas: [
+                { pnu: ANCHOR, area: '100' },
+            ],
+            scopeLadfrlTotal: '100',
+        });
+        assert.equal(
+            result.replicationEvidence,
+            null,
+            'single-PNU raw identity variant도 shared proof에서 차단한다'
+        );
+        assert.equal(result.blocking, true);
+        assert.equal(result.items.length, 0);
+    });
+}
+
+for (const invalidDongCase of [
+    {
+        name: '양쪽 nonempty 동이 A↔B로 다름',
+        ldaregDongs: ['A', 'A'],
+        exposDongs: ['B', 'B'],
+    },
+    {
+        name: 'one-sided 방향이 EXPOS_ONLY와 LDAREG_ONLY로 섞임',
+        ldaregDongs: ['A', undefined],
+        exposDongs: [undefined, 'A'],
+    },
+    {
+        name: 'one-sided가 있는데 전체 nonempty 동이 A/B 둘임',
+        ldaregDongs: ['A', undefined],
+        exposDongs: ['A', 'B'],
+    },
+] as const) {
+    test(`runtime provider bridge dong parity는 ${invalidDongCase.name}이면 닫힌다`, () => {
+        const units = [
+            {
+                floor: '2',
+                ho: '201',
+                propertyId: 'PU-DONG-201',
+                buildingUnitId: 'BU-DONG-201',
+            },
+            {
+                floor: '3',
+                ho: '301',
+                propertyId: 'PU-DONG-301',
+                buildingUnitId: 'BU-DONG-301',
+            },
+        ] as const;
+        const result = assemble({
+            unionId: 'union-1',
+            scannedPnus: [ANCHOR],
+            rootIdentity: PK,
+            perPnu: [
+                {
+                    pnu: ANCHOR,
+                    ldaregRows: units.map(
+                        (unit, index) => ({
+                            pnu: ANCHOR,
+                            agbldgSn: 'MIA7-DONG-PARITY',
+                            buldNm: 'MIA7-DONG-PARITY',
+                            buldDongNm:
+                                invalidDongCase
+                                    .ldaregDongs[index],
+                            buldFloorNm: `지상${unit.floor}`,
+                            buldHoNm: unit.ho,
+                            buldRoomNm: unit.ho,
+                            ldaQotaRate: '50/100',
+                            clsSeCode: '0',
+                            clsSeCodeNm: '현재',
+                        })
+                    ),
+                    exposRows: units.map(
+                        (unit, index) => ({
+                            mgmBldrgstPk: PK,
+                            dongNm:
+                                invalidDongCase
+                                    .exposDongs[index],
+                            flrGbCd: '20',
+                            flrNo: Number(unit.floor),
+                            hoNm: unit.ho,
+                        })
+                    ),
+                },
+            ],
+            ...linkedCandidates(
+                units.map((unit) => ({
+                    ...unit,
+                    floor: null,
+                }))
+            ),
+            scopeLadfrlAreas: [
+                { pnu: ANCHOR, area: '100' },
+            ],
+            scopeLadfrlTotal: '100',
+        });
+        const gate = result.componentMatchDigest.find(
+            (entry) =>
+                (entry as { kind?: string }).kind ===
+                'EXPOS_PROVIDER_SHAPE_BRIDGE_GATE'
+        ) as {
+            allowed: boolean;
+            dongCompatible: boolean;
+        };
+        assert.equal(gate.dongCompatible, false);
+        assert.equal(gate.allowed, false);
+        assert.equal(result.blocking, true);
+        assert.equal(result.items.length, 0);
+    });
+}
+
+test('runtime provider bridge는 standard exact 소비 뒤 extra residual EXPOS witness가 남으면 닫힌다', () => {
+    const candidates = linkedCandidates([
+        {
+            floor: '1',
+            ho: '101',
+            propertyId: 'PU-EXACT-101',
+            buildingUnitId: 'BU-EXACT-101',
+        },
+        {
+            floor: null,
+            ho: 'B1',
+            propertyId: 'PU-BRIDGE-B1',
+            buildingUnitId: 'BU-BRIDGE-B1',
+        },
+    ]);
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                ldaregRows: [
+                    {
+                        pnu: ANCHOR,
+                        agbldgSn: 'MIA7-EXTRA-RESIDUAL',
+                        buldNm: 'MIA7-EXTRA-RESIDUAL',
+                        buldFloorNm: '1',
+                        buldHoNm: '101',
+                        ldaQotaRate: '60/100',
+                        clsSeCode: '0',
+                    },
+                    {
+                        pnu: ANCHOR,
+                        agbldgSn: 'MIA7-EXTRA-RESIDUAL',
+                        buldNm: 'MIA7-EXTRA-RESIDUAL',
+                        buldFloorNm: '지하',
+                        buldHoNm: '비1',
+                        ldaQotaRate: '40/100',
+                        clsSeCode: '0',
+                    },
+                ],
+                exposRows: [
+                    {
+                        mgmBldrgstPk: PK,
+                        flrGbCd: '20',
+                        flrNo: 1,
+                        hoNm: '101',
+                    },
+                    {
+                        mgmBldrgstPk: PK,
+                        flrGbCd: '10',
+                        flrNo: 1,
+                        hoNm: 'B1',
+                    },
+                    {
+                        mgmBldrgstPk: PK,
+                        flrGbCd: '10',
+                        flrNo: 1,
+                        hoNm: 'B2',
+                    },
+                ],
+            },
+        ],
+        ...candidates,
+        scopeLadfrlAreas: [{ pnu: ANCHOR, area: '100' }],
+        scopeLadfrlTotal: '100',
+    });
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_PROVIDER_SHAPE_BRIDGE_GATE'
+    ) as {
+        allowed: boolean;
+        standardExactOneToOne: boolean;
+        exposWitnessOneToOne: boolean;
+    };
+    assert.equal(gate.standardExactOneToOne, true);
+    assert.equal(gate.exposWitnessOneToOne, false);
+    assert.equal(gate.allowed, false);
+    assert.equal(result.blocking, true);
+    assert.deepEqual(
+        result.items.map((item) => item.propertyUnitId),
+        ['PU-EXACT-101']
+    );
+});
+
+test('runtime 791-2188: 일반 4호는 기존 exact 경로, B1/B2만 exact 지하/비n bridge를 사용한다', () => {
+    const units = [
+        {
+            floor: '1',
+            ho: '101',
+            lFloor: '1',
+            lHo: '101',
+            numerator: '40',
+        },
+        {
+            floor: '2',
+            ho: '201',
+            lFloor: '2',
+            lHo: '201',
+            numerator: '35',
+        },
+        {
+            floor: '3',
+            ho: '301',
+            lFloor: '3',
+            lHo: '301',
+            numerator: '45',
+        },
+        {
+            floor: '4',
+            ho: '401',
+            lFloor: '4',
+            lHo: '401',
+            numerator: '51.27',
+        },
+        {
+            floor: '1',
+            ho: 'B1',
+            lFloor: '지하',
+            lHo: '비1',
+            numerator: '20.18',
+        },
+        {
+            floor: '1',
+            ho: 'B2',
+            lFloor: '지하',
+            lHo: '비2',
+            numerator: '29.55',
+        },
+    ].map((unit, index) => ({
+        ...unit,
+        propertyId: `PU-2188-${unit.ho}`,
+        buildingUnitId: `BU-2188-${unit.ho}`,
+        dbFloor: index === 0 ? '1' : null,
+    }));
+    const candidates = linkedCandidates(
+        units.map((unit) => ({
+            ...unit,
+            floor: unit.dbFloor,
+        }))
+    );
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                ldaregRows: units.map((unit) => ({
+                    pnu: ANCHOR,
+                    agbldgSn: 'MIA7-2188',
+                    buldNm: 'MIA7-2188',
+                    // standard FH의 A↔missing과 bridge의 A↔A 혼합 parity.
+                    buldDongNm:
+                        unit.ho === '201' ? undefined : 'A',
+                    buldFloorNm: unit.lFloor,
+                    buldHoNm: unit.lHo,
+                    buldRoomNm: unit.lHo,
+                    ldaQotaRate: `${unit.numerator}/221`,
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                })),
+                exposRows: units.map((unit) => ({
+                    mgmBldrgstPk: PK,
+                    dongNm: 'A',
+                    flrGbCd: unit.ho.startsWith('B')
+                        ? '10'
+                        : '20',
+                    flrNo: Number(unit.floor),
+                    hoNm: unit.ho,
+                })),
+            },
+        ],
+        ...candidates,
+        scopeLadfrlAreas: [{ pnu: ANCHOR, area: '221' }],
+        scopeLadfrlTotal: '221',
+    });
+
+    assert.equal(result.blocking, false);
+    assert.equal(result.items.length, 6);
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_PROVIDER_SHAPE_BRIDGE_GATE'
+    ) as { allowed: boolean; bridgeRequiredCount: number };
+    assert.equal(gate.allowed, true);
+    assert.equal(gate.bridgeRequiredCount, 2);
+    const floorHoGate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_FLOOR_HO_FALLBACK_GATE'
+    ) as { allowed: boolean };
+    assert.equal(
+        floorHoGate.allowed,
+        false,
+        'mixed dong은 legacy FH gate가 아니라 provider scope parity gate로 증명한다'
+    );
+    const numeratorByProperty = new Map(
+        result.items.map((item) => [
+            item.propertyUnitId,
+            item.components[0].ratioNumerator,
+        ])
+    );
+    assert.equal(numeratorByProperty.get('PU-2188-B1'), '20.18');
+    assert.equal(numeratorByProperty.get('PU-2188-B2'), '29.55');
+});
+
+test('runtime 791-2191: LDAREG 숫자/0000 및 지/0000을 EXPOS N층·지층 exact tuple로 바꿔 기존 building link를 해소한다', () => {
+    const units = [
+        {
+            floor: '1',
+            ho: '지층',
+            lFloor: '지',
+            numerator: '33.67',
+            dbFloor: null,
+        },
+        {
+            floor: '1',
+            ho: '1층',
+            lFloor: '1',
+            numerator: '33.67',
+            dbFloor: '1',
+        },
+        {
+            floor: '2',
+            ho: '2층',
+            lFloor: '2',
+            numerator: '33.67',
+            dbFloor: null,
+        },
+    ].map((unit) => ({
+        ...unit,
+        propertyId: `PU-2191-${unit.ho}`,
+        buildingUnitId: `BU-2191-${unit.ho}`,
+    }));
+    const candidates = linkedCandidates(
+        units.map((unit) => ({
+            ...unit,
+            floor: unit.dbFloor,
+        }))
+    );
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                ldaregRows: units.map((unit) => ({
+                    pnu: ANCHOR,
+                    agbldgSn: 'MIA7-2191',
+                    buldNm: 'MIA7-2191',
+                    buldFloorNm: unit.lFloor,
+                    buldHoNm: '0000',
+                    buldRoomNm: '0000',
+                    ldaQotaRate: `${unit.numerator}/101`,
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                })),
+                exposRows: units.map((unit) => ({
+                    mgmBldrgstPk: PK,
+                    flrGbCd:
+                        unit.ho === '지층' ? '10' : '20',
+                    flrNo: Number(unit.floor),
+                    hoNm: unit.ho,
+                })),
+            },
+        ],
+        ...candidates,
+        scopeLadfrlAreas: [{ pnu: ANCHOR, area: '101' }],
+        scopeLadfrlTotal: '101',
+    });
+
+    assert.equal(result.blocking, false);
+    assert.equal(result.items.length, 3);
+    assert.deepEqual(
+        result.items.map((item) => item.propertyUnitId).sort(),
+        units.map((unit) => unit.propertyId).sort()
+    );
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_PROVIDER_SHAPE_BRIDGE_GATE'
+    ) as { allowed: boolean; bridgeRequiredCount: number };
+    assert.equal(gate.allowed, true);
+    assert.equal(gate.bridgeRequiredCount, 3);
+});
+
+for (const invalidCase of [
+    {
+        name: '2172 LDAREG에 층 접미사가 붙음',
+        denominator: '121',
+        ldareg: {
+            agbldgSn: 'NEAR-MISS',
+            buldNm: 'NEAR-MISS',
+            buldFloorNm: '지상2층',
+            buldHoNm: '201',
+            ldaQotaRate: '20/121',
+            clsSeCode: '0',
+        },
+        expos: {
+            flrGbCd: '20',
+            flrNo: 2,
+            hoNm: '201',
+        },
+        dbHo: '201',
+    },
+    {
+        name: '2188 Bn과 비n suffix가 다름',
+        denominator: '221',
+        ldareg: {
+            agbldgSn: 'NEAR-MISS',
+            buldNm: 'NEAR-MISS',
+            buldFloorNm: '지하',
+            buldHoNm: '비2',
+            ldaQotaRate: '20/221',
+            clsSeCode: '0',
+        },
+        expos: {
+            flrGbCd: '10',
+            flrNo: 1,
+            hoNm: 'B1',
+        },
+        dbHo: 'B1',
+    },
+    {
+        name: '2188 EXPOS B2 floor가 실측 exact 1이 아님',
+        denominator: '221',
+        ldareg: {
+            agbldgSn: 'NEAR-MISS',
+            buldNm: 'NEAR-MISS',
+            buldFloorNm: '지하',
+            buldHoNm: '비2',
+            ldaQotaRate: '20/221',
+            clsSeCode: '0',
+        },
+        expos: {
+            flrGbCd: '10',
+            flrNo: 2,
+            hoNm: 'B2',
+        },
+        dbHo: 'B2',
+    },
+    {
+        name: '2191 LDAREG basement floor가 exact 지가 아님',
+        denominator: '101',
+        ldareg: {
+            agbldgSn: 'NEAR-MISS',
+            buldNm: 'NEAR-MISS',
+            buldFloorNm: '지층',
+            buldHoNm: '0000',
+            ldaQotaRate: '20/101',
+            clsSeCode: '0',
+        },
+        expos: {
+            flrGbCd: '10',
+            flrNo: 1,
+            hoNm: '지층',
+        },
+        dbHo: '지층',
+    },
+] as const) {
+    test(`runtime provider bridge는 ${invalidCase.name}이면 fail-closed한다`, () => {
+        const candidates = linkedCandidates([
+            {
+                floor: null,
+                ho: invalidCase.dbHo,
+                propertyId: 'PU-NEAR-MISS',
+                buildingUnitId: 'BU-NEAR-MISS',
+            },
+        ]);
+        const result = assemble({
+            unionId: 'union-1',
+            scannedPnus: [ANCHOR],
+            rootIdentity: PK,
+            perPnu: [
+                {
+                    pnu: ANCHOR,
+                    ldaregRows: [
+                        { pnu: ANCHOR, ...invalidCase.ldareg },
+                    ],
+                    exposRows: [
+                        {
+                            mgmBldrgstPk: PK,
+                            ...invalidCase.expos,
+                        },
+                    ],
+                },
+            ],
+            ...candidates,
+            scopeLadfrlAreas: [
+                {
+                    pnu: ANCHOR,
+                    area: invalidCase.denominator,
+                },
+            ],
+            scopeLadfrlTotal: invalidCase.denominator,
+        });
+        assert.equal(result.blocking, true);
+        assert.equal(result.items.length, 0);
+        assert.ok(
+            result.issues.some(
+                (issue) =>
+                    issue.code === 'PROPERTY_UNIT_NOT_FOUND'
+            )
+        );
+    });
+}
 
 test('미아7 791-2280/2281 실응답형: base EXPOS 4+attached zero와 basis child root로 linked 물건 4호를 매칭한다', () => {
     const basePnu = '1130510100107912280';
@@ -472,6 +1512,11 @@ test('미아7 791-2280/2281 실응답형: base EXPOS 4+attached zero와 basis ch
     assert.match(
         result.replicationEvidence?.rowMultisetDigest ?? '',
         /^[0-9a-f]{64}$/
+    );
+    assert.equal(
+        result.replicationEvidence?.rowMultisetDigest,
+        '1e525d17e850e58dae3f9ae6eaf3c42bb6e6b581c94441dcdd72a448b35d65cc',
+        'provider-null 2280 legacy v2 replica digest는 byte-stable해야 한다'
     );
     assert.equal(
         result.issues.filter(
@@ -1367,6 +2412,206 @@ test('LDAREG replica multiset은 일부 누락·ratio/state 변조·한쪽 dupli
     assert.equal(scan([row(sibling, { clsSeCode: '2', clsSeCodeNm: '말소' })]).ok, false, 'state 변조');
     assert.equal(scan([row(sibling), row(sibling)]).ok, false, 'multiset 중복 개수 변조');
 });
+
+for (const [canonicalFloor, attachedFloor] of [
+    ['지상2', '지상02'],
+    ['지상02', '지상2'],
+] as const) {
+    test(`LDAREG replica는 provider witness recognized 상태 변조를 양방향 차단한다 (${canonicalFloor}↔${attachedFloor})`, () => {
+        const sibling = '1168010100107360025';
+        const row = (pnu: string, floor: string) => ({
+            pnu,
+            agbldgSn: 'MIA7-REPLICA-SHAPE',
+            buldNm: 'MIA7-REPLICA-SHAPE',
+            buldFloorNm: floor,
+            buldHoNm: '201',
+            buldRoomNm: '201',
+            ldaQotaRate: '20/121',
+            clsSeCode: '0',
+            clsSeCodeNm: '현재',
+        });
+        const replication = validateLdaregReplication(
+            [ANCHOR, sibling],
+            [
+                {
+                    pnu: ANCHOR,
+                    ldaregRows: [
+                        row(ANCHOR, canonicalFloor),
+                    ],
+                    exposRows: [],
+                },
+                {
+                    pnu: sibling,
+                    ldaregRows: [
+                        row(sibling, attachedFloor),
+                    ],
+                    exposRows: [],
+                },
+            ],
+            ANCHOR
+        );
+        assert.equal(replication.ok, false);
+
+        const result = assemble({
+            unionId: 'union-1',
+            scannedPnus: [ANCHOR, sibling],
+            rootIdentity: PK,
+            perPnu: [
+                {
+                    pnu: ANCHOR,
+                    ldaregRows: [
+                        row(ANCHOR, canonicalFloor),
+                    ],
+                    exposRows: [
+                        {
+                            mgmBldrgstPk: PK,
+                            flrGbCd: '20',
+                            flrNo: 2,
+                            hoNm: '201',
+                        },
+                    ],
+                },
+                {
+                    pnu: sibling,
+                    ldaregRows: [
+                        row(sibling, attachedFloor),
+                    ],
+                    exposRows: [],
+                },
+            ],
+            ...linkedCandidates([
+                {
+                    floor: null,
+                    ho: '201',
+                    propertyId: 'PU-REPLICA-SHAPE-201',
+                    buildingUnitId:
+                        'BU-REPLICA-SHAPE-201',
+                },
+            ]),
+            scopeLadfrlAreas: [
+                { pnu: ANCHOR, area: '60' },
+                { pnu: sibling, area: '61' },
+            ],
+            scopeLadfrlTotal: '121',
+        });
+        assert.equal(result.replicationEvidence, null);
+        assert.equal(result.blocking, true);
+        assert.equal(result.items.length, 0);
+    });
+}
+
+for (const variant of [
+    {
+        name: 'attached standard v2 row의 NFKC building name',
+        mutate: (rows: Array<Record<string, unknown>>) => {
+            rows[0].buldNm = 'Ａ';
+        },
+    },
+    {
+        name: 'attached placeholder의 numeric aggregate serial',
+        mutate: (rows: Array<Record<string, unknown>>) => {
+            rows[2].agbldgSn = 1;
+        },
+    },
+] as const) {
+    test(`mixed standard+bridge replica는 ${variant.name}도 all-row proof에서 차단한다`, () => {
+        const sibling = '1168010100107360025';
+        const rows = (pnu: string) =>
+            [
+                {
+                    pnu,
+                    agbldgSn: '1',
+                    buldNm: 'A',
+                    buldFloorNm: '1',
+                    buldHoNm: '101',
+                    buldRoomNm: '101',
+                    ldaQotaRate: '60/100',
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                },
+                {
+                    pnu,
+                    agbldgSn: '1',
+                    buldNm: 'A',
+                    buldFloorNm: '지하',
+                    buldHoNm: '비1',
+                    buldRoomNm: '비1',
+                    ldaQotaRate: '40/100',
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                },
+                {
+                    pnu,
+                    agbldgSn: '1',
+                    buldNm: 'A',
+                    buldDongNm: '0000',
+                    buldFloorNm: '0000',
+                    buldHoNm: '0000',
+                    buldRoomNm: '0000',
+                    ldaQotaRate: '',
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                },
+            ] as Array<Record<string, unknown>>;
+        const baseRows = rows(ANCHOR);
+        const attachedRows = rows(sibling);
+        variant.mutate(attachedRows);
+        const result = assemble({
+            unionId: 'union-1',
+            scannedPnus: [ANCHOR, sibling],
+            rootIdentity: PK,
+            perPnu: [
+                {
+                    pnu: ANCHOR,
+                    ldaregRows:
+                        baseRows as LdaregBranchInput['perPnu'][number]['ldaregRows'],
+                    exposRows: [
+                        {
+                            mgmBldrgstPk: PK,
+                            flrGbCd: '20',
+                            flrNo: 1,
+                            hoNm: '101',
+                        },
+                        {
+                            mgmBldrgstPk: PK,
+                            flrGbCd: '10',
+                            flrNo: 1,
+                            hoNm: 'B1',
+                        },
+                    ],
+                },
+                {
+                    pnu: sibling,
+                    ldaregRows:
+                        attachedRows as LdaregBranchInput['perPnu'][number]['ldaregRows'],
+                    exposRows: [],
+                },
+            ],
+            ...linkedCandidates([
+                {
+                    floor: '1',
+                    ho: '101',
+                    propertyId: 'PU-MIXED-PROOF-101',
+                    buildingUnitId: 'BU-MIXED-PROOF-101',
+                },
+                {
+                    floor: null,
+                    ho: 'B1',
+                    propertyId: 'PU-MIXED-PROOF-B1',
+                    buildingUnitId: 'BU-MIXED-PROOF-B1',
+                },
+            ]),
+            scopeLadfrlAreas: [
+                { pnu: ANCHOR, area: '60' },
+                { pnu: sibling, area: '40' },
+            ],
+            scopeLadfrlTotal: '100',
+        });
+        assert.equal(result.replicationEvidence, null);
+        assert.equal(result.blocking, true);
+        assert.equal(result.items.length, 0);
+    });
+}
 
 test('canonical expos source는 linked base의 nonzero exact dataset만 허용하고 attached zero는 무시한다', () => {
     const sibling = '1168010100107360025';
