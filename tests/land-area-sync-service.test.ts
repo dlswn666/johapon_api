@@ -22,10 +22,10 @@ import {
     MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_MANIFEST_DIGEST,
     MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_SCOPE_DIGEST,
     MIA_SEVEN_DEVELOPMENT_UNION_ID,
-    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
 } from '../src/security/development-land-area-full-refresh-policy';
 
 const ANCHOR = '1168010100107360024';
+const FORMER_NO_DATA_PNU = '1130510100107913568';
 const PROP_ID = '11111111-1111-4111-8111-111111111111';
 const PK = '1002003004005';
 const DETACHED = HOUSING_PURPOSE_ALLOWLIST.find((p) => p.category === 'DETACHED')!;
@@ -556,7 +556,7 @@ test('DEV 전체 갱신 분류 conflict parcel singleton은 DB_RESOLVER가 아�
     assert.deepEqual(prepared.scannedPnus, [ANCHOR]);
 });
 
-test('DEV 전체 갱신 title COMPLETE_ZERO는 DB singleton만으로 synthetic component를 만들지 않는다', async () => {
+test('DEV 전체 갱신 title COMPLETE_ZERO + exact DB singleton은 component를 위조하지 않고 별도 공식 parcel snapshot을 만든다', async () => {
     const spy = emptySpy();
     const marker = developmentFullRefreshMarker();
     const deps = makeDeps({
@@ -594,22 +594,50 @@ test('DEV 전체 갱신 title COMPLETE_ZERO는 DB singleton만으로 synthetic c
         deps,
     });
 
-    assert.equal(spy.freezeCalls, 0);
+    assert.equal(spy.freezeCalls, 1);
     assert.equal(spy.applyCalls, 0);
     assert.deepEqual(spy.terminalCalls, [
         {
             status: 'COMPLETED',
-            scopeState: 'REVIEW_REQUIRED',
+            scopeState:
+                'SINGLE_SCOPE_CONFIRMATION_REQUIRED',
             outcome: 'REVIEW_REQUIRED',
         },
     ]);
+    const snapshot =
+        spy.frozenSnapshots[0].scopeSnapshot;
+    assert.equal(
+        snapshot.developmentFullRefreshScopeResolution,
+        undefined
+    );
+    assert.deepEqual(
+        snapshot.developmentFullRefreshParcelResolution,
+        {
+            source:
+                'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON',
+            canonicalPnu: ANCHOR,
+            memberPnus: [ANCHOR],
+            officialParcelDigest:
+                snapshot
+                    .developmentFullRefreshParcelResolution
+                    ?.officialParcelDigest,
+            manifestDigest: marker.manifestDigest,
+            scopeDigest: marker.scopeDigest,
+        }
+    );
+    assert.equal(
+        'managementPk' in
+            (snapshot.developmentFullRefreshParcelResolution ??
+                {}),
+        false
+    );
     assert.deepEqual(
         spy.resolverParams[0].p_root_mgm_bldrgst_pks,
         []
     );
 });
 
-test('DEV repo-pinned 3568의 exact fresh zero는 MANUAL 값을 계산에 쓰지 않고 7호 VERIFIED_NO_DATA no-op으로 종결한다', async () => {
+test('과거 no-data로 고정했던 3568은 7호실을 parcel singleton으로 오인하지 않고 공식 재조회 REVIEW로 남긴다', async () => {
     const spy = emptySpy();
     const marker = developmentFullRefreshMarker();
     const propertyUnitIds = Array.from(
@@ -632,7 +660,7 @@ test('DEV repo-pinned 3568의 exact fresh zero는 MANUAL 값을 계산에 쓰지
             dbState: 'NO_EVIDENCE',
             rootBuildingIdentities: [],
             componentPnus: [
-                MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
+                FORMER_NO_DATA_PNU,
             ],
             linkedBasePnus: [],
             linkedPnus: [],
@@ -661,7 +689,7 @@ test('DEV repo-pinned 3568의 exact fresh zero는 MANUAL 값을 계산에 쓰지
             id,
             unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
             buildingUnitId: null,
-            pnu: MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
+            pnu: FORMER_NO_DATA_PNU,
             isDeleted: false,
             dong: null,
             ho: null,
@@ -671,7 +699,7 @@ test('DEV repo-pinned 3568의 exact fresh zero는 MANUAL 값을 계산에 쓰지
             landAreaSync: {
                 schemaVersion: 2,
                 anchorPnu:
-                    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
+                    FORMER_NO_DATA_PNU,
                 sourceDiscoveryJobId: null,
                 developmentFullRefresh: marker,
             },
@@ -685,40 +713,16 @@ test('DEV repo-pinned 3568의 exact fresh zero는 MANUAL 값을 계산에 쓰지
         deps,
     });
 
-    assert.equal(spy.freezeCalls, 1);
+    assert.equal(spy.freezeCalls, 0);
     assert.equal(spy.applyCalls, 0);
     assert.deepEqual(spy.terminalCalls, [
         {
             status: 'COMPLETED',
-            scopeState: 'LINKED_SCOPE_RESOLVED',
-            outcome: 'NO_DATA',
+            scopeState: 'REVIEW_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
         },
     ]);
-    assert.deepEqual(spy.terminalCounts, [
-        {
-            updatedPropertyUnits: 0,
-            unchangedPropertyUnits: 7,
-        },
-    ]);
-    const snapshot =
-        spy.frozenSnapshots[0].scopeSnapshot;
-    assert.equal(
-        snapshot.verifiedNoDataEvidence?.kind,
-        'VERIFIED_NO_DATA'
-    );
-    assert.deepEqual(snapshot.proposedLandAreas, []);
-    assert.deepEqual(
-        snapshot.currentLandTuples,
-        currentLandTuples
-    );
-    assert.equal(
-        snapshot.verifiedNoDataEvidence?.manifestDigest,
-        MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_MANIFEST_DIGEST
-    );
-    assert.equal(
-        snapshot.verifiedNoDataEvidence?.scopeDigest,
-        MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_SCOPE_DIGEST
-    );
+    assert.equal(spy.applyCalls, 0);
 });
 
 test('DEV 전체 갱신 분류 conflict room cohort도 공식 호가 불일치하면 PROPERTY_UNIT_NOT_FOUND로 차단한다', async () => {

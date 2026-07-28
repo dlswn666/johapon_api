@@ -3,8 +3,9 @@ import test from 'node:test';
 import {
     resolveParcelScopeCompleteness,
     resolveSameRunOfficialDevelopmentFullRefreshComponent,
-    resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent,
+    resolveSameRunOfficialDevelopmentParcelSingleton,
     resolveSameRunOfficialReadOnlyComponent,
+    createSameRunOfficialDevelopmentParcelSingletonEffectiveScope,
     createSameRunOfficialReadOnlyEffectiveScope,
     computeScopeHash,
     verifySinglePnuConfirmation,
@@ -480,9 +481,9 @@ test('DEV 전체 갱신은 LADFRL과 LDAREG singleton을 모두 pairCount=0 공�
     );
 });
 
-test('DEV 전체 갱신 parcel singleton은 공식 분류 conflict title만 pairCount=0으로 고정하고 title zero는 차단한다', () => {
+test('DEV 전체 갱신 parcel singleton은 공식 분류 conflict와 strict title zero를 별도 필지 근거로 만든다', () => {
     const classificationConflict =
-        resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+        resolveSameRunOfficialDevelopmentParcelSingleton(
             {
                 ...gate({
                     dbScope: db({
@@ -517,17 +518,21 @@ test('DEV 전체 갱신 parcel singleton은 공식 분류 conflict title만 pair
     assert.ok(classificationConflict);
     assert.deepEqual(classificationConflict, {
         source:
-            'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
-        canonicalBasePnu: ANCHOR,
+            'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON',
+        canonicalPnu: ANCHOR,
         memberPnus: [ANCHOR],
-        managementPk: PK,
-        pairCount: 0,
-        officialComponentDigest:
-            classificationConflict.officialComponentDigest,
+        officialParcelDigest:
+            classificationConflict.officialParcelDigest,
     });
+    assert.equal('managementPk' in classificationConflict, false);
+    assert.equal('pairCount' in classificationConflict, false);
+    assert.match(
+        classificationConflict.officialParcelDigest,
+        /^[0-9a-f]{64}$/
+    );
 
     const titleZero =
-        resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+        resolveSameRunOfficialDevelopmentParcelSingleton(
             {
                 ...gate({
                     baseScans: [
@@ -541,29 +546,71 @@ test('DEV 전체 갱신 parcel singleton은 공식 분류 conflict title만 pair
                     'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON',
             }
         );
-    assert.equal(titleZero, null);
+    assert.ok(titleZero);
+    assert.deepEqual(titleZero, {
+        source:
+            'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON',
+        canonicalPnu: ANCHOR,
+        memberPnus: [ANCHOR],
+        officialParcelDigest:
+            titleZero.officialParcelDigest,
+    });
+
+    const effective =
+        createSameRunOfficialDevelopmentParcelSingletonEffectiveScope(
+            {
+                dbScope: db(),
+                parcelResolution: titleZero,
+                propertyMembership: [
+                    {
+                        propertyUnitId: 'p2',
+                        pnu: ANCHOR,
+                    },
+                    {
+                        propertyUnitId: 'p1',
+                        pnu: ANCHOR,
+                    },
+                ],
+            }
+        );
+    assert.equal(effective.dbState, 'LINKED');
+    assert.deepEqual(effective.linkedBasePnus, [ANCHOR]);
+    assert.deepEqual(effective.linkedPnus, [ANCHOR]);
+    assert.match(effective.dbScopeHash, /^[0-9a-f]{64}$/);
+    const changedDigest =
+        createSameRunOfficialDevelopmentParcelSingletonEffectiveScope(
+            {
+                dbScope: db(),
+                parcelResolution: {
+                    ...titleZero,
+                    officialParcelDigest: 'f'.repeat(64),
+                },
+                propertyMembership: [
+                    {
+                        propertyUnitId: 'p1',
+                        pnu: ANCHOR,
+                    },
+                    {
+                        propertyUnitId: 'p2',
+                        pnu: ANCHOR,
+                    },
+                ],
+            }
+        );
+    assert.notEqual(
+        effective.dbScopeHash,
+        changedDigest.dbScopeHash
+    );
 });
 
-test('DEV parcel singleton의 복수 title PK synthetic identity와 digest는 provider row 순서에 무관하다', () => {
+test('DEV parcel singleton의 classified 복수 title PK digest는 순서에 무관하고 synthetic identity가 없다', () => {
     const secondPk = '1002003004006';
     const rows: BrTitleRow[] = [
-        {
-            mgmBldrgstPk: PK,
-            bylotCnt: '0',
-            regstrGbCd: '1',
-            mainPurpsCd: '03000',
-            mainPurpsCdNm: '제1종근린생활시설',
-        },
-        {
-            mgmBldrgstPk: secondPk,
-            bylotCnt: '0',
-            regstrGbCd: '1',
-            mainPurpsCd: '04000',
-            mainPurpsCdNm: '문화및집회시설',
-        },
+        titleRow(PK, '0', DETACHED),
+        titleRow(secondPk, '0', DETACHED),
     ];
     const resolve = (titleRows: BrTitleRow[]) =>
-        resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+        resolveSameRunOfficialDevelopmentParcelSingleton(
             {
                 ...gate({
                     baseScans: [
@@ -574,34 +621,48 @@ test('DEV parcel singleton의 복수 title PK synthetic identity와 digest는 pr
                 }),
                 anchorPnu: ANCHOR,
                 parcelSingletonBasis:
-                    'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON',
+                    'CLASSIFIED_DB_PARCEL_SINGLETON',
             }
         );
     const forward = resolve(rows);
     const reverse = resolve([...rows].reverse());
     assert.ok(forward);
     assert.ok(reverse);
-    assert.equal(forward.managementPk, reverse.managementPk);
     assert.equal(
-        forward.officialComponentDigest,
-        reverse.officialComponentDigest
+        forward.officialParcelDigest,
+        reverse.officialParcelDigest
     );
-    assert.match(
-        forward.managementPk,
-        /^full-refresh-singleton:[0-9a-f]{64}$/
-    );
+    assert.equal('managementPk' in forward, false);
+    assert.equal('pairCount' in forward, false);
 });
 
 test('DEV 전체 갱신 parcel singleton은 provider 미완료·bylot 상충·attached 행·DB blocker를 공식 근거로 승격하지 않는다', () => {
-    const resolve = (
-        over: Partial<ParcelScopeInput>
-    ) =>
-        resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+    const classificationConflictScan = base({
+        title: titleComplete([
             {
-                ...gate(over),
+                mgmBldrgstPk: PK,
+                bylotCnt: '0',
+                regstrGbCd: '1',
+                mainPurpsCd: '03000',
+                mainPurpsCdNm: '제1종근린생활시설',
+            },
+        ]),
+    });
+    const resolve = (
+        over: Partial<ParcelScopeInput>,
+        parcelSingletonBasis:
+            | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+            | 'CLASSIFIED_DB_PARCEL_SINGLETON' =
+            'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+    ) =>
+        resolveSameRunOfficialDevelopmentParcelSingleton(
+            {
+                ...gate({
+                    baseScans: [classificationConflictScan],
+                    ...over,
+                }),
                 anchorPnu: ANCHOR,
-                parcelSingletonBasis:
-                    'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON',
+                parcelSingletonBasis,
             }
         );
 
@@ -682,6 +743,19 @@ test('DEV 전체 갱신 parcel singleton은 provider 미완료·bylot 상충·at
                 ],
             }),
         }),
+        null
+    );
+    assert.equal(
+        resolve(
+            {
+                baseScans: [
+                    base({
+                        title: zero<BrTitleRow>(),
+                    }),
+                ],
+            },
+            'CLASSIFIED_DB_PARCEL_SINGLETON'
+        ),
         null
     );
 });

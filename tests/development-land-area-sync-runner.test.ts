@@ -65,7 +65,7 @@ const REPRESENTATIVE_EVIDENCE_MANIFEST_URL = new URL(
     import.meta.url
 );
 const FULL_REFRESH_TARGET_MANIFEST_URL = new URL(
-    '../development-land-area-sync-manifests/mia-seven-full-279-official-components-api-readonly-target-20260728.json',
+    '../development-land-area-sync-manifests/mia-seven-full-278-official-components-api-readonly-target-20260729.json',
     import.meta.url
 );
 
@@ -540,7 +540,7 @@ function validFullRefreshRunArtifact(): {
                 strategy: 'LADFRL',
                 scopeState: 'SINGLE_PNU_CONFIRMED',
                 outcome: 'APPLIED',
-                updatedPropertyUnits: index < 150 ? 2 : 1,
+                updatedPropertyUnits: index < 151 ? 2 : 1,
                 unchangedPropertyUnits: 0,
                 issueCodes: [],
             })),
@@ -549,55 +549,6 @@ function validFullRefreshRunArtifact(): {
                 failureCode: null,
                 stoppedBeforePnu: null,
             },
-        },
-    };
-}
-
-function validFullRefreshVerifiedNoDataRunArtifact(): {
-    artifact: DevelopmentRunArtifact;
-    targetManifest: DevelopmentTargetManifestV3;
-} {
-    const { artifact, targetManifest } =
-        validFullRefreshRunArtifact();
-    let projectableIndex = 0;
-    const results = artifact.results.map((result) => {
-        if (
-            result.pnu ===
-            '1130510100107913568'
-        ) {
-            return {
-                ...result,
-                applyJobId: null,
-                writerJobId: null,
-                strategy: null,
-                scopeState: 'LINKED_SCOPE_RESOLVED' as const,
-                outcome: 'NO_DATA' as const,
-                updatedPropertyUnits: 0,
-                unchangedPropertyUnits: 7,
-            };
-        }
-        const updatedPropertyUnits =
-            projectableIndex < 144 ? 2 : 1;
-        projectableIndex += 1;
-        return {
-            ...result,
-            updatedPropertyUnits,
-        };
-    });
-    assert.equal(projectableIndex, 278);
-    return {
-        targetManifest,
-        artifact: {
-            ...artifact,
-            postflight: {
-                ...artifact.postflight!,
-                positiveLandAreaCount: 422,
-            },
-            writeAttribution: {
-                ...artifact.writeAttribution!,
-                attributedPropertyUnitCount: 422,
-            },
-            results,
         },
     };
 }
@@ -611,6 +562,7 @@ function numberedUuid(prefix: string, index: number): string {
 
 function fullRefreshRuntimeFixture(input: {
     ldaregAnchorIndex?: number;
+    parcelAnchorIndex?: number;
 } = {}): {
     targetManifest: DevelopmentTargetManifestV3;
     evidenceManifest: DevelopmentEvidenceManifest;
@@ -678,6 +630,16 @@ function fullRefreshRuntimeFixture(input: {
         ])
     );
     const marker = developmentFullRefreshMarkerForTarget(parsed)!;
+    if (
+        input.ldaregAnchorIndex !== undefined &&
+        input.parcelAnchorIndex !== undefined
+    ) {
+        assert.notEqual(
+            input.ldaregAnchorIndex,
+            input.parcelAnchorIndex,
+            'LDAREG와 parcel fixture anchor는 분리한다'
+        );
+    }
     const entries = parsed.anchors.map((anchor, index) => {
         const strategy =
             index === input.ldaregAnchorIndex
@@ -689,6 +651,9 @@ function fullRefreshRuntimeFixture(input: {
             .sort((left, right) => left.id.localeCompare(right.id));
         const officialComponentDigest = sha256Utf8(
             `official-component:${anchor}`
+        );
+        const officialParcelDigest = sha256Utf8(
+            `official-parcel:${anchor}`
         );
         return {
             anchorPnu: anchor,
@@ -727,14 +692,32 @@ function fullRefreshRuntimeFixture(input: {
                       }
                     : null,
             allowManualOverwrite: true,
-            sourceReferences: {
-                kind: 'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE' as const,
-                captureRunId: String(40000000 + index),
-                snapshotReferenceSha256: sha256Utf8(
-                    `snapshot:${anchor}`
-                ),
-                officialComponentDigest,
-            },
+            sourceReferences:
+                index === input.parcelAnchorIndex
+                    ? {
+                          kind:
+                              'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE' as const,
+                          captureRunId: String(
+                              40000000 + index
+                          ),
+                          snapshotReferenceSha256:
+                              sha256Utf8(
+                                  `snapshot:${anchor}`
+                              ),
+                          officialParcelDigest,
+                      }
+                    : {
+                          kind:
+                              'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE' as const,
+                          captureRunId: String(
+                              40000000 + index
+                          ),
+                          snapshotReferenceSha256:
+                              sha256Utf8(
+                                  `snapshot:${anchor}`
+                              ),
+                          officialComponentDigest,
+                      },
         } satisfies DevelopmentEvidenceEntry;
     });
     const evidenceManifest: DevelopmentEvidenceManifest = {
@@ -780,6 +763,11 @@ function fullRefreshRuntimeFixture(input: {
             'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE'
                 ? entry.sourceReferences.officialComponentDigest
                 : HASH;
+        const officialParcelDigest =
+            entry.sourceReferences.kind ===
+            'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE'
+                ? entry.sourceReferences.officialParcelDigest
+                : null;
         terminalByJobId.set(writerJobId, {
             jobId: writerJobId,
             unionId: parsed.unionId,
@@ -799,18 +787,44 @@ function fullRefreshRuntimeFixture(input: {
                     frozenAt: '2026-07-28T00:00:30.000Z',
                     strategy: entry.expectedStrategy,
                     scannedPnus: entry.expectedScannedPnus,
-                    developmentFullRefreshScopeResolution: {
-                        source:
-                            'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
-                        canonicalBasePnu: entry.anchorPnu,
-                        memberPnus: entry.expectedScannedPnus,
-                        managementPk: `management-${entry.anchorPnu}`,
-                        pairCount:
-                            entry.expectedScannedPnus.length - 1,
-                        officialComponentDigest,
-                        manifestDigest: marker.manifestDigest,
-                        scopeDigest: marker.scopeDigest,
-                    },
+                    ...(officialParcelDigest
+                        ? {
+                              developmentFullRefreshParcelResolution:
+                                  {
+                                      source:
+                                          'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON',
+                                      canonicalPnu:
+                                          entry.anchorPnu,
+                                      memberPnus:
+                                          entry.expectedScannedPnus,
+                                      officialParcelDigest,
+                                      manifestDigest:
+                                          marker.manifestDigest,
+                                      scopeDigest:
+                                          marker.scopeDigest,
+                                  },
+                          }
+                        : {
+                              developmentFullRefreshScopeResolution:
+                                  {
+                                      source:
+                                          'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
+                                      canonicalBasePnu:
+                                          entry.anchorPnu,
+                                      memberPnus:
+                                          entry.expectedScannedPnus,
+                                      managementPk: `management-${entry.anchorPnu}`,
+                                      pairCount:
+                                          entry
+                                              .expectedScannedPnus
+                                              .length - 1,
+                                      officialComponentDigest,
+                                      manifestDigest:
+                                          marker.manifestDigest,
+                                      scopeDigest:
+                                          marker.scopeDigest,
+                                  },
+                          }),
                     scopeHash: sha256Utf8(
                         `scope:${entry.anchorPnu}`
                     ),
@@ -850,6 +864,7 @@ async function runFullRefreshRuntime(input: {
     omitRelationReader?: boolean;
     mutateRelationPost?: boolean;
     ldaregAnchorIndex?: number;
+    parcelAnchorIndex?: number;
     wrongLandRightWriter?: boolean;
 } = {}): Promise<{
     artifact: DevelopmentRunArtifact;
@@ -859,6 +874,7 @@ async function runFullRefreshRuntime(input: {
 }> {
     const fixture = fullRefreshRuntimeFixture({
         ldaregAnchorIndex: input.ldaregAnchorIndex,
+        parcelAnchorIndex: input.parcelAnchorIndex,
     });
     let admissionCount = 0;
     let latestReadCount = 0;
@@ -1248,7 +1264,7 @@ test('공개 artifact는 집계와 digest allowlist만 남기고 raw 식별자·
     );
 });
 
-test('미아7 전체 재조회 private/public artifact는 공식 279 구성요소·301 조회 PNU·429 물건과 relation/rights 게이트를 고정한다', () => {
+test('미아7 전체 재조회 private/public artifact는 공식 278 구성요소·301 조회 PNU·429 물건과 relation/rights 게이트를 고정한다', () => {
     const { artifact, targetManifest } =
         validFullRefreshRunArtifact();
     assert.doesNotThrow(() =>
@@ -1256,15 +1272,15 @@ test('미아7 전체 재조회 private/public artifact는 공식 279 구성요�
     );
     const publicArtifact = createDevelopmentPublicRunArtifact(
         artifact,
-        'mia-seven-full-279-official-components-api-readonly-20260728'
+        'mia-seven-full-278-official-components-api-readonly-20260729'
     );
     assert.doesNotThrow(() =>
         validateDevelopmentPublicRunArtifact(
             publicArtifact,
-            'mia-seven-full-279-official-components-api-readonly-20260728'
+            'mia-seven-full-278-official-components-api-readonly-20260729'
         )
     );
-    assert.equal(publicArtifact.aggregateCounts.targetCount, 279);
+    assert.equal(publicArtifact.aggregateCounts.targetCount, 278);
     assert.equal(
         publicArtifact.aggregateCounts.expectedPropertyUnitCount,
         429
@@ -1275,112 +1291,30 @@ test('미아7 전체 재조회 private/public artifact는 공식 279 구성요�
         301
     );
     assert.deepEqual(publicArtifact.strategyCounts, {
-        LADFRL: 279,
+        LADFRL: 278,
         LDAREG: 0,
         NONE: 0,
     });
 });
 
-test('미아7 전체 재조회는 278 APPLIED/422호 + exact 1 VERIFIED_NO_DATA/7호도 PASS하며 no-data를 writer·strategy에서 제외한다', () => {
+test('미아7 전체 재조회는 VERIFIED_NO_DATA 결과를 PASS로 승격하지 않는다', () => {
     const { artifact, targetManifest } =
-        validFullRefreshVerifiedNoDataRunArtifact();
-    assert.doesNotThrow(() =>
-        validateDevelopmentRunArtifact(artifact, targetManifest)
-    );
-    const publicArtifact = createDevelopmentPublicRunArtifact(
-        artifact,
-        'mia-seven-full-279-official-components-api-readonly-20260728'
-    );
-    assert.doesNotThrow(() =>
-        validateDevelopmentPublicRunArtifact(
-            publicArtifact,
-            'mia-seven-full-279-official-components-api-readonly-20260728'
-        )
-    );
-    assert.equal(
-        publicArtifact.aggregateCounts.projectableResultCount,
-        278
-    );
-    assert.equal(
-        publicArtifact.aggregateCounts.verifiedNoDataResultCount,
-        1
-    );
-    assert.equal(
-        publicArtifact.aggregateCounts.projectablePropertyUnitCount,
-        422
-    );
-    assert.equal(
-        publicArtifact.aggregateCounts
-            .verifiedNoDataPropertyUnitCount,
-        7
-    );
-    assert.deepEqual(publicArtifact.outcomeCounts, {
-        APPLIED: 278,
-        PARTIAL: 0,
-        NO_DATA: 1,
-        REVIEW_REQUIRED: 0,
-        FAILED: 0,
-        NONE: 0,
-    });
-    assert.deepEqual(publicArtifact.strategyCounts, {
-        LADFRL: 278,
-        LDAREG: 0,
-        NONE: 1,
-    });
-    assert.equal(
-        artifact.writeAttribution?.attributedPropertyUnitCount,
-        422
-    );
-    assert.equal(
-        artifact.landRightWriteAttribution
-            ?.attributedPropertyUnitCount,
-        0
-    );
-
-    const noDataIndex = artifact.results.findIndex(
-        (result) => result.outcome === 'NO_DATA'
-    );
-    assert.notEqual(noDataIndex, -1);
-    for (const forgedResult of [
-        {
-            ...artifact.results[noDataIndex],
-            strategy: 'LADFRL' as const,
-        },
-        {
-            ...artifact.results[noDataIndex],
-            writerJobId: APPLY_JOB_ID,
-        },
-        {
-            ...artifact.results[noDataIndex],
-            updatedPropertyUnits: 1,
-            unchangedPropertyUnits: 6,
-        },
-    ]) {
-        const forged = structuredClone(artifact);
-        forged.results[noDataIndex] = forgedResult;
-        assert.throws(
-            () =>
-                validateDevelopmentRunArtifact(
-                    forged,
-                    targetManifest
-                ),
-            /RUN_ARTIFACT_RESULT_WRITER_INVALID/
-        );
-    }
-
+        validFullRefreshRunArtifact();
+    const forged = structuredClone(artifact);
+    forged.results[0] = {
+        ...forged.results[0],
+        applyJobId: null,
+        writerJobId: null,
+        strategy: null,
+        scopeState: 'LINKED_SCOPE_RESOLVED',
+        outcome: 'NO_DATA',
+        updatedPropertyUnits: 0,
+        unchangedPropertyUnits: 2,
+    };
     assert.throws(
         () =>
-            validateDevelopmentRunArtifact(
-                {
-                    ...artifact,
-                    writeAttribution: {
-                        ...artifact.writeAttribution!,
-                        attributedPropertyUnitCount: 429,
-                    },
-                },
-                targetManifest
-            ),
-        /RUN_ARTIFACT_WRITE_ATTRIBUTION_INVALID/
+            validateDevelopmentRunArtifact(forged, targetManifest),
+        /RUN_ARTIFACT_RESULT_WRITER_INVALID/
     );
 });
 
@@ -1389,7 +1323,7 @@ test('미아7 전체 공개 artifact는 relation/rights 누락 또는 변조 dig
         validFullRefreshRunArtifact();
     const publicArtifact = createDevelopmentPublicRunArtifact(
         artifact,
-        'mia-seven-full-279-official-components-api-readonly-20260728'
+        'mia-seven-full-278-official-components-api-readonly-20260729'
     );
     assert.throws(
         () =>
@@ -1401,7 +1335,7 @@ test('미아7 전체 공개 artifact는 relation/rights 누락 또는 변조 dig
                         preflight: null,
                     },
                 },
-                'mia-seven-full-279-official-components-api-readonly-20260728'
+                'mia-seven-full-278-official-components-api-readonly-20260729'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1419,7 +1353,7 @@ test('미아7 전체 공개 artifact는 relation/rights 누락 또는 변조 dig
                         },
                     },
                 },
-                'mia-seven-full-279-official-components-api-readonly-20260728'
+                'mia-seven-full-278-official-components-api-readonly-20260729'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1434,7 +1368,7 @@ test('미아7 전체 공개 artifact는 relation/rights 누락 또는 변조 dig
                         writeAttribution: null,
                     },
                 },
-                'mia-seven-full-279-official-components-api-readonly-20260728'
+                'mia-seven-full-278-official-components-api-readonly-20260729'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1479,7 +1413,7 @@ test('relation/GIS 변이는 정확한 FAIL code로만 artifact에 남고 PASS �
         () =>
             createDevelopmentPublicRunArtifact(
                 passMutation,
-                'mia-seven-full-279-official-components-api-readonly-20260728'
+                'mia-seven-full-278-official-components-api-readonly-20260729'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1501,7 +1435,7 @@ test('relation/GIS 변이는 정확한 FAIL code로만 artifact에 남고 PASS �
     assert.doesNotThrow(() =>
         createDevelopmentPublicRunArtifact(
             truthfulFailure,
-            'mia-seven-full-279-official-components-api-readonly-20260728'
+            'mia-seven-full-278-official-components-api-readonly-20260729'
         )
     );
 });
@@ -1533,7 +1467,7 @@ test('비대상 대지권 변이는 정확한 FAIL로만 보존되고 PASS 위�
         () =>
             createDevelopmentPublicRunArtifact(
                 passMutation,
-                'mia-seven-full-279-official-components-api-readonly-20260728'
+                'mia-seven-full-278-official-components-api-readonly-20260729'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -1556,7 +1490,7 @@ test('비대상 대지권 변이는 정확한 FAIL로만 보존되고 PASS 위�
     assert.doesNotThrow(() =>
         createDevelopmentPublicRunArtifact(
             truthfulFailure,
-            'mia-seven-full-279-official-components-api-readonly-20260728'
+            'mia-seven-full-278-official-components-api-readonly-20260729'
         )
     );
 });
@@ -1613,8 +1547,106 @@ test('전체 재조회 runtime은 relation/GIS postflight 변이를 정확한 FA
     assert.doesNotThrow(() =>
         createDevelopmentPublicRunArtifact(
             artifact,
-            'mia-seven-full-279-official-components-api-readonly-20260728'
+            'mia-seven-full-278-official-components-api-readonly-20260729'
         )
+    );
+});
+
+test('전체 재조회 runtime은 별도 공식 parcel digest를 재검증하고 component 위조 없이 PASS한다', async () => {
+    const {
+        artifact,
+        targetManifest,
+        admissionCount,
+    } = await runFullRefreshRuntime({
+        parcelAnchorIndex: 1,
+    });
+    assert.equal(admissionCount, targetManifest.targetCount);
+    assert.deepEqual(artifact.gate, {
+        status: 'PASS',
+        failureCode: null,
+        stoppedBeforePnu: null,
+    });
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(
+            artifact,
+            targetManifest
+        )
+    );
+});
+
+test('전체 재조회 runner는 parcel provenance의 LDAREG·복수 property 위조를 API admission 전에 거부한다', () => {
+    const fixture = fullRefreshRuntimeFixture({
+        parcelAnchorIndex: 1,
+    });
+    const parcelIndex =
+        fixture.evidenceManifest.entries.findIndex(
+            (entry) =>
+                'kind' in entry.sourceReferences &&
+                entry.sourceReferences.kind ===
+                    'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE'
+        );
+    assert.notEqual(parcelIndex, -1);
+
+    const ldaregForgery = structuredClone(
+        fixture.evidenceManifest
+    );
+    ldaregForgery.entries[parcelIndex].expectedStrategy =
+        'LDAREG';
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                fixture.targetManifest,
+                approval(fixture.targetManifest),
+                ldaregForgery
+            ),
+        /FULL_REFRESH_PARCEL_EVIDENCE_SHAPE_MISMATCH/
+    );
+
+    const multiplePropertyForgery = structuredClone(
+        fixture.evidenceManifest
+    );
+    multiplePropertyForgery.entries[
+        parcelIndex
+    ].expectedPropertyUnitIds.push(
+        multiplePropertyForgery.entries[0]
+            .expectedPropertyUnitIds[0]
+    );
+    multiplePropertyForgery.entries[
+        parcelIndex
+    ].expectedProposedLandAreas.push({
+        ...multiplePropertyForgery.entries[0]
+            .expectedProposedLandAreas[0],
+    });
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                fixture.targetManifest,
+                approval(fixture.targetManifest),
+                multiplePropertyForgery
+        ),
+        /FULL_REFRESH_PARCEL_EVIDENCE_SHAPE_MISMATCH/
+    );
+
+    const verifiedNoDataForgery = structuredClone(
+        fixture.evidenceManifest
+    );
+    verifiedNoDataForgery.entries[
+        parcelIndex
+    ].sourceReferences = {
+        kind:
+            'DEVELOPMENT_READ_ONLY_VERIFIED_NO_DATA_CAPTURE',
+        captureRunId: '40000001',
+        snapshotReferenceSha256: 'a'.repeat(64),
+        verifiedNoDataEvidenceDigest: 'b'.repeat(64),
+    };
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                fixture.targetManifest,
+                approval(fixture.targetManifest),
+                verifiedNoDataForgery
+            ),
+        /FULL_REFRESH_VERIFIED_NO_DATA_EVIDENCE_FORBIDDEN/
     );
 });
 
@@ -1652,7 +1684,7 @@ test('전체 재조회 runtime은 LDAREG 권리원장 writer 전이를 attributi
     assert.doesNotThrow(() =>
         createDevelopmentPublicRunArtifact(
             artifact,
-            'mia-seven-full-279-official-components-api-readonly-20260728'
+            'mia-seven-full-278-official-components-api-readonly-20260729'
         )
     );
 });
@@ -1676,7 +1708,7 @@ test('전체 재조회 runtime은 LDAREG 권리원장 writer 불일치를 FAIL�
     assert.doesNotThrow(() =>
         createDevelopmentPublicRunArtifact(
             artifact,
-            'mia-seven-full-279-official-components-api-readonly-20260728'
+            'mia-seven-full-278-official-components-api-readonly-20260729'
         )
     );
 });
@@ -1708,7 +1740,7 @@ test('LDAREG synthetic PASS artifact는 권리원장 attribution exact count 없
         () =>
             createDevelopmentPublicRunArtifact(
                 tampered,
-                'mia-seven-full-279-official-components-api-readonly-20260728'
+                'mia-seven-full-278-official-components-api-readonly-20260729'
             ),
         /PUBLIC_RUN_ARTIFACT_INVALID/
     );
@@ -2069,7 +2101,7 @@ test('repo-pinned v3 전체 갱신 target만 정책 marker로 승격하고 임�
     assert.deepEqual(marker, {
         profile: 'DEVELOPMENT_FULL_REFRESH_API_REQUERY_V1',
         manifestDigest:
-            '4235381c31245833b944c09664499f69aedd71282560f42807cb5c379bffa3b3',
+            'b00f52f97ef20df9f0e7658c84e238044c5eddabce6f1083fa3789776ecf1c24',
         scopeDigest:
             'c661e864d20342519cf7d453454ead53d9279a21c37cdfaa87b8e68f5e2a7eb9',
     });

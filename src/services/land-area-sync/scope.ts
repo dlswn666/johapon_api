@@ -40,6 +40,8 @@ export const SAME_RUN_OFFICIAL_READ_ONLY_SCOPE_SOURCE =
     'SAME_RUN_OFFICIAL_READ_ONLY' as const;
 export const SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE =
     'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH' as const;
+export const SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON_SCOPE_SOURCE =
+    'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON' as const;
 
 // ── DB resolver 결과 (DESIGN §11 계약) ────────────────────────────
 
@@ -204,8 +206,20 @@ export interface SameRunOfficialDevelopmentFullRefreshComponent
     source: typeof SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE;
 }
 
+/**
+ * 건축물 component identity와 분리된 DEV 전체 갱신용 공식 필지 단위 근거다.
+ * 관리 PK가 여러 개이거나 표제부가 0건이어도 synthetic 관리번호를 만들지 않는다.
+ */
+export interface SameRunOfficialDevelopmentParcelSingletonResolution {
+    source: typeof SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON_SCOPE_SOURCE;
+    canonicalPnu: string;
+    memberPnus: string[];
+    officialParcelDigest: string;
+}
+
 export type DevelopmentFullRefreshParcelSingletonBasis =
     | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+    | 'CLASSIFIED_DB_PARCEL_SINGLETON'
     | 'OFFICIAL_COMPONENT_DB_PARCEL_SINGLETONS';
 
 function scanRows<T>(scan: StrictScan<T>): T[] {
@@ -711,23 +725,25 @@ export function resolveSameRunOfficialDevelopmentFullRefreshComponent(
 
 /**
  * 공통 분류가 확정되지 않았지만 DB의 exact 단일 property와 unit identity 부재를 별도
- * 판정한 DEV 전체 갱신 LADFRL 전용 closure다.
+ * 판정한 DEV 전체 갱신 LADFRL 전용 필지 근거다.
  *
  * 이 함수는 parcel-singleton 판정 자체를 대체하지 않는다. 호출자가 그 판정을 통과한
  * basis를 명시해야 하며, 같은 실행의 title/attached scan이 완전하고 공식 부속지번
- * 근거가 0일 때만 pairCount=0 component를 만든다. 공식 title 자체가 없으면 DB
- * singleton만으로 임의 component를 만들지 않는다. provider 실패·pagination 미완료·
- * bylot 상충·attached 행은 모두 차단한다.
+ * 근거가 0일 때만 별도 parcel resolution을 만든다. 관리 PK를 component identity로
+ * 사용하거나 복수 PK를 synthetic 관리번호로 합치지 않는다. provider 실패·pagination
+ * 미완료·bylot 상충·attached 행은 모두 차단한다.
  */
-export function resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+export function resolveSameRunOfficialDevelopmentParcelSingleton(
     input: ParcelScopeInput & {
         anchorPnu: string;
         parcelSingletonBasis: DevelopmentFullRefreshParcelSingletonBasis;
     }
-): SameRunOfficialDevelopmentFullRefreshComponent | null {
+): SameRunOfficialDevelopmentParcelSingletonResolution | null {
     if (
-        input.parcelSingletonBasis !==
-            'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON' ||
+        (input.parcelSingletonBasis !==
+            'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON' &&
+            input.parcelSingletonBasis !==
+                'CLASSIFIED_DB_PARCEL_SINGLETON') ||
         input.baseScans.length !== 1 ||
         input.baseScans[0].pnu !== input.anchorPnu
     ) {
@@ -735,9 +751,36 @@ export function resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonCompo
     }
     const baseScan = input.baseScans[0];
     if (
-        baseScan.title.state !== 'COMPLETE' ||
-        baseScan.attached.state !== 'COMPLETE_ZERO'
+        baseScan.attached.state !== 'COMPLETE_ZERO' ||
+        baseScan.attached.rows.length !== 0 ||
+        baseScan.attached.totalCount !== 0 ||
+        !Number.isSafeInteger(baseScan.attached.pagesFetched) ||
+        baseScan.attached.pagesFetched < 1
     ) {
+        return null;
+    }
+    const titleScan = baseScan.title;
+    if (titleScan.state === 'COMPLETE') {
+        if (
+            titleScan.rows.length === 0 ||
+            titleScan.totalCount !== titleScan.rows.length ||
+            !Number.isSafeInteger(titleScan.pagesFetched) ||
+            titleScan.pagesFetched < 1
+        ) {
+            return null;
+        }
+    } else if (titleScan.state === 'COMPLETE_ZERO') {
+        if (
+            titleScan.rows.length !== 0 ||
+            titleScan.totalCount !== 0 ||
+            !Number.isSafeInteger(titleScan.pagesFetched) ||
+            titleScan.pagesFetched < 1 ||
+            input.parcelSingletonBasis !==
+                'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+        ) {
+            return null;
+        }
+    } else {
         return null;
     }
 
@@ -751,93 +794,138 @@ export function resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonCompo
         ...input,
         dbScope: officialOnlyDbScope,
     });
-    const allowedIssues =
-        singletonGate.issues.length === 1 &&
-        singletonGate.issues[0] ===
-            'BUILDING_CLASSIFICATION_CONFLICT'
-            ? true
-            : singletonGate.issues.length === 2 &&
-              singletonGate.issues[0] ===
-                  'BUILDING_CLASSIFICATION_CONFLICT' &&
-              singletonGate.issues[1] === 'SCOPE_NOT_LINKED';
-    if (
-        singletonGate.state !== 'REVIEW_REQUIRED' ||
-        !allowedIssues ||
-        singletonGate.classification.kind !== 'REVIEW_REQUIRED' ||
-        singletonGate.classification.issue !==
-            'BUILDING_CLASSIFICATION_CONFLICT' ||
-        singletonGate.bylot.status !== 'RESOLVED'
-    ) {
+    if (singletonGate.bylot.status !== 'RESOLVED') {
         return null;
     }
 
-    const titleSelfPks = [
-        ...new Set(
-            baseScan.title.rows
-                .map((row) =>
-                    normalizeRegistryManagementPk(
-                        row.mgmBldrgstPk
-                    )
-                )
-                .filter(
-                    (
-                        value
-                    ): value is string =>
-                        value !== null
-                )
-        ),
-    ].sort();
-    if (titleSelfPks.length === 0) {
-        return null;
-    }
-    if (
-        singletonGate.expectedPks.length !==
-            titleSelfPks.length ||
-        singletonGate.expectedPks.some(
-            (value, index) => value !== titleSelfPks[index]
-        ) ||
-        singletonGate.bylot.evidence.length !==
-            titleSelfPks.length ||
-        singletonGate.bylot.evidence.some(
-            (evidence, index) =>
-                evidence.mgmBldrgstPk !==
-                    titleSelfPks[index] ||
-                evidence.count !== 0
-        )
-    ) {
-        return null;
+    let titleSelfPks: string[] = [];
+    if (titleScan.state === 'COMPLETE') {
+        const normalizedTitlePks = titleScan.rows.map((row) =>
+            normalizeRegistryManagementPk(row.mgmBldrgstPk)
+        );
+        if (normalizedTitlePks.some((value) => value === null)) {
+            return null;
+        }
+        titleSelfPks = [
+            ...new Set(normalizedTitlePks as string[]),
+        ].sort();
+        if (
+            titleSelfPks.length === 0 ||
+            singletonGate.expectedPks.length !==
+                titleSelfPks.length ||
+            singletonGate.expectedPks.some(
+                (value, index) =>
+                    value !== titleSelfPks[index]
+            ) ||
+            singletonGate.bylot.evidence.length !==
+                titleSelfPks.length ||
+            singletonGate.bylot.evidence.some(
+                (evidence, index) =>
+                    evidence.mgmBldrgstPk !==
+                        titleSelfPks[index] ||
+                    evidence.count !== 0
+            )
+        ) {
+            return null;
+        }
+        if (
+            input.parcelSingletonBasis ===
+            'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+        ) {
+            const allowedConflictIssues =
+                (singletonGate.issues.length === 1 &&
+                    singletonGate.issues[0] ===
+                        'BUILDING_CLASSIFICATION_CONFLICT') ||
+                (singletonGate.issues.length === 2 &&
+                    singletonGate.issues.includes(
+                        'BUILDING_CLASSIFICATION_CONFLICT'
+                    ) &&
+                    singletonGate.issues.includes(
+                        'SCOPE_NOT_LINKED'
+                    ));
+            if (
+                singletonGate.state !== 'REVIEW_REQUIRED' ||
+                singletonGate.classification.kind !==
+                    'REVIEW_REQUIRED' ||
+                singletonGate.classification.issue !==
+                    'BUILDING_CLASSIFICATION_CONFLICT' ||
+                !allowedConflictIssues
+            ) {
+                return null;
+            }
+        } else {
+            const allowedClassifiedState =
+                (singletonGate.state ===
+                    'SINGLE_SCOPE_CONFIRMATION_REQUIRED' &&
+                    singletonGate.issues.length === 0) ||
+                (singletonGate.state ===
+                    'REVIEW_REQUIRED' &&
+                    singletonGate.issues.length === 1 &&
+                    singletonGate.issues[0] ===
+                        'SCOPE_NOT_LINKED');
+            if (
+                !allowedClassifiedState ||
+                singletonGate.classification.kind !==
+                    'CLASSIFIED'
+            ) {
+                return null;
+            }
+        }
+    } else {
+        const allowedConflictIssues =
+            (singletonGate.issues.length === 1 &&
+                singletonGate.issues[0] ===
+                    'BUILDING_CLASSIFICATION_CONFLICT') ||
+            (singletonGate.issues.length === 2 &&
+                singletonGate.issues.includes(
+                    'BUILDING_CLASSIFICATION_CONFLICT'
+                ) &&
+                singletonGate.issues.includes(
+                    'SCOPE_NOT_LINKED'
+                ));
+        if (
+            singletonGate.state !== 'REVIEW_REQUIRED' ||
+            singletonGate.classification.kind !==
+                'REVIEW_REQUIRED' ||
+            singletonGate.classification.issue !==
+                'BUILDING_CLASSIFICATION_CONFLICT' ||
+            singletonGate.expectedPks.length !== 0 ||
+            singletonGate.bylot.evidence.length !== 0 ||
+            !allowedConflictIssues
+        ) {
+            return null;
+        }
     }
 
-    const memberPnus = [input.anchorPnu];
-    const singletonEvidenceDigest = sha256Hex(
-        canonicalStableStringify({
-            version:
-                'land-area-sync.development-full-refresh-parcel-singleton-evidence@1',
-            canonicalBasePnu: input.anchorPnu,
-            titleSelfPks,
-            externalScopeDigest:
-                singletonGate.externalScopeDigest,
-        })
-    );
-    const managementPk =
-        titleSelfPks.length === 1
-            ? titleSelfPks[0]
-            : `full-refresh-singleton:${singletonEvidenceDigest}`;
+    const canonicalPnu = input.anchorPnu;
+    const memberPnus = [canonicalPnu];
     return {
         source:
-            SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE,
-        canonicalBasePnu: input.anchorPnu,
+            SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON_SCOPE_SOURCE,
+        canonicalPnu,
         memberPnus,
-        managementPk,
-        pairCount: 0,
-        officialComponentDigest: sha256Hex(
+        officialParcelDigest: sha256Hex(
             canonicalStableStringify({
                 version:
-                    'land-area-sync.same-run-official-component@1',
-                canonicalBasePnu: input.anchorPnu,
+                    'land-area-sync.same-run-official-development-parcel-singleton@1',
+                basis: input.parcelSingletonBasis,
+                canonicalPnu,
                 memberPnus,
-                managementPk,
-                pairs: [],
+                title: {
+                    state: titleScan.state,
+                    totalCount: titleScan.totalCount,
+                    rowCount: titleScan.rows.length,
+                    pagesFetched:
+                        titleScan.pagesFetched,
+                },
+                attached: {
+                    state: baseScan.attached.state,
+                    totalCount: baseScan.attached.totalCount,
+                    rowCount: baseScan.attached.rows.length,
+                    pagesFetched:
+                        baseScan.attached.pagesFetched,
+                },
+                titleSelfPks,
                 externalScopeDigest:
                     singletonGate.externalScopeDigest,
             })
@@ -947,6 +1035,45 @@ export function createSameRunOfficialDevelopmentFullRefreshEffectiveScope(
                 originalDbScopeHash: input.dbScope.dbScopeHash,
                 officialComponentDigest:
                     input.component.officialComponentDigest,
+                propertyMembership,
+            })
+        ),
+    };
+}
+
+/**
+ * DEV 공식 필지 singleton 전용 effective scope. 건축물 component digest와 별도
+ * version/key를 사용해 관리 PK component로 오인하거나 hash를 재사용하지 않는다.
+ */
+export function createSameRunOfficialDevelopmentParcelSingletonEffectiveScope(
+    input: {
+        dbScope: DbScopeResolution;
+        parcelResolution: SameRunOfficialDevelopmentParcelSingletonResolution;
+        propertyMembership: unknown[];
+    }
+): DbScopeResolution {
+    const propertyMembership = normalizePropertyMembershipOrder(
+        input.propertyMembership
+    ) as unknown[];
+    return {
+        ...input.dbScope,
+        dbState: 'LINKED',
+        componentPnus: [...input.parcelResolution.memberPnus],
+        linkedBasePnus: [input.parcelResolution.canonicalPnu],
+        linkedPnus: [...input.parcelResolution.memberPnus],
+        linkedEvidenceKeys: [],
+        pendingEvidenceKeys: [],
+        blockingEvidence: [],
+        openUnresolvedEvidenceKeys: [],
+        componentTruncated: false,
+        propertyMembership,
+        dbScopeHash: sha256Hex(
+            canonicalStableStringify({
+                version:
+                    'land-area-sync.same-run-official-development-parcel-singleton-db-scope@1',
+                originalDbScopeHash: input.dbScope.dbScopeHash,
+                officialParcelDigest:
+                    input.parcelResolution.officialParcelDigest,
                 propertyMembership,
             })
         ),

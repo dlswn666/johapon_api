@@ -6,8 +6,6 @@ import {
 import {
     DEVELOPMENT_LAND_AREA_FULL_REFRESH_PROFILE,
     MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_MANIFEST_DIGEST,
-    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
-    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_PROPERTY_UNIT_COUNT,
     assertDevelopmentLandAreaFullRefreshAllowed,
     developmentLandAreaFullRefreshMarkersEqual,
 } from '../security/development-land-area-full-refresh-policy';
@@ -141,6 +139,13 @@ export type DevelopmentApiCaptureEvidenceSourceReferences =
           captureRunId: string;
           snapshotReferenceSha256: string;
           officialComponentDigest: string;
+      }
+    | {
+          kind:
+              'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE';
+          captureRunId: string;
+          snapshotReferenceSha256: string;
+          officialParcelDigest: string;
       }
     | {
           kind: 'DEVELOPMENT_READ_ONLY_VERIFIED_NO_DATA_CAPTURE';
@@ -377,7 +382,7 @@ export interface DevelopmentRunTargetResult {
     admission: 'NEW_DISCOVERY' | 'RESUMED_LATEST' | 'ALREADY_APPLIED';
     discoveryJobId: string | null;
     applyJobId: string | null;
-    /** VERIFIED_NO_DATA는 discovery 결과일 뿐 DB writer가 아니므로 null. */
+    /** legacy NO_DATA artifact는 validation에서 거부되며 writer가 될 수 없다. */
     writerJobId: string | null;
     status: 'COMPLETED' | 'FAILED';
     strategy: LandAreaSyncStrategy | null;
@@ -1167,6 +1172,8 @@ function parseEvidenceEntry(
             sources.kind !==
                 'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE' &&
             sources.kind !==
+                'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE' &&
+            sources.kind !==
                 'DEVELOPMENT_READ_ONLY_VERIFIED_NO_DATA_CAPTURE') ||
         !hasExactKeys(
             sources,
@@ -1178,6 +1185,14 @@ function parseEvidenceEntry(
                       'snapshotReferenceSha256',
                       'officialComponentDigest',
                   ]
+                : sources.kind ===
+                    'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE'
+                  ? [
+                        'kind',
+                        'captureRunId',
+                        'snapshotReferenceSha256',
+                        'officialParcelDigest',
+                    ]
                 : sources.kind ===
                     'DEVELOPMENT_READ_ONLY_VERIFIED_NO_DATA_CAPTURE'
                   ? [
@@ -1204,6 +1219,10 @@ function parseEvidenceEntry(
                     sources.officialComponentDigest
                 ))) ||
         (sources.kind ===
+            'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE' &&
+            (typeof sources.officialParcelDigest !== 'string' ||
+                !HEX64_RE.test(sources.officialParcelDigest))) ||
+        (sources.kind ===
             'DEVELOPMENT_READ_ONLY_VERIFIED_NO_DATA_CAPTURE' &&
             (typeof sources.verifiedNoDataEvidenceDigest !==
                 'string' ||
@@ -1225,20 +1244,9 @@ function parseEvidenceEntry(
     ) {
         throw new ControlledRunnerError('EVIDENCE_PROPOSED_MEMBERSHIP_MISMATCH');
     }
-    if (
-        verifiedNoDataSource &&
-        (value.anchorPnu !==
-            MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR ||
-            value.expectedStrategy !== 'LDAREG' ||
-            JSON.stringify(value.expectedScannedPnus) !==
-                JSON.stringify([
-                    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
-                ]) ||
-            value.expectedPropertyUnitIds.length !==
-                MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_PROPERTY_UNIT_COUNT)
-    ) {
+    if (verifiedNoDataSource) {
         throw new ControlledRunnerError(
-            'EVIDENCE_VERIFIED_NO_DATA_INVALID'
+            'EVIDENCE_VERIFIED_NO_DATA_FORBIDDEN'
         );
     }
     const prestateIds = [
@@ -1407,8 +1415,10 @@ export function validateDevelopmentRunnerManifests(
         evidence.entries.some(
             (entry) =>
                 'kind' in entry.sourceReferences &&
-                entry.sourceReferences.kind ===
-                    'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE'
+                (entry.sourceReferences.kind ===
+                    'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE' ||
+                    entry.sourceReferences.kind ===
+                        'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE')
         );
     const verifiedNoDataEntries = evidence.entries.filter(
         (entry) =>
@@ -1434,6 +1444,8 @@ export function validateDevelopmentRunnerManifests(
                 entry.sourceReferences.kind !==
                         'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE' &&
                 entry.sourceReferences.kind !==
+                        'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE' &&
+                entry.sourceReferences.kind !==
                         'DEVELOPMENT_READ_ONLY_VERIFIED_NO_DATA_CAPTURE')
         )
     ) {
@@ -1441,21 +1453,9 @@ export function validateDevelopmentRunnerManifests(
             'FULL_REFRESH_EVIDENCE_SOURCE_INVALID'
         );
     }
-    if (
-        developmentFullRefresh !== null &&
-        (verifiedNoDataEntries.length > 1 ||
-            (verifiedNoDataEntries.length === 1 &&
-                (verifiedNoDataEntries[0].anchorPnu !==
-                    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR ||
-                    verifiedNoDataEntries[0]
-                        .expectedPropertyUnitIds.length !==
-                        MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_PROPERTY_UNIT_COUNT ||
-                    verifiedNoDataEntries[0]
-                        .expectedProposedLandAreas.length !==
-                        0)))
-    ) {
+    if (verifiedNoDataEntries.length > 0) {
         throw new ControlledRunnerError(
-            'FULL_REFRESH_VERIFIED_NO_DATA_EVIDENCE_MISMATCH'
+            'FULL_REFRESH_VERIFIED_NO_DATA_EVIDENCE_FORBIDDEN'
         );
     }
     const entriesByPnu = new Map(
@@ -1470,6 +1470,24 @@ export function validateDevelopmentRunnerManifests(
     const approvedPnus = new Set(allowedScopePnus);
     const observedScannedPnus = new Set<string>();
     for (const entry of evidence.entries) {
+        const isOfficialParcelEvidence =
+            'kind' in entry.sourceReferences &&
+            entry.sourceReferences.kind ===
+                'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE';
+        if (
+            isOfficialParcelEvidence &&
+            (developmentFullRefresh === null ||
+                entry.expectedStrategy !== 'LADFRL' ||
+                entry.expectedScannedPnus.length !== 1 ||
+                entry.expectedScannedPnus[0] !==
+                    entry.anchorPnu ||
+                entry.expectedPropertyUnitIds.length !== 1 ||
+                entry.expectedProposedLandAreas.length !== 1)
+        ) {
+            throw new ControlledRunnerError(
+                'FULL_REFRESH_PARCEL_EVIDENCE_SHAPE_MISMATCH'
+            );
+        }
         if (entry.expectedScannedPnus.some((pnu) => !approvedPnus.has(pnu))) {
             throw new ControlledRunnerError('EVIDENCE_SCOPE_OUTSIDE_MANIFEST');
         }
@@ -1902,119 +1920,48 @@ function assertJobEvidenceMatches(
             : null;
     const sameRunOfficialEvidence =
         sameRunOfficialDigest !== null;
+    const sameRunOfficialParcelDigest =
+        'kind' in evidence.sourceReferences &&
+        evidence.sourceReferences.kind ===
+            'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE'
+            ? evidence.sourceReferences.officialParcelDigest
+            : null;
+    const sameRunOfficialParcelEvidence =
+        sameRunOfficialParcelDigest !== null;
     const verifiedNoDataEvidence =
         isVerifiedNoDataEvidenceEntry(evidence);
     if (verifiedNoDataEvidence) {
-        const source = evidence.sourceReferences as Extract<
-            DevelopmentApiCaptureEvidenceSourceReferences,
-            {
-                kind:
-                    'DEVELOPMENT_READ_ONLY_VERIFIED_NO_DATA_CAPTURE';
-            }
-        >;
-        const verified = snapshot.verifiedNoDataEvidence;
-        if (!verified) {
-            throw new ControlledRunnerError(
-                'JOB_EVIDENCE_VERIFIED_NO_DATA_MISSING'
-            );
-        }
-        const { evidenceDigest, ...verifiedCore } = verified;
-        const endpointEvidenceDigest = createHash('sha256')
-            .update(
-                canonicalInvariantJson({
-                    version:
-                        'land-area-sync.verified-no-data-endpoints.v1',
-                    endpointEvidence:
-                        verified.endpointEvidence,
-                }),
-                'utf8'
-            )
-            .digest('hex');
-        const propertyUnitIdsDigest = createHash('sha256')
-            .update(
-                canonicalInvariantJson({
-                    version:
-                        'land-area-sync.verified-no-data-property-ids.v1',
-                    propertyUnitIds:
-                        snapshot.candidatePropertyUnitIds,
-                }),
-                'utf8'
-            )
-            .digest('hex');
-        const endpointNames = verified.endpointEvidence.map(
-            (entry) => entry.endpoint
+        throw new ControlledRunnerError(
+            'JOB_EVIDENCE_VERIFIED_NO_DATA_FORBIDDEN'
         );
-        const zeroEndpoints = new Set([
-            'TITLE',
-            'BASIS',
-            'ATTACHED',
-            'EXPOS',
-            'LDAREG',
-        ]);
+    } else if (sameRunOfficialParcelEvidence) {
+        const resolution =
+            snapshot.developmentFullRefreshParcelResolution;
         if (
             developmentFullRefresh === null ||
-            verified.version !==
-                'land-area-sync.verified-no-data.v1' ||
-            verified.kind !== 'VERIFIED_NO_DATA' ||
-            verified.reason !==
-                'OFFICIAL_BUILDING_AND_LDAREG_ENDPOINTS_COMPLETE_ZERO' ||
-            verified.anchorPnu !== evidence.anchorPnu ||
-            evidence.anchorPnu !==
-                MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR ||
-            verified.propertyUnitCount !==
-                MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_PROPERTY_UNIT_COUNT ||
-            verified.propertyUnitCount !==
-                snapshot.candidatePropertyUnitIds.length ||
-            verified.propertyUnitIdsDigest !==
-                propertyUnitIdsDigest ||
-            verified.propertyMembershipHash !==
-                snapshot.propertyMembershipHash ||
-            verified.dbScopeHash !== snapshot.dbScopeHash ||
-            verified.manifestDigest !==
+            !resolution ||
+            resolution.source !==
+                'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON' ||
+            resolution.canonicalPnu !== evidence.anchorPnu ||
+            JSON.stringify(resolution.memberPnus) !==
+                JSON.stringify(evidence.expectedScannedPnus) ||
+            resolution.memberPnus.length !== 1 ||
+            resolution.memberPnus[0] !== resolution.canonicalPnu ||
+            snapshot.strategy !== 'LADFRL' ||
+            snapshot.candidatePropertyUnitIds.length !== 1 ||
+            !HEX64_RE.test(resolution.officialParcelDigest) ||
+            resolution.officialParcelDigest !==
+                sameRunOfficialParcelDigest ||
+            resolution.manifestDigest !==
                 developmentFullRefresh.manifestDigest ||
-            verified.scopeDigest !==
+            resolution.scopeDigest !==
                 developmentFullRefresh.scopeDigest ||
-            verified.endpointEvidenceDigest !==
-                endpointEvidenceDigest ||
-            evidenceDigest !==
-                createHash('sha256')
-                    .update(
-                        canonicalInvariantJson(verifiedCore),
-                        'utf8'
-                    )
-                    .digest('hex') ||
-            evidenceDigest !==
-                source.verifiedNoDataEvidenceDigest ||
-            JSON.stringify(endpointNames) !==
-                JSON.stringify([
-                    'TITLE',
-                    'BASIS',
-                    'ATTACHED',
-                    'EXPOS',
-                    'LADFRL',
-                    'LDAREG',
-                ]) ||
-            verified.endpointEvidence.some((entry) =>
-                zeroEndpoints.has(entry.endpoint)
-                    ? entry.state !== 'COMPLETE_ZERO' ||
-                      entry.totalCount !== 0 ||
-                      entry.rowCount !== 0
-                    : entry.endpoint !== 'LADFRL' ||
-                      entry.state !== 'COMPLETE' ||
-                      entry.totalCount !== 1 ||
-                      entry.rowCount !== 1
-            ) ||
-            verified.ladfrlArea !==
-                snapshot.ladfrlAreaEvidence.totalArea ||
-            snapshot.proposedLandAreas.length !== 0 ||
-            snapshot.projectionInputDigest !==
-                digestJson([]) ||
             snapshot.developmentFullRefreshScopeResolution !==
                 undefined ||
             snapshot.readOnlyScopeResolution !== undefined
         ) {
             throw new ControlledRunnerError(
-                'JOB_EVIDENCE_VERIFIED_NO_DATA_MISMATCH'
+                'JOB_EVIDENCE_FULL_REFRESH_PARCEL_RESOLUTION_MISMATCH'
             );
         }
     } else if (
@@ -2046,6 +1993,8 @@ function assertJobEvidenceMatches(
                 developmentFullRefresh.manifestDigest ||
             resolution.scopeDigest !==
                 developmentFullRefresh.scopeDigest ||
+            snapshot.developmentFullRefreshParcelResolution !==
+                undefined ||
             snapshot.readOnlyScopeResolution !== undefined
         ) {
             throw new ControlledRunnerError(
@@ -2059,6 +2008,15 @@ function assertJobEvidenceMatches(
     ) {
         throw new ControlledRunnerError(
             'JOB_EVIDENCE_UNEXPECTED_VERIFIED_NO_DATA'
+        );
+    }
+    if (
+        !sameRunOfficialParcelEvidence &&
+        snapshot.developmentFullRefreshParcelResolution !==
+            undefined
+    ) {
+        throw new ControlledRunnerError(
+            'JOB_EVIDENCE_UNEXPECTED_FULL_REFRESH_PARCEL_RESOLUTION'
         );
     }
     return snapshot;
@@ -2248,39 +2206,6 @@ function resultFromJob(
             job.landAreaSync?.counts?.unchangedPropertyUnits ?? 0,
         issueCodes: issueCodes(job),
     };
-}
-
-function assertVerifiedNoDataTerminal(
-    job: LandAreaSyncApiJob
-): void {
-    if (
-        job.status !== 'COMPLETED' ||
-        !hasWorkerFinalization(job) ||
-        job.landAreaSync?.outcome !== 'NO_DATA' ||
-        job.landAreaSync.scopeState !==
-            'LINKED_SCOPE_RESOLVED' ||
-        job.landAreaSync.sourceDiscoveryJobId !== null ||
-        hasBlockingIssue(job)
-    ) {
-        throw new ControlledRunnerError(
-            'VERIFIED_NO_DATA_TERMINAL_NOT_PASS'
-        );
-    }
-    assertCompleteTerminalIssues(
-        job,
-        'VERIFIED_NO_DATA_TERMINAL_ISSUES_INCOMPLETE'
-    );
-    if (
-        (job.landAreaSync.issues?.length ?? -1) !== 0 ||
-        job.landAreaSync.issuesTotal !== 0 ||
-        job.landAreaSync.counts?.updatedPropertyUnits !== 0 ||
-        job.landAreaSync.counts?.unchangedPropertyUnits !==
-            MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_PROPERTY_UNIT_COUNT
-    ) {
-        throw new ControlledRunnerError(
-            'VERIFIED_NO_DATA_TERMINAL_NOT_PASS'
-        );
-    }
 }
 
 function assertAppliedTerminal(job: LandAreaSyncApiJob): void {
@@ -3291,7 +3216,7 @@ export async function runDevelopmentLandAreaSync(input: {
             let admission: DevelopmentRunTargetResult['admission'] =
                 'RESUMED_LATEST';
             // 전체 재조회는 이전 latest/APPLIED를 재사용하지 않는다. 매 실행마다 모든
-            // 279 official component가 새 discovery를 통해 공식 API를 다시 조회해야 한다.
+            // 278 official component가 새 discovery를 통해 공식 API를 다시 조회해야 한다.
             let latest =
                 developmentFullRefresh === null
                     ? await input.client.getLatest(
@@ -3393,33 +3318,9 @@ export async function runDevelopmentLandAreaSync(input: {
                 );
             }
             if (isVerifiedNoDataEvidenceEntry(evidence)) {
-                if (applyJobId !== null) {
-                    throw new ControlledRunnerError(
-                        'VERIFIED_NO_DATA_APPLY_JOB_FORBIDDEN'
-                    );
-                }
-                assertVerifiedNoDataTerminal(terminal);
-                assertJobEvidenceMatches(
-                    terminal,
-                    evidence,
-                    true,
-                    developmentFullRefresh
+                throw new ControlledRunnerError(
+                    'VERIFIED_NO_DATA_EXECUTION_FORBIDDEN'
                 );
-                for (const propertyUnitId of evidence.expectedPropertyUnitIds) {
-                    observedPropertyUnitIds.add(
-                        propertyUnitId
-                    );
-                }
-                results.push(
-                    resultFromJob(
-                        pnu,
-                        admission,
-                        discoveryJobId,
-                        null,
-                        terminal
-                    )
-                );
-                continue;
             }
             if (
                 terminal.landAreaSync?.scopeState ===
@@ -4223,16 +4124,8 @@ export function validateDevelopmentRunArtifact(
             throw new ControlledRunnerError('RUN_ARTIFACT_INVALID');
         }
         if (
-            (result.outcome === 'NO_DATA'
-                ? result.pnu !==
-                      MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR ||
-                  result.writerJobId !== null ||
-                  result.applyJobId !== null ||
-                  result.strategy !== null ||
-                  result.updatedPropertyUnits !== 0 ||
-                  result.unchangedPropertyUnits !==
-                      MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_PROPERTY_UNIT_COUNT
-                : result.writerJobId === null)
+            result.outcome === 'NO_DATA' ||
+            result.writerJobId === null
         ) {
             throw new ControlledRunnerError(
                 'RUN_ARTIFACT_RESULT_WRITER_INVALID'
@@ -4332,20 +4225,12 @@ export function validateDevelopmentRunArtifact(
             results.some(
                 (result) =>
                     result.status !== 'COMPLETED' ||
-                    (result.outcome !== 'APPLIED' &&
-                        result.outcome !== 'NO_DATA')
+                    result.outcome !== 'APPLIED'
             ) ||
-            verifiedNoDataResults.length > 1 ||
-            (verifiedNoDataResults.length === 1 &&
-                (verifiedNoDataResults[0].pnu !==
-                    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR ||
-                    verifiedNoDataPropertyUnitCount !==
-                        MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_PROPERTY_UNIT_COUNT)) ||
-            projectableResults.length +
-                verifiedNoDataResults.length !==
-                results.length ||
-            projectablePropertyUnitCount +
-                verifiedNoDataPropertyUnitCount !==
+            verifiedNoDataResults.length !== 0 ||
+            verifiedNoDataPropertyUnitCount !== 0 ||
+            projectableResults.length !== results.length ||
+            projectablePropertyUnitCount !==
                 target.expectedPropertyUnitCount ||
             !preflight ||
             !postflight ||
@@ -4948,22 +4833,16 @@ export function validateDevelopmentPublicRunArtifact(
                 (aggregateCounts.projectableResultCount as number) ||
                 aggregateCounts.attributedPropertyUnitCount !==
                     aggregateCounts.projectablePropertyUnitCount)) ||
-        (aggregateCounts.projectableResultCount as number) +
-            (aggregateCounts.verifiedNoDataResultCount as number) !==
-            (aggregateCounts.resultCount as number) ||
-        (aggregateCounts.projectablePropertyUnitCount as number) +
-            (aggregateCounts.verifiedNoDataPropertyUnitCount as number) !==
-            (aggregateCounts.observedPropertyUnitCount as number) ||
+        aggregateCounts.projectableResultCount !==
+            aggregateCounts.resultCount ||
+        aggregateCounts.projectablePropertyUnitCount !==
+            aggregateCounts.observedPropertyUnitCount ||
         outcomeCounts.APPLIED !==
             aggregateCounts.projectableResultCount ||
         outcomeCounts.NO_DATA !==
             aggregateCounts.verifiedNoDataResultCount ||
-        (aggregateCounts.verifiedNoDataResultCount as number) > 1 ||
-        ((aggregateCounts.verifiedNoDataResultCount as number) === 0
-            ? aggregateCounts.verifiedNoDataPropertyUnitCount !==
-              0
-            : aggregateCounts.verifiedNoDataPropertyUnitCount !==
-              MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_PROPERTY_UNIT_COUNT) ||
+        aggregateCounts.verifiedNoDataResultCount !== 0 ||
+        aggregateCounts.verifiedNoDataPropertyUnitCount !== 0 ||
         (gate.status === 'PASS' &&
             (gate.failureCode !== null ||
                 aggregateCounts.observedPropertyUnitCount !==
@@ -4971,18 +4850,14 @@ export function validateDevelopmentPublicRunArtifact(
                 aggregateCounts.resultCount !==
                     aggregateCounts.targetCount ||
                 outcomeKeys
-                    .filter(
-                        (key) =>
-                            key !== 'APPLIED' &&
-                            key !== 'NO_DATA'
-                    )
+                    .filter((key) => key !== 'APPLIED')
                     .some((key) => outcomeCounts[key] !== 0) ||
                 preflightFields.some((field) => field === null) ||
                 postflightFields.some((field) => field === null) ||
                 attributionFields.some((field) => field === null) ||
                 (manifestLabel ===
-                    'mia-seven-full-279-official-components-api-readonly-20260728' &&
-                    (aggregateCounts.targetCount !== 279 ||
+                    'mia-seven-full-278-official-components-api-readonly-20260729' &&
+                    (aggregateCounts.targetCount !== 278 ||
                         aggregateCounts.expectedPropertyUnitCount !==
                             429 ||
                         digests.manifestDigest !==

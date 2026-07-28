@@ -24,6 +24,7 @@ import {
     captureDevelopmentLandAreaEvidence,
     developmentEvidenceEntryFromSnapshot,
     hasStableDevelopmentActivePropertyIdentity,
+    isDevelopmentEvidenceCapturePromotionEligible,
 } from '../src/operations/development-land-area-evidence-capture';
 import type { LandAreaSyncScopeSnapshot } from '../src/types/land-area-sync-job.types';
 
@@ -45,8 +46,8 @@ const MIA_FULL_299_TARGET_URL = new URL(
     '../development-land-area-sync-manifests/mia-seven-full-299-api-readonly-target-20260728.json',
     import.meta.url
 );
-const MIA_FULL_279_OFFICIAL_COMPONENT_TARGET_URL = new URL(
-    '../development-land-area-sync-manifests/mia-seven-full-279-official-components-api-readonly-target-20260728.json',
+const MIA_FULL_278_OFFICIAL_COMPONENT_TARGET_URL = new URL(
+    '../development-land-area-sync-manifests/mia-seven-full-278-official-components-api-readonly-target-20260729.json',
     import.meta.url
 );
 const MIA_FULL_299_DELTA = [
@@ -287,13 +288,13 @@ test('미아7 전체 API 재조회 target은 활성 anchor 299건과 property un
     );
 });
 
-test('미아7 component target은 활성 299 PNU를 공식 279 component·301 조회 scope로 고정한다', () => {
+test('미아7 component target은 활성 299 PNU를 공식 278 component·301 조회 scope로 고정한다', () => {
     const full299 = parseDevelopmentTargetManifest(
         JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
     );
     const component279 = parseDevelopmentTargetManifest(
         JSON.parse(
-            readFileSync(MIA_FULL_279_OFFICIAL_COMPONENT_TARGET_URL, 'utf8')
+            readFileSync(MIA_FULL_278_OFFICIAL_COMPONENT_TARGET_URL, 'utf8')
         )
     );
     assert.equal(
@@ -308,8 +309,8 @@ test('미아7 component target은 활성 299 PNU를 공식 279 component·301 �
         throw new Error('v2 full manifests expected');
     }
 
-    assert.equal(component279.anchors.length, 279);
-    assert.equal(component279.targetCount, 279);
+    assert.equal(component279.anchors.length, 278);
+    assert.equal(component279.targetCount, 278);
     assert.equal(component279.allowedScopePnus.length, 301);
     assert.equal(component279.expectedPropertyUnitCount, 429);
     assert.equal(
@@ -366,6 +367,7 @@ test('미아7 component target은 활성 299 PNU를 공식 279 component·301 �
             '1130510100107912213',
             ...officialAttachedActivePnus,
             '1130510100107912344',
+            '1130510100107913568',
         ].sort()
     );
     for (const attachedPnu of officialAttachedActivePnus) {
@@ -431,7 +433,7 @@ test('pinned v3 capture snapshot은 singleton까지 full-refresh official digest
     const component279 = parseDevelopmentTargetManifest(
         JSON.parse(
             readFileSync(
-                MIA_FULL_279_OFFICIAL_COMPONENT_TARGET_URL,
+                MIA_FULL_278_OFFICIAL_COMPONENT_TARGET_URL,
                 'utf8'
             )
         )
@@ -475,13 +477,240 @@ test('pinned v3 capture snapshot은 singleton까지 full-refresh official digest
     });
 });
 
+test('pinned v3 공식 parcel singleton은 component를 위조하지 않는 별도 provenance로 기록한다', () => {
+    const component279 = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(
+                MIA_FULL_278_OFFICIAL_COMPONENT_TARGET_URL,
+                'utf8'
+            )
+        )
+    );
+    if (
+        component279.version !==
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v3 full target expected');
+    }
+    const parcelSnapshot: LandAreaSyncScopeSnapshot = {
+        ...snapshot('MANUAL', '8.26'),
+        developmentFullRefreshParcelResolution: {
+            source:
+                'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON',
+            canonicalPnu: PNU,
+            memberPnus: [PNU],
+            officialParcelDigest: 'b'.repeat(64),
+            manifestDigest: component279.manifestDigest,
+            scopeDigest: component279.scopeDigest,
+        },
+    };
+    const entry = developmentEvidenceEntryFromSnapshot({
+        target: component279,
+        captureRunId: '30118336235',
+        anchorPnu: PNU,
+        snapshot: parcelSnapshot,
+    });
+    assert.ok('kind' in entry.sourceReferences);
+    if (!('kind' in entry.sourceReferences)) {
+        throw new Error('official parcel capture provenance expected');
+    }
+    assert.deepEqual(entry.sourceReferences, {
+        kind:
+            'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE',
+        captureRunId: '30118336235',
+        snapshotReferenceSha256:
+            entry.sourceReferences.snapshotReferenceSha256,
+        officialParcelDigest: 'b'.repeat(64),
+    });
+    assert.equal(
+        'officialComponentDigest' in entry.sourceReferences,
+        false
+    );
+});
+
+test('공식 parcel capture의 산출·digest는 기존 MANUAL 값과 무관하고 prestate만 보존한다', () => {
+    const component279 = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(
+                MIA_FULL_278_OFFICIAL_COMPONENT_TARGET_URL,
+                'utf8'
+            )
+        )
+    );
+    if (
+        component279.version !==
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v3 full target expected');
+    }
+    const parcelResolution = {
+        source:
+            'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON' as const,
+        canonicalPnu: PNU,
+        memberPnus: [PNU],
+        officialParcelDigest: 'c'.repeat(64),
+        manifestDigest: component279.manifestDigest,
+        scopeDigest: component279.scopeDigest,
+    };
+    const first = developmentEvidenceEntryFromSnapshot({
+        target: component279,
+        captureRunId: '30118336235',
+        anchorPnu: PNU,
+        snapshot: {
+            ...snapshot('MANUAL', '8.26'),
+            developmentFullRefreshParcelResolution:
+                parcelResolution,
+        },
+    });
+    const second = developmentEvidenceEntryFromSnapshot({
+        target: component279,
+        captureRunId: '30118336235',
+        anchorPnu: PNU,
+        snapshot: {
+            ...snapshot('MANUAL', '999'),
+            developmentFullRefreshParcelResolution:
+                parcelResolution,
+        },
+    });
+
+    assert.deepEqual(
+        first.sourceReferences,
+        second.sourceReferences
+    );
+    assert.deepEqual(
+        first.expectedProposedLandAreas,
+        second.expectedProposedLandAreas
+    );
+    assert.notDeepEqual(
+        first.allowedPrestates,
+        second.allowedPrestates
+    );
+});
+
+test('공식 parcel resolution은 다른 scope/no-data resolution과 동시 존재할 수 없다', () => {
+    const component279 = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(
+                MIA_FULL_278_OFFICIAL_COMPONENT_TARGET_URL,
+                'utf8'
+            )
+        )
+    );
+    if (
+        component279.version !==
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v3 full target expected');
+    }
+    assert.throws(
+        () =>
+            developmentEvidenceEntryFromSnapshot({
+                target: component279,
+                captureRunId: '30118336235',
+                anchorPnu: PNU,
+                snapshot: {
+                    ...snapshot(),
+                    developmentFullRefreshScopeResolution: {
+                        source:
+                            'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
+                        canonicalBasePnu: PNU,
+                        memberPnus: [PNU],
+                        managementPk: '1010111038',
+                        pairCount: 0,
+                        officialComponentDigest: 'a'.repeat(64),
+                        manifestDigest:
+                            component279.manifestDigest,
+                        scopeDigest: component279.scopeDigest,
+                    },
+                    developmentFullRefreshParcelResolution: {
+                        source:
+                            'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON',
+                        canonicalPnu: PNU,
+                        memberPnus: [PNU],
+                        officialParcelDigest: 'b'.repeat(64),
+                        manifestDigest:
+                            component279.manifestDigest,
+                        scopeDigest: component279.scopeDigest,
+                    },
+                },
+            }),
+        /CAPTURE_OFFICIAL_PARCEL_RESOLUTION_INVALID/
+    );
+    assert.throws(
+        () =>
+            developmentEvidenceEntryFromSnapshot({
+                target: component279,
+                captureRunId: '30118336235',
+                anchorPnu: PNU,
+                snapshot: {
+                    ...snapshot(),
+                    scannedPnus: [PNU, PNU],
+                    developmentFullRefreshParcelResolution: {
+                        source:
+                            'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON',
+                        canonicalPnu: PNU,
+                        memberPnus: [PNU, PNU],
+                        officialParcelDigest: 'b'.repeat(64),
+                        manifestDigest:
+                            component279.manifestDigest,
+                        scopeDigest: component279.scopeDigest,
+                    },
+                },
+            }),
+        /CAPTURE_OFFICIAL_PARCEL_RESOLUTION_INVALID/
+    );
+});
+
+test('promotion gate는 full refresh에서도 verified no-data를 금지하고 component+parcel exact 합계만 허용한다', () => {
+    assert.equal(
+        isDevelopmentEvidenceCapturePromotionEligible({
+            fullRefreshWriteEligible: true,
+            targetCount: 6,
+            sameRunOfficialComponentCount: 4,
+            sameRunOfficialParcelCount: 2,
+            verifiedNoDataCount: 0,
+        }),
+        true
+    );
+    assert.equal(
+        isDevelopmentEvidenceCapturePromotionEligible({
+            fullRefreshWriteEligible: true,
+            targetCount: 6,
+            sameRunOfficialComponentCount: 3,
+            sameRunOfficialParcelCount: 2,
+            verifiedNoDataCount: 1,
+        }),
+        false
+    );
+    assert.equal(
+        isDevelopmentEvidenceCapturePromotionEligible({
+            fullRefreshWriteEligible: false,
+            targetCount: 1,
+            sameRunOfficialComponentCount: 0,
+            sameRunOfficialParcelCount: 0,
+            verifiedNoDataCount: 0,
+        }),
+        true
+    );
+    assert.equal(
+        isDevelopmentEvidenceCapturePromotionEligible({
+            fullRefreshWriteEligible: false,
+            targetCount: 1,
+            sameRunOfficialComponentCount: 0,
+            sameRunOfficialParcelCount: 1,
+            verifiedNoDataCount: 0,
+        }),
+        false
+    );
+});
+
 test('v3 전체 capture는 실행 직전 DEV 활성 429호·299 PNU exact 집합을 고정한다', () => {
     const full299 = parseDevelopmentTargetManifest(
         JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
     );
     const component279 = parseDevelopmentTargetManifest(
         JSON.parse(
-            readFileSync(MIA_FULL_279_OFFICIAL_COMPONENT_TARGET_URL, 'utf8')
+            readFileSync(MIA_FULL_278_OFFICIAL_COMPONENT_TARGET_URL, 'utf8')
         )
     );
     if (
@@ -489,7 +718,7 @@ test('v3 전체 capture는 실행 직전 DEV 활성 429호·299 PNU exact 집합
         component279.version !==
             DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
     ) {
-        throw new Error('v2 full299 and v3 full279 expected');
+        throw new Error('v2 full299 and v3 full278 expected');
     }
     const rows = Array.from(
         {
@@ -542,13 +771,13 @@ test('v3 전체 capture는 실행 직전 DEV 활성 429호·299 PNU exact 집합
     );
 });
 
-test('279 official component capture는 anchor 밖 active PNU 20개를 허용하되 301 조회 scope 밖 PNU는 거부한다', () => {
+test('278 official component capture는 anchor 밖 active PNU 21개를 허용하되 301 조회 scope 밖 PNU는 거부한다', () => {
     const full299 = parseDevelopmentTargetManifest(
         JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
     );
     const component279 = parseDevelopmentTargetManifest(
         JSON.parse(
-            readFileSync(MIA_FULL_279_OFFICIAL_COMPONENT_TARGET_URL, 'utf8')
+            readFileSync(MIA_FULL_278_OFFICIAL_COMPONENT_TARGET_URL, 'utf8')
         )
     );
     if (
