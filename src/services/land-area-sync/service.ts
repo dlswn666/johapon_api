@@ -11,10 +11,17 @@
  */
 
 import {
+    createDevelopmentFullRefreshOfficialOnlyDbScope,
+    createSameRunOfficialDevelopmentFullRefreshEffectiveScope,
+    createSameRunOfficialReadOnlyEffectiveScope,
     parseDbScopeResolution,
     resolveParcelScopeCompleteness,
+    resolveSameRunOfficialDevelopmentFullRefreshComponent,
+    resolveSameRunOfficialReadOnlyComponent,
     type DbScopeResolution,
     type BasePnuScan,
+    type SameRunOfficialDevelopmentFullRefreshComponent,
+    type SameRunOfficialReadOnlyComponent,
 } from './scope';
 import { BYLOT_SOURCE_POLICY, bylotBasisFallbackPlan } from './bylot';
 import {
@@ -63,8 +70,14 @@ import type {
     LandAreaSyncApplyLadfrlItem,
     LandAreaSyncApplyLdaregItem,
     ApplyPropertyLandAreaSyncParams,
+    LandAreaSyncDevelopmentFullRefresh,
     ResolveScopeParams,
 } from '../../types/land-area-sync-job.types';
+import type { DatabaseTarget } from '../../types/database.types';
+import {
+    assertDevelopmentLandAreaFullRefreshAllowed,
+    parseDevelopmentLandAreaFullRefreshMarker,
+} from '../../security/development-land-area-full-refresh-policy';
 
 // ── 주입 계약 ─────────────────────────────────────────────────────
 
@@ -118,6 +131,8 @@ export interface LandAreaSyncDbDeps {
 export interface LandAreaSyncDeps {
     scans: LandAreaSyncScanDeps;
     db: LandAreaSyncDbDeps;
+    /** full-refresh production hard deny와 DB target lineage 검증용. */
+    databaseTarget?: DatabaseTarget;
     now(): Date;
     /** apply 직전 resolved scope의 모든 PNU를 DB target-qualified allowlist로 재검증한다. */
     assertCanaryScopeAllowed(unionId: string, scannedPnus: readonly string[]): void;
@@ -227,6 +242,17 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         await deps.db.markScopedFailed(jobId, unionId, 'anchor PNU 가 유효하지 않습니다.');
         return;
     }
+    const developmentFullRefresh =
+        parseDevelopmentLandAreaFullRefreshMarker(
+            land.developmentFullRefresh
+        );
+    if (developmentFullRefresh) {
+        assertDevelopmentLandAreaFullRefreshAllowed({
+            databaseTarget: deps.databaseTarget,
+            unionId,
+            marker: developmentFullRefresh,
+        });
+    }
     const isApplyJob = typeof land.sourceDiscoveryJobId === 'string' && land.confirmation != null;
     const overwriteManualConfirmed =
         isApplyJob && (land.confirmation as { overwriteManualConfirmed?: boolean } | null)?.overwriteManualConfirmed === true;
@@ -251,7 +277,10 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
 
     // ── Phase 3: gate 입력 scan 완료(LINKED: 전 base / no-cache: anchor) ──
     const basePnus =
-        dbScope.dbState === 'LINKED' && dbScope.linkedBasePnus.length > 0
+        developmentFullRefresh
+            ? [anchorPnu]
+            : dbScope.dbState === 'LINKED' &&
+                dbScope.linkedBasePnus.length > 0
             ? [...new Set(dbScope.linkedBasePnus)].sort()
             : [anchorPnu];
     const policy = BYLOT_SOURCE_POLICY.policy;
@@ -274,7 +303,119 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
     }
 
     // ── Phase 4: 공통 gate ──
-    const gate = resolveParcelScopeCompleteness({ dbScope, baseScans, policy });
+    let effectiveDbScope =
+        (developmentFullRefresh
+            ? createDevelopmentFullRefreshOfficialOnlyDbScope(
+                  dbScope,
+                  anchorPnu
+              )
+            : null) ?? dbScope;
+    let preloadedPropertyUnits: PropertyUnitCandidate[] | null = null;
+    let readOnlyScopeResolution:
+        | SameRunOfficialReadOnlyComponent
+        | null = null;
+    let developmentFullRefreshScopeResolution:
+        | SameRunOfficialDevelopmentFullRefreshComponent
+        | null = null;
+    let gate = resolveParcelScopeCompleteness({
+        dbScope: effectiveDbScope,
+        baseScans,
+        policy,
+    });
+
+    // relation이 없는 공식 attached component는 READ_ONLY_CAPTURE, 또는 repo-pinned
+    // DEV 전체 갱신에서만 같은 실행의 strict title/attached/bylot으로 확장한다.
+    // DEV 전체 갱신은 discovery와 apply가 각각 새로 이 분기를 실행한다.
+    if (
+        (deps.executionMode === 'READ_ONLY_CAPTURE' &&
+            !isApplyJob) ||
+        developmentFullRefresh
+    ) {
+        const component = developmentFullRefresh
+            ? resolveSameRunOfficialDevelopmentFullRefreshComponent({
+                  anchorPnu,
+                  dbScope,
+                  baseScans,
+                  policy,
+              })
+            : resolveSameRunOfficialReadOnlyComponent({
+                  anchorPnu,
+                  dbScope,
+                  baseScans,
+                  policy,
+              });
+        if (component) {
+            deps.assertCanaryScopeAllowed(
+                unionId,
+                component.memberPnus
+            );
+            preloadedPropertyUnits =
+                await deps.db.readPropertyUnits(
+                    unionId,
+                    component.memberPnus
+                );
+            if (aborted(signal)) return;
+            const memberSet = new Set(component.memberPnus);
+            const activePropertyUnits = preloadedPropertyUnits.filter(
+                (row) => !row.isDeleted
+            );
+            if (
+                activePropertyUnits.some(
+                    (row) =>
+                        row.unionId !== unionId ||
+                        typeof row.pnu !== 'string' ||
+                        !memberSet.has(row.pnu)
+                ) ||
+                new Set(activePropertyUnits.map((row) => row.id)).size !==
+                    activePropertyUnits.length
+            ) {
+                throw new Error(
+                    developmentFullRefresh
+                        ? 'DEVELOPMENT_FULL_REFRESH_SCOPE_MEMBERSHIP_INVALID'
+                        : 'READ_ONLY_SCOPE_MEMBERSHIP_INVALID'
+                );
+            }
+            const propertyMembership = activePropertyUnits
+                .map((row) => ({
+                    propertyUnitId: row.id,
+                    pnu: row.pnu,
+                }))
+                .sort((left, right) =>
+                    left.propertyUnitId.localeCompare(
+                        right.propertyUnitId
+                    )
+                );
+            effectiveDbScope = developmentFullRefresh
+                ? createSameRunOfficialDevelopmentFullRefreshEffectiveScope(
+                      {
+                          dbScope,
+                          component:
+                              component as SameRunOfficialDevelopmentFullRefreshComponent,
+                          propertyMembership,
+                      }
+                  )
+                : createSameRunOfficialReadOnlyEffectiveScope({
+                      dbScope,
+                      component:
+                          component as SameRunOfficialReadOnlyComponent,
+                      propertyMembership,
+                  });
+            gate = resolveParcelScopeCompleteness({
+                dbScope: effectiveDbScope,
+                baseScans,
+                policy,
+            });
+            if (gate.state === 'LINKED_SCOPE_RESOLVED') {
+                if (developmentFullRefresh) {
+                    developmentFullRefreshScopeResolution =
+                        component as SameRunOfficialDevelopmentFullRefreshComponent;
+                } else {
+                    readOnlyScopeResolution =
+                        component as SameRunOfficialReadOnlyComponent;
+                }
+            }
+        }
+    }
 
     const attachedAll: BrAtchJibunRow[] = baseScans.flatMap((b) => rows(b.attached));
     const assembledAttached = assembleAttachedPnus(
@@ -366,7 +507,7 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         overwriteManualConfirmed,
         confirmation: (land.confirmation as LandAreaSyncConfirmation | null | undefined) ?? null,
         scanStartedAt,
-        dbScope,
+        dbScope: effectiveDbScope,
         scopeEvidence,
         // gate 는 SINGLE_PNU_CONFIRMED 를 스스로 발급하지 않는다. 방어적으로 confirmation 요구로 취급.
         gateState: gate.state === 'LINKED_SCOPE_RESOLVED' ? 'LINKED_SCOPE_RESOLVED' : 'SINGLE_SCOPE_CONFIRMATION_REQUIRED',
@@ -378,6 +519,10 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         resolverRootPks: rootPks,
         baseScans,
         parcelSingletonBasis,
+        preloadedPropertyUnits,
+        readOnlyScopeResolution,
+        developmentFullRefresh,
+        developmentFullRefreshScopeResolution,
     };
 
     if (strategy === 'LADFRL') {
@@ -413,6 +558,20 @@ interface BranchContext {
     /** 분류 불확정이어도 unit identity가 전혀 없는 DB parcel singleton임을 입증한 좁은 경로. */
     parcelSingletonBasis:
         | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+        | null;
+    /** same-run official component에서 이미 읽은 matcher 후보(중복 DB read 방지). */
+    preloadedPropertyUnits: PropertyUnitCandidate[] | null;
+    /** 일반 apply로 승격할 수 없는 READ_ONLY_CAPTURE 전용 scope provenance. */
+    readOnlyScopeResolution:
+        | SameRunOfficialReadOnlyComponent
+        | null;
+    /** repo-pinned DEV 전체 API 재조회 표식. */
+    developmentFullRefresh:
+        | LandAreaSyncDevelopmentFullRefresh
+        | null;
+    /** relation과 독립적으로 같은 실행에서 확정한 공식 component. */
+    developmentFullRefreshScopeResolution:
+        | SameRunOfficialDevelopmentFullRefreshComponent
         | null;
 }
 
@@ -485,7 +644,7 @@ async function runLadfrlBranch(ctx: BranchContext): Promise<void> {
     const proposedLandAreas: LandAreaSyncProposedArea[] = [{ propertyUnitId, landArea: ladfrlArea ?? '0' }];
     const items: LandAreaSyncApplyLadfrlItem[] = [{ propertyUnitId, targetPnu, ladfrlArea }];
 
-    const snapshot = buildScopeSnapshot({
+    const baseSnapshot = buildScopeSnapshot({
         strategy: 'LADFRL',
         frozenAt: deps.now().toISOString(),
         scannedPnus: ctx.scannedPnus,
@@ -511,8 +670,70 @@ async function runLadfrlBranch(ctx: BranchContext): Promise<void> {
         ],
         projectionItems: items,
     });
+    const snapshot: LandAreaSyncScopeSnapshot = {
+        ...baseSnapshot,
+        ...(ctx.developmentFullRefresh &&
+        ctx.developmentFullRefreshScopeResolution
+            ? {
+                  developmentFullRefreshScopeResolution: {
+                      source:
+                          ctx.developmentFullRefreshScopeResolution
+                              .source,
+                      canonicalBasePnu:
+                          ctx.developmentFullRefreshScopeResolution
+                              .canonicalBasePnu,
+                      memberPnus: [
+                          ...ctx.developmentFullRefreshScopeResolution
+                              .memberPnus,
+                      ],
+                      managementPk:
+                          ctx.developmentFullRefreshScopeResolution
+                              .managementPk,
+                      pairCount:
+                          ctx.developmentFullRefreshScopeResolution
+                              .pairCount,
+                      officialComponentDigest:
+                          ctx.developmentFullRefreshScopeResolution
+                              .officialComponentDigest,
+                      manifestDigest:
+                          ctx.developmentFullRefresh
+                              .manifestDigest,
+                      scopeDigest:
+                          ctx.developmentFullRefresh.scopeDigest,
+                  },
+              }
+            : {}),
+    };
 
     const counts = { ...gateCounts(ctx.baseScans), landRegistryRows: rows(ladfrl).length, matchedPropertyUnits: 1 };
+
+    const manualOverwriteRequired =
+        ctx.developmentFullRefresh !== null &&
+        currentLandTuples.some(
+            (tuple) =>
+                tuple.propertyUnitId === propertyUnitId &&
+                tuple.source === 'MANUAL'
+        );
+    if (
+        ctx.developmentFullRefresh &&
+        ctx.isApplyJob &&
+        manualOverwriteRequired &&
+        !ctx.overwriteManualConfirmed
+    ) {
+        await finalizeDiscoveryTerminal(deps, jobId, unionId, {
+            status: 'COMPLETED',
+            scopeState: 'REVIEW_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
+            issues: [
+                {
+                    code: 'MANUAL_OVERWRITE_CONFIRMATION_REQUIRED',
+                    propertyUnitId,
+                },
+            ],
+            counts,
+        });
+        return;
+    }
 
     if (ctx.isApplyJob) {
         // 확인된 apply job — snapshot 은 이미 고정. 재실행 fresh digest 로 apply RPC 호출.
@@ -521,7 +742,15 @@ async function runLadfrlBranch(ctx: BranchContext): Promise<void> {
     }
 
     // discovery: LADFRL 은 항상 SYSTEM_ADMIN 확인 필요(§13.3). snapshot 고정 후 confirmation 대기.
-    await freezeAndOfferConfirmation(ctx, 'LADFRL', 'SINGLE_SCOPE_CONFIRMATION_REQUIRED', snapshot, counts);
+    await freezeAndOfferConfirmation(
+        ctx,
+        'LADFRL',
+        manualOverwriteRequired
+            ? 'MANUAL_OVERWRITE_CONFIRMATION_REQUIRED'
+            : 'SINGLE_SCOPE_CONFIRMATION_REQUIRED',
+        snapshot,
+        counts
+    );
 }
 
 // ── LDAREG 분기 ───────────────────────────────────────────────────
@@ -643,7 +872,9 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
     }
 
     const buildingUnits = await deps.db.readBuildingUnits(unionId, scannedPnus);
-    const propertyUnits = await deps.db.readPropertyUnits(unionId, scannedPnus);
+    const propertyUnits =
+        ctx.preloadedPropertyUnits ??
+        (await deps.db.readPropertyUnits(unionId, scannedPnus));
     if (aborted(signal)) return;
     const canonicalBasePnus =
         ctx.dbScope.dbState === 'LINKED'
@@ -712,7 +943,7 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
             landArea: sumCurrentNumerators(item),
         }));
 
-    const snapshot = buildScopeSnapshot({
+    const baseSnapshot = buildScopeSnapshot({
         strategy: 'LDAREG',
         frozenAt: deps.now().toISOString(),
         scannedPnus,
@@ -732,6 +963,100 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
         componentMatchDigest: assembled.componentMatchDigest,
         projectionItems: items,
     });
+    const snapshot: LandAreaSyncScopeSnapshot = {
+        ...baseSnapshot,
+        ...(ctx.readOnlyScopeResolution
+            ? {
+                  readOnlyScopeResolution: {
+                      source:
+                          ctx.readOnlyScopeResolution.source,
+                      canonicalBasePnu:
+                          ctx.readOnlyScopeResolution
+                              .canonicalBasePnu,
+                      memberPnus: [
+                          ...ctx.readOnlyScopeResolution.memberPnus,
+                      ],
+                      officialComponentDigest:
+                          ctx.readOnlyScopeResolution
+                              .officialComponentDigest,
+                  },
+              }
+            : {}),
+        ...(ctx.developmentFullRefresh &&
+        ctx.developmentFullRefreshScopeResolution
+            ? {
+                  developmentFullRefreshScopeResolution: {
+                      source:
+                          ctx.developmentFullRefreshScopeResolution
+                              .source,
+                      canonicalBasePnu:
+                          ctx.developmentFullRefreshScopeResolution
+                              .canonicalBasePnu,
+                      memberPnus: [
+                          ...ctx.developmentFullRefreshScopeResolution
+                              .memberPnus,
+                      ],
+                      managementPk:
+                          ctx.developmentFullRefreshScopeResolution
+                              .managementPk,
+                      pairCount:
+                          ctx.developmentFullRefreshScopeResolution
+                              .pairCount,
+                      officialComponentDigest:
+                          ctx.developmentFullRefreshScopeResolution
+                              .officialComponentDigest,
+                      manifestDigest:
+                          ctx.developmentFullRefresh
+                              .manifestDigest,
+                      scopeDigest:
+                          ctx.developmentFullRefresh.scopeDigest,
+                  },
+              }
+            : {}),
+    };
+
+    // DEV 전체 갱신 prepare는 항상 snapshot만 고정하고 owner confirmation을 기다린다.
+    // MANUAL은 계산/선택에 사용하지 않고 overwrite 동시성 승인 여부만 결정한다.
+    const manualOverwriteRequired =
+        ctx.developmentFullRefresh !== null &&
+        currentLandTuples.some(
+            (tuple) =>
+                tuple.source === 'MANUAL' &&
+                candidateIds.includes(tuple.propertyUnitId)
+        );
+    if (
+        ctx.developmentFullRefresh &&
+        ctx.isApplyJob &&
+        manualOverwriteRequired &&
+        !ctx.overwriteManualConfirmed
+    ) {
+        await finalizeDiscoveryTerminal(deps, jobId, unionId, {
+            status: 'COMPLETED',
+            scopeState: 'REVIEW_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
+            issues: [
+                {
+                    code: 'MANUAL_OVERWRITE_CONFIRMATION_REQUIRED',
+                },
+                ...assembled.issues,
+            ],
+            counts,
+        });
+        return;
+    }
+    if (ctx.developmentFullRefresh && !ctx.isApplyJob) {
+        await freezeAndOfferConfirmation(
+            ctx,
+            'LDAREG',
+            manualOverwriteRequired
+                ? 'MANUAL_OVERWRITE_CONFIRMATION_REQUIRED'
+                : 'SINGLE_SCOPE_CONFIRMATION_REQUIRED',
+            snapshot,
+            counts,
+            assembled.issues
+        );
+        return;
+    }
 
     if (ctx.gateState === 'SINGLE_SCOPE_CONFIRMATION_REQUIRED') {
         // 확인된 apply job 을 confirmation 재제안보다 먼저 처리한다(LADFRL 패턴 미러).

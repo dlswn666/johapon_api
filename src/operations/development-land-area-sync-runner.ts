@@ -3,7 +3,14 @@ import jwt from 'jsonwebtoken';
 import {
     createLandAreaSyncAllowedTargetsManifest,
 } from '../security/land-area-sync-canary-policy';
+import {
+    DEVELOPMENT_LAND_AREA_FULL_REFRESH_PROFILE,
+    MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_MANIFEST_DIGEST,
+    assertDevelopmentLandAreaFullRefreshAllowed,
+    developmentLandAreaFullRefreshMarkersEqual,
+} from '../security/development-land-area-full-refresh-policy';
 import type {
+    LandAreaSyncDevelopmentFullRefresh,
     LandAreaSyncCounts,
     LandAreaSyncOutcome,
     LandAreaSyncScopeSnapshot,
@@ -22,6 +29,10 @@ export const DEVELOPMENT_TARGET_MANIFEST_VERSION =
     'land-area-development-target-manifest@1';
 export const DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 =
     'land-area-development-target-manifest@2';
+export const DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 =
+    'land-area-development-target-manifest@3';
+export const DEVELOPMENT_ACTIVE_PNU_DIGEST_VERSION =
+    'land-area-development-active-pnu-digest@1';
 export const DEVELOPMENT_DB_APPROVAL_MANIFEST_VERSION =
     'land-area-development-db-approval-manifest@1';
 export const DEVELOPMENT_EVIDENCE_MANIFEST_VERSION =
@@ -29,14 +40,16 @@ export const DEVELOPMENT_EVIDENCE_MANIFEST_VERSION =
 export const DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2 =
     'land-area-development-evidence-manifest@2';
 export const DEVELOPMENT_RUN_ARTIFACT_VERSION =
-    'land-area-development-run-artifact@1';
+    'land-area-development-run-artifact@2';
 export const DEVELOPMENT_PUBLIC_RUN_ARTIFACT_VERSION =
-    'land-area-development-public-run-artifact@1';
+    'land-area-development-public-run-artifact@2';
 export const DEVELOPMENT_GIS_JWT_TTL_SECONDS = 10 * 60;
 export const DEVELOPMENT_API_QUEUE_TIMEOUT_MS = 10 * 60_000;
 export const DEVELOPMENT_JOB_POLL_SOFT_TIMEOUT_MS =
     DEVELOPMENT_API_QUEUE_TIMEOUT_MS + 60_000;
 export const DEVELOPMENT_ADMISSION_RECONCILIATION_ATTEMPTS = 10;
+export const DEVELOPMENT_FULL_REFRESH_ADMISSION_CUTOFF_MS =
+    225 * 60_000;
 
 interface DevelopmentTargetManifestCommon {
     databaseTarget: 'development';
@@ -54,18 +67,30 @@ export interface DevelopmentTargetManifestV1
     pnus: string[];
 }
 
-export interface DevelopmentTargetManifestV2
+interface DevelopmentScopedTargetManifestCommon
     extends DevelopmentTargetManifestCommon {
-    version: typeof DEVELOPMENT_TARGET_MANIFEST_VERSION_V2;
     anchors: string[];
     allowedScopePnus: string[];
     scopeDigest: string;
     allowManualOverwrite: true;
 }
 
+export interface DevelopmentTargetManifestV2
+    extends DevelopmentScopedTargetManifestCommon {
+    version: typeof DEVELOPMENT_TARGET_MANIFEST_VERSION_V2;
+}
+
+export interface DevelopmentTargetManifestV3
+    extends DevelopmentScopedTargetManifestCommon {
+    version: typeof DEVELOPMENT_TARGET_MANIFEST_VERSION_V3;
+    expectedUnionActivePnus: string[];
+    expectedUnionActivePnuDigest: string;
+}
+
 export type DevelopmentTargetManifest =
     | DevelopmentTargetManifestV1
-    | DevelopmentTargetManifestV2;
+    | DevelopmentTargetManifestV2
+    | DevelopmentTargetManifestV3;
 
 export interface DevelopmentDbApprovalManifest {
     version: typeof DEVELOPMENT_DB_APPROVAL_MANIFEST_VERSION;
@@ -103,11 +128,18 @@ export interface DevelopmentLegacyEvidenceSourceReferences {
     developmentObservationReferenceSha256: string;
 }
 
-export interface DevelopmentApiCaptureEvidenceSourceReferences {
-    kind: 'DEVELOPMENT_READ_ONLY_API_CAPTURE';
-    captureRunId: string;
-    snapshotReferenceSha256: string;
-}
+export type DevelopmentApiCaptureEvidenceSourceReferences =
+    | {
+          kind: 'DEVELOPMENT_READ_ONLY_API_CAPTURE';
+          captureRunId: string;
+          snapshotReferenceSha256: string;
+      }
+    | {
+          kind: 'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE';
+          captureRunId: string;
+          snapshotReferenceSha256: string;
+          officialComponentDigest: string;
+      };
 
 export interface DevelopmentEvidenceEntry {
     anchorPnu: string;
@@ -174,6 +206,7 @@ export interface LandAreaSyncApiJob {
     landAreaSync: {
         anchorPnu?: string;
         sourceDiscoveryJobId?: string | null;
+        developmentFullRefresh?: LandAreaSyncDevelopmentFullRefresh;
         admissionKey?: string;
         workerFinalization?: {
             version?: number;
@@ -209,7 +242,8 @@ export interface LandAreaSyncApiClient {
     admitDiscovery(
         unionId: string,
         pnu: string,
-        admissionKey: string
+        admissionKey: string,
+        developmentFullRefresh?: LandAreaSyncDevelopmentFullRefresh
     ): Promise<string>;
     confirmDiscovery(
         discoveryJobId: string,
@@ -244,6 +278,24 @@ export interface DevelopmentAttributedPropertyUnit {
     landAreaSyncJobId: string;
 }
 
+export const DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES = [
+    'land_lots',
+    'building_land_lots',
+    'buildings',
+    'building_units',
+    'building_external_refs',
+    'building_registry_land_lot_relations',
+    'building_land_lot_manual_overrides',
+] as const;
+
+export type DevelopmentRelationGisInvariantTable =
+    (typeof DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES)[number];
+
+export type DevelopmentRelationGisInvariantRows = Record<
+    DevelopmentRelationGisInvariantTable,
+    Array<Record<string, unknown>>
+>;
+
 export interface DevelopmentReadOnlyPreflightReader {
     readActivePropertyUnits(
         unionId: string
@@ -251,6 +303,20 @@ export interface DevelopmentReadOnlyPreflightReader {
     readPropertyUnitsBySyncJobIds(
         syncJobIds: string[]
     ): Promise<DevelopmentAttributedPropertyUnit[]>;
+    /**
+     * DEV 전체 갱신에서 relation/GIS projection 7개를 읽기 전용으로 고정한다.
+     * rights는 아래의 별도 transition reader로 검증한다. raw row는 메모리에서만
+     * digest로 변환하며 artifact에 포함하지 않는다.
+     */
+    readRelationGisInvariantRows?(input: {
+        unionId: string;
+        scopePnus: string[];
+        propertyUnitIds: string[];
+    }): Promise<DevelopmentRelationGisInvariantRows>;
+    /** DEV 전체 갱신의 의도된 대지권 write를 별도로 검증하기 위한 union-scoped rows. */
+    readPropertyUnitLandRights?(
+        unionId: string
+    ): Promise<Array<Record<string, unknown>>>;
 }
 
 export interface DevelopmentReadOnlySnapshot {
@@ -263,6 +329,36 @@ export interface DevelopmentReadOnlySnapshot {
 }
 
 export interface DevelopmentWriteAttribution {
+    writerJobCount: number;
+    attributedPropertyUnitCount: number;
+    attributionDigest: string;
+}
+
+export interface DevelopmentRelationGisTableInvariant {
+    rowCount: number;
+    digest: string;
+}
+
+export interface DevelopmentRelationGisInvariantSnapshot {
+    scopePnuCount: number;
+    propertyUnitCount: number;
+    tables: Record<
+        DevelopmentRelationGisInvariantTable,
+        DevelopmentRelationGisTableInvariant
+    >;
+    aggregateDigest: string;
+}
+
+export interface DevelopmentLandRightSnapshot {
+    rowCount: number;
+    targetRowCount: number;
+    activeTargetRowCount: number;
+    allRowsDigest: string;
+    nonTargetRowsDigest: string;
+}
+
+export interface DevelopmentLandRightWriteAttribution {
+    changedRowCount: number;
     writerJobCount: number;
     attributedPropertyUnitCount: number;
     attributionDigest: string;
@@ -295,6 +391,17 @@ export interface DevelopmentRunArtifact {
     completedAt: string;
     preflight: DevelopmentReadOnlySnapshot | null;
     postflight: DevelopmentReadOnlySnapshot | null;
+    relationGisPreflight:
+        | DevelopmentRelationGisInvariantSnapshot
+        | null;
+    relationGisPostflight:
+        | DevelopmentRelationGisInvariantSnapshot
+        | null;
+    landRightPreflight: DevelopmentLandRightSnapshot | null;
+    landRightPostflight: DevelopmentLandRightSnapshot | null;
+    landRightWriteAttribution:
+        | DevelopmentLandRightWriteAttribution
+        | null;
     writeAttribution: DevelopmentWriteAttribution | null;
     results: DevelopmentRunTargetResult[];
     gate: {
@@ -331,6 +438,21 @@ export interface DevelopmentPublicRunArtifact {
         postflightTupleDigest: string | null;
         postflightNonTargetTupleDigest: string | null;
         writeAttributionDigest: string | null;
+    };
+    relationGisInvariant: {
+        preflight:
+            | DevelopmentRelationGisInvariantSnapshot
+            | null;
+        postflight:
+            | DevelopmentRelationGisInvariantSnapshot
+            | null;
+    };
+    landRightTransition: {
+        preflight: DevelopmentLandRightSnapshot | null;
+        postflight: DevelopmentLandRightSnapshot | null;
+        writeAttribution:
+            | DevelopmentLandRightWriteAttribution
+            | null;
     };
     strategyCounts: {
         LADFRL: number;
@@ -410,6 +532,23 @@ export function computeDevelopmentTargetDigest(
         .digest('hex');
 }
 
+export function computeDevelopmentActivePnuDigest(
+    unionId: string,
+    pnus: readonly string[]
+): string {
+    return createHash('sha256')
+        .update(
+            JSON.stringify({
+                version: DEVELOPMENT_ACTIVE_PNU_DIGEST_VERSION,
+                databaseTarget: 'development',
+                unionId: unionId.toLowerCase(),
+                pnus: [...pnus],
+            }),
+            'utf8'
+        )
+        .digest('hex');
+}
+
 export function computeDevelopmentTargetV2ManifestDigest(input: {
     unionId: string;
     anchors: readonly string[];
@@ -439,6 +578,42 @@ export function computeDevelopmentTargetV2ManifestDigest(input: {
         .digest('hex');
 }
 
+export function computeDevelopmentTargetV3ManifestDigest(input: {
+    unionId: string;
+    anchors: readonly string[];
+    allowedScopePnus: readonly string[];
+    expectedUnionActivePnus: readonly string[];
+    expectedUnionActivePnuDigest: string;
+    targetCount: number;
+    expectedPropertyUnitCount: number;
+    expectedUnionActivePropertyUnitCount: number;
+    expectedUnionActivePnuCount: number;
+    allowManualOverwrite: boolean;
+}): string {
+    const canonicalManifestIdentity = JSON.stringify({
+        version: DEVELOPMENT_TARGET_MANIFEST_VERSION_V3,
+        databaseTarget: 'development',
+        unionId: input.unionId.toLowerCase(),
+        anchors: [...input.anchors],
+        allowedScopePnus: [...input.allowedScopePnus],
+        expectedUnionActivePnus: [
+            ...input.expectedUnionActivePnus,
+        ],
+        expectedUnionActivePnuDigest:
+            input.expectedUnionActivePnuDigest,
+        targetCount: input.targetCount,
+        expectedPropertyUnitCount: input.expectedPropertyUnitCount,
+        expectedUnionActivePropertyUnitCount:
+            input.expectedUnionActivePropertyUnitCount,
+        expectedUnionActivePnuCount:
+            input.expectedUnionActivePnuCount,
+        allowManualOverwrite: input.allowManualOverwrite,
+    });
+    return createHash('sha256')
+        .update(canonicalManifestIdentity, 'utf8')
+        .digest('hex');
+}
+
 export function developmentTargetExecutionAnchors(
     target: DevelopmentTargetManifest
 ): string[] {
@@ -455,6 +630,21 @@ export function developmentTargetAllowedScopePnus(
         : target.allowedScopePnus;
 }
 
+export function developmentTargetExpectedActivePnus(
+    target: DevelopmentTargetManifest
+): string[] | null {
+    if (target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V3) {
+        return target.expectedUnionActivePnus;
+    }
+    if (
+        target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION &&
+        target.targetCount === target.expectedUnionActivePnuCount
+    ) {
+        return target.pnus;
+    }
+    return null;
+}
+
 export function developmentTargetScopeDigest(
     target: DevelopmentTargetManifest
 ): string {
@@ -467,9 +657,38 @@ export function developmentTargetAllowsManualOverwrite(
     target: DevelopmentTargetManifest
 ): boolean {
     return (
-        target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 &&
+        target.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION &&
         target.allowManualOverwrite
     );
+}
+
+export function developmentFullRefreshMarkerForTarget(
+    target: DevelopmentTargetManifest
+): LandAreaSyncDevelopmentFullRefresh | null {
+    if (
+        target.version !==
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        return null;
+    }
+    const marker: LandAreaSyncDevelopmentFullRefresh = {
+        profile:
+            DEVELOPMENT_LAND_AREA_FULL_REFRESH_PROFILE,
+        manifestDigest: target.manifestDigest,
+        scopeDigest: target.scopeDigest,
+    };
+    try {
+        assertDevelopmentLandAreaFullRefreshAllowed({
+            databaseTarget: target.databaseTarget,
+            unionId: target.unionId,
+            marker,
+        });
+    } catch {
+        throw new ControlledRunnerError(
+            'TARGET_FULL_REFRESH_POLICY_MISMATCH'
+        );
+    }
+    return marker;
 }
 
 function assertCommonManifest(
@@ -539,6 +758,81 @@ export function parseDevelopmentTargetManifest(
         return value as unknown as DevelopmentTargetManifestV1;
     }
 
+    if (value.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2) {
+        if (
+            !hasExactKeys(value, [
+                'version',
+                'databaseTarget',
+                'unionId',
+                'anchors',
+                'allowedScopePnus',
+                'targetCount',
+                'scopeDigest',
+                'manifestDigest',
+                'expectedPropertyUnitCount',
+                'expectedUnionActivePropertyUnitCount',
+                'expectedUnionActivePnuCount',
+                'allowManualOverwrite',
+            ]) ||
+            value.databaseTarget !== 'development' ||
+            typeof value.unionId !== 'string' ||
+            !UUID_RE.test(value.unionId) ||
+            !Array.isArray(value.anchors) ||
+            value.anchors.length === 0 ||
+            !value.anchors.every(
+                (pnu) =>
+                    typeof pnu === 'string' && PNU_RE.test(pnu)
+            ) ||
+            !isSortedUnique(value.anchors as string[]) ||
+            !Array.isArray(value.allowedScopePnus) ||
+            value.allowedScopePnus.length === 0 ||
+            !value.allowedScopePnus.every(
+                (pnu) =>
+                    typeof pnu === 'string' && PNU_RE.test(pnu)
+            ) ||
+            !isSortedUnique(value.allowedScopePnus as string[]) ||
+            (value.anchors as string[]).some(
+                (anchor) =>
+                    !(value.allowedScopePnus as string[]).includes(
+                        anchor
+                    )
+            ) ||
+            !Number.isSafeInteger(value.targetCount) ||
+            value.targetCount !== value.anchors.length ||
+            typeof value.scopeDigest !== 'string' ||
+            !HEX64_RE.test(value.scopeDigest) ||
+            value.scopeDigest !==
+                computeDevelopmentTargetDigest(
+                    value.unionId,
+                    value.allowedScopePnus as string[]
+                ) ||
+            typeof value.manifestDigest !== 'string' ||
+            !HEX64_RE.test(value.manifestDigest) ||
+            value.manifestDigest !==
+                computeDevelopmentTargetV2ManifestDigest({
+                    unionId: value.unionId,
+                    anchors: value.anchors as string[],
+                    allowedScopePnus:
+                        value.allowedScopePnus as string[],
+                    targetCount: value.targetCount as number,
+                    expectedPropertyUnitCount:
+                        value.expectedPropertyUnitCount as number,
+                    expectedUnionActivePropertyUnitCount:
+                        value.expectedUnionActivePropertyUnitCount as number,
+                    expectedUnionActivePnuCount:
+                        value.expectedUnionActivePnuCount as number,
+                    allowManualOverwrite:
+                        value.allowManualOverwrite as boolean,
+                }) ||
+            value.allowManualOverwrite !== true
+        ) {
+            throw new ControlledRunnerError(
+                'TARGET_MANIFEST_INVALID'
+            );
+        }
+        return value as unknown as DevelopmentTargetManifestV2;
+    }
+
     if (
         !hasExactKeys(value, [
             'version',
@@ -546,6 +840,8 @@ export function parseDevelopmentTargetManifest(
             'unionId',
             'anchors',
             'allowedScopePnus',
+            'expectedUnionActivePnus',
+            'expectedUnionActivePnuDigest',
             'targetCount',
             'scopeDigest',
             'manifestDigest',
@@ -554,7 +850,7 @@ export function parseDevelopmentTargetManifest(
             'expectedUnionActivePnuCount',
             'allowManualOverwrite',
         ]) ||
-        value.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 ||
+        value.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 ||
         value.databaseTarget !== 'development' ||
         typeof value.unionId !== 'string' ||
         !UUID_RE.test(value.unionId) ||
@@ -570,10 +866,30 @@ export function parseDevelopmentTargetManifest(
             (pnu) => typeof pnu === 'string' && PNU_RE.test(pnu)
         ) ||
         !isSortedUnique(value.allowedScopePnus as string[]) ||
+        !Array.isArray(value.expectedUnionActivePnus) ||
+        value.expectedUnionActivePnus.length !==
+            value.expectedUnionActivePnuCount ||
+        !value.expectedUnionActivePnus.every(
+            (pnu) =>
+                typeof pnu === 'string' &&
+                PNU_RE.test(pnu)
+        ) ||
+        !isSortedUnique(
+            value.expectedUnionActivePnus as string[]
+        ) ||
         (value.anchors as string[]).some(
             (anchor) =>
-                !(value.allowedScopePnus as string[]).includes(anchor)
+                !(value.allowedScopePnus as string[]).includes(
+                    anchor
+                )
         ) ||
+        typeof value.expectedUnionActivePnuDigest !== 'string' ||
+        !HEX64_RE.test(value.expectedUnionActivePnuDigest) ||
+        value.expectedUnionActivePnuDigest !==
+            computeDevelopmentActivePnuDigest(
+                value.unionId,
+                value.expectedUnionActivePnus as string[]
+            ) ||
         !Number.isSafeInteger(value.targetCount) ||
         value.targetCount !== value.anchors.length ||
         typeof value.scopeDigest !== 'string' ||
@@ -586,11 +902,15 @@ export function parseDevelopmentTargetManifest(
         typeof value.manifestDigest !== 'string' ||
         !HEX64_RE.test(value.manifestDigest) ||
         value.manifestDigest !==
-            computeDevelopmentTargetV2ManifestDigest({
+            computeDevelopmentTargetV3ManifestDigest({
                 unionId: value.unionId,
                 anchors: value.anchors as string[],
                 allowedScopePnus:
                     value.allowedScopePnus as string[],
+                expectedUnionActivePnus:
+                    value.expectedUnionActivePnus as string[],
+                expectedUnionActivePnuDigest:
+                    value.expectedUnionActivePnuDigest as string,
                 targetCount: value.targetCount as number,
                 expectedPropertyUnitCount:
                     value.expectedPropertyUnitCount as number,
@@ -605,7 +925,7 @@ export function parseDevelopmentTargetManifest(
     ) {
         throw new ControlledRunnerError('TARGET_MANIFEST_INVALID');
     }
-    return value as unknown as DevelopmentTargetManifestV2;
+    return value as unknown as DevelopmentTargetManifestV3;
 }
 
 export function parseDevelopmentDbApprovalManifest(
@@ -822,16 +1142,36 @@ function parseEvidenceEntry(
             throw new ControlledRunnerError('EVIDENCE_SOURCE_INVALID');
         }
     } else if (
-        !hasExactKeys(sources, [
-            'kind',
-            'captureRunId',
-            'snapshotReferenceSha256',
-        ]) ||
-        sources.kind !== 'DEVELOPMENT_READ_ONLY_API_CAPTURE' ||
+        (sources.kind !== 'DEVELOPMENT_READ_ONLY_API_CAPTURE' &&
+            sources.kind !==
+                'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE') ||
+        !hasExactKeys(
+            sources,
+            sources.kind ===
+                'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE'
+                ? [
+                      'kind',
+                      'captureRunId',
+                      'snapshotReferenceSha256',
+                      'officialComponentDigest',
+                  ]
+                : [
+                      'kind',
+                      'captureRunId',
+                      'snapshotReferenceSha256',
+                  ]
+        ) ||
         typeof sources.captureRunId !== 'string' ||
         !POSITIVE_INTEGER_RE.test(sources.captureRunId) ||
         typeof sources.snapshotReferenceSha256 !== 'string' ||
-        !HEX64_RE.test(sources.snapshotReferenceSha256)
+        !HEX64_RE.test(sources.snapshotReferenceSha256) ||
+        (sources.kind ===
+            'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE' &&
+            (typeof sources.officialComponentDigest !==
+                'string' ||
+                !HEX64_RE.test(
+                    sources.officialComponentDigest
+                )))
     ) {
         throw new ControlledRunnerError('EVIDENCE_SOURCE_INVALID');
     }
@@ -973,6 +1313,8 @@ export function validateDevelopmentRunnerManifests(
     dbApproval: DevelopmentDbApprovalManifest,
     evidence: DevelopmentEvidenceManifest
 ): void {
+    const developmentFullRefresh =
+        developmentFullRefreshMarkerForTarget(target);
     const anchors = developmentTargetExecutionAnchors(target);
     const allowedScopePnus =
         developmentTargetAllowedScopePnus(target);
@@ -997,12 +1339,42 @@ export function validateDevelopmentRunnerManifests(
     if (
         (target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION &&
             evidence.version !== DEVELOPMENT_EVIDENCE_MANIFEST_VERSION) ||
-        (target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 &&
+        (target.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION &&
             evidence.version !==
                 DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2)
     ) {
         throw new ControlledRunnerError(
             'EVIDENCE_MANIFEST_VERSION_MISMATCH'
+        );
+    }
+    const hasSameRunOfficialEvidence =
+        evidence.entries.some(
+            (entry) =>
+                'kind' in entry.sourceReferences &&
+                entry.sourceReferences.kind ===
+                    'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE'
+        );
+    if (
+        hasSameRunOfficialEvidence &&
+        developmentFullRefresh === null
+    ) {
+        throw new ControlledRunnerError(
+            'EVIDENCE_SCOPE_NOT_WRITE_ELIGIBLE'
+        );
+    }
+    if (
+        developmentFullRefresh !== null &&
+        evidence.entries.some(
+            (entry) =>
+                !('kind' in entry.sourceReferences) ||
+                (entry.sourceReferences.kind !==
+                    'DEVELOPMENT_READ_ONLY_API_CAPTURE' &&
+                    entry.sourceReferences.kind !==
+                        'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE')
+        )
+    ) {
+        throw new ControlledRunnerError(
+            'FULL_REFRESH_EVIDENCE_SOURCE_INVALID'
         );
     }
     const entriesByPnu = new Map(
@@ -1021,7 +1393,7 @@ export function validateDevelopmentRunnerManifests(
             throw new ControlledRunnerError('EVIDENCE_SCOPE_OUTSIDE_MANIFEST');
         }
         if (
-            target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 &&
+            target.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION &&
             entry.expectedScannedPnus.some((pnu) =>
                 observedScannedPnus.has(pnu)
             )
@@ -1034,7 +1406,7 @@ export function validateDevelopmentRunnerManifests(
             observedScannedPnus.add(pnu)
         );
         if (
-            target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 &&
+            target.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION &&
             entry.allowManualOverwrite !== true
         ) {
             throw new ControlledRunnerError(
@@ -1043,7 +1415,7 @@ export function validateDevelopmentRunnerManifests(
         }
     }
     if (
-        target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 &&
+        target.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION &&
         (observedScannedPnus.size !== allowedScopePnus.length ||
             allowedScopePnus.some(
                 (pnu) => !observedScannedPnus.has(pnu)
@@ -1282,11 +1654,19 @@ export class LocalhostDevelopmentLandAreaSyncClient
     async admitDiscovery(
         unionId: string,
         pnu: string,
-        admissionKey: string
+        admissionKey: string,
+        developmentFullRefresh?: LandAreaSyncDevelopmentFullRefresh
     ): Promise<string> {
         const response = await this.request('/api/gis/land-area-sync', {
             method: 'POST',
-            body: { unionId, anchorPnu: pnu, admissionKey },
+            body: {
+                unionId,
+                anchorPnu: pnu,
+                admissionKey,
+                ...(developmentFullRefresh
+                    ? { developmentFullRefresh }
+                    : {}),
+            },
         });
         const value = asRecord(response.value, 'API_RESPONSE_INVALID');
         if (
@@ -1341,7 +1721,10 @@ function sortedProposedAreas(
 function assertJobEvidenceMatches(
     job: LandAreaSyncApiJob,
     evidence: DevelopmentEvidenceEntry,
-    requireDiscovery: boolean
+    requireDiscovery: boolean,
+    developmentFullRefresh:
+        | LandAreaSyncDevelopmentFullRefresh
+        | null
 ): LandAreaSyncScopeSnapshot {
     const land = job.landAreaSync;
     const snapshot = land?.scopeSnapshot;
@@ -1352,6 +1735,16 @@ function assertJobEvidenceMatches(
     }
     if (land.anchorPnu !== evidence.anchorPnu) {
         throw new ControlledRunnerError('JOB_EVIDENCE_ANCHOR_PNU_MISMATCH');
+    }
+    if (
+        !developmentLandAreaFullRefreshMarkersEqual(
+            land.developmentFullRefresh,
+            developmentFullRefresh
+        )
+    ) {
+        throw new ControlledRunnerError(
+            'JOB_EVIDENCE_FULL_REFRESH_MARKER_MISMATCH'
+        );
     }
     if (requireDiscovery && land.sourceDiscoveryJobId !== null) {
         throw new ControlledRunnerError(
@@ -1410,6 +1803,47 @@ function assertJobEvidenceMatches(
     if (!HEX64_RE.test(snapshot.scopeHash)) {
         throw new ControlledRunnerError('JOB_EVIDENCE_SCOPE_HASH_INVALID');
     }
+    const sameRunOfficialDigest =
+        'kind' in evidence.sourceReferences &&
+        evidence.sourceReferences.kind ===
+            'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE'
+            ? evidence.sourceReferences.officialComponentDigest
+            : null;
+    const sameRunOfficialEvidence =
+        sameRunOfficialDigest !== null;
+    if (developmentFullRefresh !== null || sameRunOfficialEvidence) {
+        const resolution =
+            snapshot.developmentFullRefreshScopeResolution;
+        if (
+            developmentFullRefresh === null ||
+            !resolution ||
+            resolution.source !==
+                'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH' ||
+            resolution.canonicalBasePnu !==
+                evidence.anchorPnu ||
+            JSON.stringify(resolution.memberPnus) !==
+                JSON.stringify(evidence.expectedScannedPnus) ||
+            typeof resolution.managementPk !== 'string' ||
+            resolution.managementPk.length === 0 ||
+            resolution.pairCount !==
+                resolution.memberPnus.length - 1 ||
+            !HEX64_RE.test(
+                resolution.officialComponentDigest
+            ) ||
+            (sameRunOfficialEvidence &&
+                resolution.officialComponentDigest !==
+                    sameRunOfficialDigest) ||
+            resolution.manifestDigest !==
+                developmentFullRefresh.manifestDigest ||
+            resolution.scopeDigest !==
+                developmentFullRefresh.scopeDigest ||
+            snapshot.readOnlyScopeResolution !== undefined
+        ) {
+            throw new ControlledRunnerError(
+                'JOB_EVIDENCE_FULL_REFRESH_SCOPE_RESOLUTION_MISMATCH'
+            );
+        }
+    }
     return snapshot;
 }
 
@@ -1423,61 +1857,11 @@ function issueCodes(job: LandAreaSyncApiJob): string[] {
     return [...new Set(codes)].sort();
 }
 
-/**
- * 서비스 분기에서 이미 blocking 여부를 판정한 뒤 APPLIED까지 도달할 수 있는 정보성 issue.
- *
- * `RATIO_PARSE_FAILED`는 일반적으로 차단 사유지만, 현재 LDAREG 계약은 실측으로 확인된
- * 비적용 placeholder 정확히 1행만 같은 code로 기록하면서 유효 행 적용을 허용한다.
- * 따라서 worker finalization까지 끝난 APPLIED terminal에서만 이 exact code를 예외로
- * 인정한다. REVIEW_REQUIRED discovery나 다른 issue에는 이 예외를 적용하지 않는다.
- */
-const APPLIED_TERMINAL_INFORMATIONAL_ISSUE_CODES =
-    new Set<string>(['RATIO_PARSE_FAILED']);
-
-function isSoleAppliedPlaceholderRatioIssue(
-    job: LandAreaSyncApiJob
-): boolean {
-    const issues = job.landAreaSync?.issues;
-    if (
-        job.status !== 'COMPLETED' ||
-        !hasWorkerFinalization(job) ||
-        job.landAreaSync?.branch !== 'LDAREG' ||
-        job.landAreaSync.outcome !== 'APPLIED' ||
-        !Array.isArray(issues) ||
-        issues.length !== 1 ||
-        job.landAreaSync.issuesTotal !== 1 ||
-        job.landAreaSync.issuesTruncated !== false
-    ) {
-        return false;
-    }
-
-    const issue = issues[0];
-    return (
-        issue.code === 'RATIO_PARSE_FAILED' &&
-        typeof issue.targetPnu === 'string' &&
-        PNU_RE.test(issue.targetPnu) &&
-        Object.keys(issue).every(
-            (key) => key === 'code' || key === 'targetPnu'
-        ) &&
-        !Object.hasOwn(issue, 'propertyUnitId') &&
-        !Object.hasOwn(issue, 'dong') &&
-        !Object.hasOwn(issue, 'ho')
-    );
-}
-
 function hasBlockingIssue(job: LandAreaSyncApiJob): boolean {
     const codes = issueCodes(job);
     const blockingPattern =
-        /CACHE|CONFLICT|REVIEW|PENDING|UNRESOLVED|BLOCKING|MISMATCH|INCOMPLETE|ERROR|FAILED|AMBIGUOUS|NOT_FOUND|CHANGED|DENIED/;
-    const hasSoleAppliedInformationalIssue =
-        isSoleAppliedPlaceholderRatioIssue(job);
-    return codes.some(
-        (code) =>
-            !(
-                hasSoleAppliedInformationalIssue &&
-                APPLIED_TERMINAL_INFORMATIONAL_ISSUE_CODES.has(code)
-            ) && blockingPattern.test(code)
-    );
+        /CACHE|CONFLICT|REVIEW|PENDING|UNRESOLVED|BLOCKING|MISMATCH|INCOMPLETE|ERROR|FAILED|RATIO|AMBIGUOUS|NOT_FOUND|CHANGED|DENIED/;
+    return codes.some((code) => blockingPattern.test(code));
 }
 
 function isAmbiguousAdmissionError(error: unknown): boolean {
@@ -1658,6 +2042,14 @@ function assertAppliedTerminal(job: LandAreaSyncApiJob): void {
         job,
         'APPLY_TERMINAL_ISSUES_INCOMPLETE'
     );
+    if (
+        (job.landAreaSync?.issues?.length ?? -1) !== 0 ||
+        job.landAreaSync?.issuesTotal !== 0
+    ) {
+        throw new ControlledRunnerError(
+            'APPLY_TERMINAL_NOT_PASS'
+        );
+    }
 }
 
 function assertCompleteTerminalIssues(
@@ -1701,6 +2093,403 @@ function digestJson(value: unknown): string {
     return createHash('sha256')
         .update(JSON.stringify(value), 'utf8')
         .digest('hex');
+}
+
+function canonicalInvariantJson(value: unknown): string {
+    if (
+        value === null ||
+        typeof value === 'string' ||
+        typeof value === 'boolean'
+    ) {
+        return JSON.stringify(value);
+    }
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value)) {
+            throw new ControlledRunnerError(
+                'RELATION_GIS_INVARIANT_ROW_INVALID'
+            );
+        }
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return `[${value
+            .map((item) => canonicalInvariantJson(item))
+            .join(',')}]`;
+    }
+    if (typeof value === 'object') {
+        const record = value as Record<string, unknown>;
+        return `{${Object.keys(record)
+            .sort()
+            .map((key) => {
+                const item = record[key];
+                if (item === undefined) {
+                    throw new ControlledRunnerError(
+                        'RELATION_GIS_INVARIANT_ROW_INVALID'
+                    );
+                }
+                return `${JSON.stringify(
+                    key
+                )}:${canonicalInvariantJson(item)}`;
+            })
+            .join(',')}}`;
+    }
+    throw new ControlledRunnerError(
+        'RELATION_GIS_INVARIANT_ROW_INVALID'
+    );
+}
+
+async function readDevelopmentRelationGisInvariant(input: {
+    reader: DevelopmentReadOnlyPreflightReader;
+    target: DevelopmentTargetManifest;
+    evidence: DevelopmentEvidenceManifest;
+    phase: 'PRE' | 'POST';
+}): Promise<DevelopmentRelationGisInvariantSnapshot> {
+    const readRows = input.reader.readRelationGisInvariantRows;
+    if (!readRows) {
+        throw new ControlledRunnerError(
+            `${input.phase}FLIGHT_RELATION_GIS_READER_MISSING`
+        );
+    }
+    const scopePnus = developmentTargetAllowedScopePnus(
+        input.target
+    );
+    const propertyUnitIds = [
+        ...new Set(
+            input.evidence.entries.flatMap(
+                (entry) => entry.expectedPropertyUnitIds
+            )
+        ),
+    ].sort();
+    if (
+        propertyUnitIds.length !==
+        input.target.expectedPropertyUnitCount
+    ) {
+        throw new ControlledRunnerError(
+            `${input.phase}FLIGHT_RELATION_GIS_SCOPE_INVALID`
+        );
+    }
+    const rowsByTable = await readRows({
+        unionId: input.target.unionId,
+        scopePnus: [...scopePnus],
+        propertyUnitIds,
+    });
+    if (
+        rowsByTable === null ||
+        typeof rowsByTable !== 'object' ||
+        !hasExactKeys(
+            rowsByTable as Record<string, unknown>,
+            DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES
+        )
+    ) {
+        throw new ControlledRunnerError(
+            `${input.phase}FLIGHT_RELATION_GIS_SNAPSHOT_INVALID`
+        );
+    }
+    const tables = {} as DevelopmentRelationGisInvariantSnapshot['tables'];
+    for (const table of DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES) {
+        const rows = rowsByTable[table];
+        if (
+            !Array.isArray(rows) ||
+            rows.length > 10_000 ||
+            rows.some(
+                (row) =>
+                    row === null ||
+                    typeof row !== 'object' ||
+                    Array.isArray(row)
+            )
+        ) {
+            throw new ControlledRunnerError(
+                `${input.phase}FLIGHT_RELATION_GIS_SNAPSHOT_INVALID`
+            );
+        }
+        const canonicalRows = rows
+            .map((row) => canonicalInvariantJson(row))
+            .sort();
+        tables[table] = {
+            rowCount: rows.length,
+            digest: createHash('sha256')
+                .update(
+                    canonicalInvariantJson({
+                        table,
+                        rows: canonicalRows,
+                    }),
+                    'utf8'
+                )
+                .digest('hex'),
+        };
+    }
+    const aggregateDigest = digestJson(
+        DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES.map(
+            (table) => ({
+                table,
+                ...tables[table],
+            })
+        )
+    );
+    return {
+        scopePnuCount: scopePnus.length,
+        propertyUnitCount: propertyUnitIds.length,
+        tables,
+        aggregateDigest,
+    };
+}
+
+export interface ObservedDevelopmentLandRight {
+    key: string;
+    propertyUnitId: string;
+    targetPnu: string;
+    lifecycleStatus: 'ACTIVE' | 'STALE_NOT_SEEN' | 'CLOSED';
+    lastSeenSyncJobId: string;
+    lastEvaluatedSyncJobId: string;
+    canonical: string;
+}
+
+async function readDevelopmentLandRights(input: {
+    reader: DevelopmentReadOnlyPreflightReader;
+    target: DevelopmentTargetManifest;
+    evidence: DevelopmentEvidenceManifest;
+    phase: 'PRE' | 'POST';
+}): Promise<{
+    summary: DevelopmentLandRightSnapshot;
+    rows: ObservedDevelopmentLandRight[];
+}> {
+    const readRows = input.reader.readPropertyUnitLandRights;
+    if (!readRows) {
+        throw new ControlledRunnerError(
+            `${input.phase}FLIGHT_LAND_RIGHT_READER_MISSING`
+        );
+    }
+    const rawRows = await readRows(input.target.unionId);
+    if (!Array.isArray(rawRows) || rawRows.length > 10_000) {
+        throw new ControlledRunnerError(
+            `${input.phase}FLIGHT_LAND_RIGHT_SNAPSHOT_INVALID`
+        );
+    }
+    const rows = rawRows.map((raw) => {
+        if (
+            raw === null ||
+            typeof raw !== 'object' ||
+            Array.isArray(raw)
+        ) {
+            throw new ControlledRunnerError(
+                `${input.phase}FLIGHT_LAND_RIGHT_SNAPSHOT_INVALID`
+            );
+        }
+        const unionId = raw.union_id;
+        const propertyUnitId = raw.property_unit_id;
+        const targetPnu = raw.target_pnu;
+        const lifecycleStatus = raw.lifecycle_status;
+        const lastSeenSyncJobId = raw.last_seen_sync_job_id;
+        const lastEvaluatedSyncJobId =
+            raw.last_evaluated_sync_job_id;
+        if (
+            unionId !== input.target.unionId ||
+            typeof propertyUnitId !== 'string' ||
+            !UUID_RE.test(propertyUnitId) ||
+            typeof targetPnu !== 'string' ||
+            !PNU_RE.test(targetPnu) ||
+            (lifecycleStatus !== 'ACTIVE' &&
+                lifecycleStatus !== 'STALE_NOT_SEEN' &&
+                lifecycleStatus !== 'CLOSED') ||
+            typeof lastSeenSyncJobId !== 'string' ||
+            !UUID_RE.test(lastSeenSyncJobId) ||
+            typeof lastEvaluatedSyncJobId !== 'string' ||
+            !UUID_RE.test(lastEvaluatedSyncJobId)
+        ) {
+            throw new ControlledRunnerError(
+                `${input.phase}FLIGHT_LAND_RIGHT_SNAPSHOT_INVALID`
+            );
+        }
+        return {
+            key: `${propertyUnitId.toLowerCase()}:${targetPnu}`,
+            propertyUnitId: propertyUnitId.toLowerCase(),
+            targetPnu,
+            lifecycleStatus,
+            lastSeenSyncJobId: lastSeenSyncJobId.toLowerCase(),
+            lastEvaluatedSyncJobId:
+                lastEvaluatedSyncJobId.toLowerCase(),
+            canonical: canonicalInvariantJson(raw),
+        } satisfies ObservedDevelopmentLandRight;
+    });
+    rows.sort((left, right) => left.key.localeCompare(right.key));
+    if (new Set(rows.map((row) => row.key)).size !== rows.length) {
+        throw new ControlledRunnerError(
+            `${input.phase}FLIGHT_LAND_RIGHT_SNAPSHOT_INVALID`
+        );
+    }
+    const targetPropertyUnitIds = new Set(
+        input.evidence.entries.flatMap(
+            (entry) => entry.expectedPropertyUnitIds
+        )
+    );
+    const targetRows = rows.filter((row) =>
+        targetPropertyUnitIds.has(row.propertyUnitId)
+    );
+    const nonTargetRows = rows.filter(
+        (row) => !targetPropertyUnitIds.has(row.propertyUnitId)
+    );
+    return {
+        summary: {
+            rowCount: rows.length,
+            targetRowCount: targetRows.length,
+            activeTargetRowCount: targetRows.filter(
+                (row) => row.lifecycleStatus === 'ACTIVE'
+            ).length,
+            allRowsDigest: digestJson(
+                rows.map((row) => row.canonical)
+            ),
+            nonTargetRowsDigest: digestJson(
+                nonTargetRows.map((row) => row.canonical)
+            ),
+        },
+        rows,
+    };
+}
+
+export function validateDevelopmentLandRightTransition(input: {
+    preRows: ObservedDevelopmentLandRight[];
+    postRows: ObservedDevelopmentLandRight[];
+    evidence: DevelopmentEvidenceManifest;
+    results: DevelopmentRunTargetResult[];
+}): DevelopmentLandRightWriteAttribution {
+    const preByKey = new Map(
+        input.preRows.map((row) => [row.key, row])
+    );
+    const postByKey = new Map(
+        input.postRows.map((row) => [row.key, row])
+    );
+    const evidenceByAnchor = new Map(
+        input.evidence.entries.map((entry) => [
+            entry.anchorPnu,
+            entry,
+        ])
+    );
+    const expectedByPropertyId = new Map<
+        string,
+        {
+            strategy: LandAreaSyncStrategy;
+            scannedPnus: Set<string>;
+            writerJobId: string;
+        }
+    >();
+    for (const result of input.results) {
+        const evidence = evidenceByAnchor.get(result.pnu);
+        if (!evidence) {
+            throw new ControlledRunnerError(
+                'POSTFLIGHT_LAND_RIGHT_ATTRIBUTION_INVALID'
+            );
+        }
+        for (const propertyUnitId of evidence.expectedPropertyUnitIds) {
+            expectedByPropertyId.set(propertyUnitId, {
+                strategy: evidence.expectedStrategy,
+                scannedPnus: new Set(
+                    evidence.expectedScannedPnus
+                ),
+                writerJobId: result.writerJobId.toLowerCase(),
+            });
+        }
+    }
+    const changedRows: ObservedDevelopmentLandRight[] = [];
+    for (const [key, pre] of preByKey) {
+        const post = postByKey.get(key);
+        if (!post) {
+            throw new ControlledRunnerError(
+                'POSTFLIGHT_LAND_RIGHT_ROW_DELETED'
+            );
+        }
+        if (pre.canonical !== post.canonical) {
+            changedRows.push(post);
+        }
+    }
+    for (const [key, post] of postByKey) {
+        if (!preByKey.has(key)) changedRows.push(post);
+    }
+    for (const row of changedRows) {
+        const expected = expectedByPropertyId.get(
+            row.propertyUnitId
+        );
+        if (
+            !expected ||
+            expected.strategy !== 'LDAREG' ||
+            !expected.scannedPnus.has(row.targetPnu) ||
+            row.lastEvaluatedSyncJobId !==
+                expected.writerJobId ||
+            (row.lifecycleStatus === 'ACTIVE' &&
+                row.lastSeenSyncJobId !==
+                    expected.writerJobId)
+        ) {
+            throw new ControlledRunnerError(
+                'POSTFLIGHT_LAND_RIGHT_ATTRIBUTION_INVALID'
+            );
+        }
+    }
+    const ldaregExpected = [
+        ...expectedByPropertyId.entries(),
+    ].filter(([, expected]) => expected.strategy === 'LDAREG');
+    for (const [propertyUnitId, expected] of ldaregExpected) {
+        const hasActiveWriterRow = input.postRows.some(
+            (row) =>
+                row.propertyUnitId === propertyUnitId &&
+                row.lifecycleStatus === 'ACTIVE' &&
+                expected.scannedPnus.has(row.targetPnu) &&
+                row.lastSeenSyncJobId === expected.writerJobId &&
+                row.lastEvaluatedSyncJobId ===
+                    expected.writerJobId
+        );
+        if (!hasActiveWriterRow) {
+            throw new ControlledRunnerError(
+                'POSTFLIGHT_LAND_RIGHT_COVERAGE_MISMATCH'
+            );
+        }
+    }
+    const attributedPropertyUnitIds = [
+        ...new Set(
+            changedRows.map((row) => row.propertyUnitId)
+        ),
+    ].sort();
+    const writerJobIds = [
+        ...new Set(
+            changedRows.map(
+                (row) =>
+                    expectedByPropertyId.get(row.propertyUnitId)!
+                        .writerJobId
+            )
+        ),
+    ].sort();
+    if (
+        attributedPropertyUnitIds.length !==
+            ldaregExpected.length ||
+        writerJobIds.length !==
+            new Set(
+                ldaregExpected.map(
+                    ([, expected]) => expected.writerJobId
+                )
+            ).size
+    ) {
+        throw new ControlledRunnerError(
+            'POSTFLIGHT_LAND_RIGHT_COVERAGE_MISMATCH'
+        );
+    }
+    return {
+        changedRowCount: changedRows.length,
+        writerJobCount: writerJobIds.length,
+        attributedPropertyUnitCount:
+            attributedPropertyUnitIds.length,
+        attributionDigest: digestJson(
+            changedRows
+                .map((row) => ({
+                    key: row.key,
+                    writerJobId:
+                        expectedByPropertyId.get(
+                            row.propertyUnitId
+                        )!.writerJobId,
+                    lifecycleStatus: row.lifecycleStatus,
+                }))
+                .sort((left, right) =>
+                    left.key.localeCompare(right.key)
+                )
+        ),
+    };
 }
 
 function isPositiveLandArea(value: string | null): boolean {
@@ -1759,10 +2548,32 @@ async function readAndValidateDevelopmentSnapshot(input: {
             `${input.phase}FLIGHT_ACTIVE_PROPERTY_SET_INVALID`
         );
     }
-    const activePnuCount = new Set(rows.map((row) => row.pnu)).size;
+    const activePnus = [
+        ...new Set(rows.map((row) => row.pnu)),
+    ].sort();
+    const activePnuCount = activePnus.length;
     if (activePnuCount !== input.target.expectedUnionActivePnuCount) {
         throw new ControlledRunnerError(
             `${input.phase}FLIGHT_ACTIVE_PNU_COUNT_MISMATCH`
+        );
+    }
+    const expectedActivePnus =
+        developmentTargetExpectedActivePnus(input.target);
+    if (
+        expectedActivePnus !== null &&
+        (JSON.stringify(activePnus) !==
+            JSON.stringify(expectedActivePnus) ||
+            (input.target.version ===
+                DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 &&
+                computeDevelopmentActivePnuDigest(
+                    input.target.unionId,
+                    activePnus
+                ) !==
+                    input.target
+                        .expectedUnionActivePnuDigest))
+    ) {
+        throw new ControlledRunnerError(
+            `${input.phase}FLIGHT_ACTIVE_PNU_SET_MISMATCH`
         );
     }
 
@@ -2009,6 +2820,8 @@ export async function runDevelopmentLandAreaSync(input: {
         input.dbApproval,
         input.evidence
     );
+    const developmentFullRefresh =
+        developmentFullRefreshMarkerForTarget(input.target);
     const pollIntervalMs = input.pollIntervalMs ?? 3_000;
     const jobTimeoutMs =
         input.jobTimeoutMs ?? DEVELOPMENT_JOB_POLL_SOFT_TIMEOUT_MS;
@@ -2035,6 +2848,7 @@ export async function runDevelopmentLandAreaSync(input: {
     const now = input.now ?? (() => new Date());
     const createAdmissionKey = input.createAdmissionKey ?? randomUUID;
     const startedAt = now().toISOString();
+    const startedAtMs = Date.parse(startedAt);
     const results: DevelopmentRunTargetResult[] = [];
     const observedPropertyUnitIds = new Set<string>();
     const evidenceByPnu = new Map(
@@ -2044,6 +2858,21 @@ export async function runDevelopmentLandAreaSync(input: {
     let stoppedBeforePnu: string | null = null;
     let preflight: DevelopmentReadOnlySnapshot | null = null;
     let postflight: DevelopmentReadOnlySnapshot | null = null;
+    let relationGisPreflight:
+        | DevelopmentRelationGisInvariantSnapshot
+        | null = null;
+    let relationGisPostflight:
+        | DevelopmentRelationGisInvariantSnapshot
+        | null = null;
+    let landRightPreflight: DevelopmentLandRightSnapshot | null =
+        null;
+    let landRightPostflight: DevelopmentLandRightSnapshot | null =
+        null;
+    let landRightPreflightRows: ObservedDevelopmentLandRight[] =
+        [];
+    let landRightWriteAttribution:
+        | DevelopmentLandRightWriteAttribution
+        | null = null;
     let preflightRows: DevelopmentActivePropertyUnit[] = [];
     let writeAttribution: DevelopmentWriteAttribution | null = null;
     let safetyFailureCode: string | null = null;
@@ -2064,6 +2893,24 @@ export async function runDevelopmentLandAreaSync(input: {
             });
         preflight = observedPreflight.summary;
         preflightRows = observedPreflight.rows;
+        if (developmentFullRefresh !== null) {
+            relationGisPreflight =
+                await readDevelopmentRelationGisInvariant({
+                    reader: input.preflightReader,
+                    target: input.target,
+                    evidence: input.evidence,
+                    phase: 'PRE',
+                });
+            const observedLandRights =
+                await readDevelopmentLandRights({
+                    reader: input.preflightReader,
+                    target: input.target,
+                    evidence: input.evidence,
+                    phase: 'PRE',
+                });
+            landRightPreflight = observedLandRights.summary;
+            landRightPreflightRows = observedLandRights.rows;
+        }
     } catch (error) {
         failureCode =
             error instanceof ControlledRunnerError
@@ -2076,14 +2923,32 @@ export async function runDevelopmentLandAreaSync(input: {
     const executionAnchors =
         developmentTargetExecutionAnchors(input.target);
     for (const pnu of failureCode === null ? executionAnchors : []) {
+        // capture 뒤 남은 approval write window와 guardian emergency budget을
+        // 보존한다. 이미 시작한 anchor의 discovery/apply는 exact terminal까지 drain하지만
+        // cutoff 뒤에는 다음 anchor를 새로 admission하지 않는다.
+        if (
+            developmentFullRefresh !== null &&
+            now().getTime() - startedAtMs >=
+                DEVELOPMENT_FULL_REFRESH_ADMISSION_CUTOFF_MS
+        ) {
+            failureCode =
+                'FULL_REFRESH_ADMISSION_CUTOFF_REACHED';
+            stoppedBeforePnu = pnu;
+            break;
+        }
         const evidence = evidenceByPnu.get(pnu)!;
         try {
             let admission: DevelopmentRunTargetResult['admission'] =
                 'RESUMED_LATEST';
-            let latest = await input.client.getLatest(
-                input.target.unionId,
-                pnu
-            );
+            // 전체 재조회는 이전 latest/APPLIED를 재사용하지 않는다. 매 실행마다 모든
+            // 295 component가 새 discovery를 통해 공식 API를 다시 조회해야 한다.
+            let latest =
+                developmentFullRefresh === null
+                    ? await input.client.getLatest(
+                          input.target.unionId,
+                          pnu
+                      )
+                    : null;
             // terminal FAILED job은 재개할 수 없다. 직전 apply가 DB guard 등으로
             // 실패한 뒤 같은 manifest를 재실행하면 새 discovery로 현재 scope/evidence를
             // 다시 고정해야 하며, 실패 job을 poll해 즉시 중단해서는 안 된다.
@@ -2108,7 +2973,8 @@ export async function runDevelopmentLandAreaSync(input: {
                         await input.client.admitDiscovery(
                             input.target.unionId,
                             pnu,
-                            discoveryAdmissionKey
+                            discoveryAdmissionKey,
+                            developmentFullRefresh ?? undefined
                         );
                 } catch (error) {
                     if (!isAmbiguousAdmissionError(error)) {
@@ -2127,7 +2993,8 @@ export async function runDevelopmentLandAreaSync(input: {
                             input.client.admitDiscovery(
                                 input.target.unionId,
                                 pnu,
-                                discoveryAdmissionKey
+                                discoveryAdmissionKey,
+                                developmentFullRefresh ?? undefined
                             ),
                     });
                     discoveryJobId = latest.jobId;
@@ -2193,13 +3060,17 @@ export async function runDevelopmentLandAreaSync(input: {
                 const snapshot = assertJobEvidenceMatches(
                     terminal,
                     evidence,
-                    true
+                    true,
+                    developmentFullRefresh
                 );
                 discoveryJobId = terminal.jobId;
                 const isManual =
                     terminal.landAreaSync.scopeState ===
                     'MANUAL_OVERWRITE_CONFIRMATION_REQUIRED';
-                if (isManual !== evidence.allowManualOverwrite) {
+                if (
+                    isManual &&
+                    !evidence.allowManualOverwrite
+                ) {
                     throw new ControlledRunnerError(
                         'MANUAL_OVERWRITE_EVIDENCE_MISMATCH'
                     );
@@ -2287,7 +3158,12 @@ export async function runDevelopmentLandAreaSync(input: {
             }
 
             assertAppliedTerminal(terminal);
-            assertJobEvidenceMatches(terminal, evidence, false);
+            assertJobEvidenceMatches(
+                terminal,
+                evidence,
+                false,
+                developmentFullRefresh
+            );
             for (const propertyUnitId of evidence.expectedPropertyUnitIds) {
                 observedPropertyUnitIds.add(propertyUnitId);
             }
@@ -2323,6 +3199,74 @@ export async function runDevelopmentLandAreaSync(input: {
         failureCode = 'TARGET_RESULT_COUNT_MISMATCH';
     }
     if (preflight) {
+        if (
+            developmentFullRefresh !== null &&
+            relationGisPreflight !== null
+        ) {
+            try {
+                relationGisPostflight =
+                    await readDevelopmentRelationGisInvariant({
+                        reader: input.preflightReader,
+                        target: input.target,
+                        evidence: input.evidence,
+                        phase: 'POST',
+                    });
+                if (
+                    relationGisPreflight.aggregateDigest !==
+                        relationGisPostflight.aggregateDigest ||
+                    DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES.some(
+                        (table) =>
+                            relationGisPreflight!.tables[table]
+                                .rowCount !==
+                                relationGisPostflight!.tables[table]
+                                    .rowCount ||
+                            relationGisPreflight!.tables[table]
+                                .digest !==
+                                relationGisPostflight!.tables[table]
+                                    .digest
+                    )
+                ) {
+                    throw new ControlledRunnerError(
+                        'POSTFLIGHT_RELATION_GIS_CHANGED'
+                    );
+                }
+            } catch (error) {
+                recordSafetyFailure(error);
+            }
+        }
+        if (
+            developmentFullRefresh !== null &&
+            landRightPreflight !== null
+        ) {
+            try {
+                const observedLandRights =
+                    await readDevelopmentLandRights({
+                        reader: input.preflightReader,
+                        target: input.target,
+                        evidence: input.evidence,
+                        phase: 'POST',
+                    });
+                landRightPostflight =
+                    observedLandRights.summary;
+                if (
+                    landRightPreflight.nonTargetRowsDigest !==
+                    landRightPostflight.nonTargetRowsDigest
+                ) {
+                    throw new ControlledRunnerError(
+                        'POSTFLIGHT_LAND_RIGHT_NON_TARGET_CHANGED'
+                    );
+                }
+                landRightWriteAttribution =
+                    validateDevelopmentLandRightTransition({
+                        preRows: landRightPreflightRows,
+                        postRows: observedLandRights.rows,
+                        evidence: input.evidence,
+                        results,
+                    });
+            } catch (error) {
+                recordSafetyFailure(error);
+            }
+        }
         let observedPostflight:
             | Awaited<
                   ReturnType<
@@ -2406,6 +3350,11 @@ export async function runDevelopmentLandAreaSync(input: {
         completedAt: now().toISOString(),
         preflight,
         postflight,
+        relationGisPreflight,
+        relationGisPostflight,
+        landRightPreflight,
+        landRightPostflight,
+        landRightWriteAttribution,
         writeAttribution,
         results,
         gate: {
@@ -2441,6 +3390,11 @@ export function validateDevelopmentRunArtifact(
             'completedAt',
             'preflight',
             'postflight',
+            'relationGisPreflight',
+            'relationGisPostflight',
+            'landRightPreflight',
+            'landRightPostflight',
+            'landRightWriteAttribution',
             'writeAttribution',
             'results',
             'gate',
@@ -2520,6 +3474,242 @@ export function validateDevelopmentRunArtifact(
     };
     const preflight = parseSnapshot(value.preflight, gate.status === 'PASS');
     const postflight = parseSnapshot(value.postflight, gate.status === 'PASS');
+    const fullRefreshRequired =
+        developmentFullRefreshMarkerForTarget(target) !== null;
+    const parseRelationGisInvariant = (
+        snapshotInput: unknown,
+        required: boolean
+    ): DevelopmentRelationGisInvariantSnapshot | null => {
+        if (snapshotInput === null) {
+            if (required) {
+                throw new ControlledRunnerError(
+                    'RUN_ARTIFACT_RELATION_GIS_INVALID'
+                );
+            }
+            return null;
+        }
+        if (!fullRefreshRequired) {
+            throw new ControlledRunnerError(
+                'RUN_ARTIFACT_RELATION_GIS_INVALID'
+            );
+        }
+        const snapshot = asRecord(
+            snapshotInput,
+            'RUN_ARTIFACT_RELATION_GIS_INVALID'
+        );
+        const tables = asRecord(
+            snapshot.tables,
+            'RUN_ARTIFACT_RELATION_GIS_INVALID'
+        );
+        if (
+            !hasExactKeys(snapshot, [
+                'scopePnuCount',
+                'propertyUnitCount',
+                'tables',
+                'aggregateDigest',
+            ]) ||
+            snapshot.scopePnuCount !==
+                developmentTargetAllowedScopePnus(target).length ||
+            snapshot.propertyUnitCount !==
+                target.expectedPropertyUnitCount ||
+            typeof snapshot.aggregateDigest !== 'string' ||
+            !HEX64_RE.test(snapshot.aggregateDigest) ||
+            !hasExactKeys(
+                tables,
+                DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES
+            )
+        ) {
+            throw new ControlledRunnerError(
+                'RUN_ARTIFACT_RELATION_GIS_INVALID'
+            );
+        }
+        for (const table of DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES) {
+            const tableInvariant = asRecord(
+                tables[table],
+                'RUN_ARTIFACT_RELATION_GIS_INVALID'
+            );
+            if (
+                !hasExactKeys(tableInvariant, [
+                    'rowCount',
+                    'digest',
+                ]) ||
+                !Number.isSafeInteger(tableInvariant.rowCount) ||
+                (tableInvariant.rowCount as number) < 0 ||
+                (tableInvariant.rowCount as number) > 10_000 ||
+                typeof tableInvariant.digest !== 'string' ||
+                !HEX64_RE.test(tableInvariant.digest)
+            ) {
+                throw new ControlledRunnerError(
+                    'RUN_ARTIFACT_RELATION_GIS_INVALID'
+                );
+            }
+        }
+        const normalized =
+            snapshot as unknown as DevelopmentRelationGisInvariantSnapshot;
+        if (
+            normalized.aggregateDigest !==
+            digestJson(
+                DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES.map(
+                    (table) => ({
+                        table,
+                        ...normalized.tables[table],
+                    })
+                )
+            )
+        ) {
+            throw new ControlledRunnerError(
+                'RUN_ARTIFACT_RELATION_GIS_INVALID'
+            );
+        }
+        return normalized;
+    };
+    const relationGisPreflight = parseRelationGisInvariant(
+        value.relationGisPreflight,
+        gate.status === 'PASS' && fullRefreshRequired
+    );
+    const relationGisPostflight = parseRelationGisInvariant(
+        value.relationGisPostflight,
+        gate.status === 'PASS' && fullRefreshRequired
+    );
+    const relationGisChanged =
+        relationGisPreflight !== null &&
+        relationGisPostflight !== null &&
+        (relationGisPreflight.aggregateDigest !==
+            relationGisPostflight.aggregateDigest ||
+            DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES.some(
+                (table) =>
+                    relationGisPreflight.tables[table].rowCount !==
+                        relationGisPostflight.tables[table].rowCount ||
+                    relationGisPreflight.tables[table].digest !==
+                        relationGisPostflight.tables[table].digest
+            ));
+    if (
+        relationGisChanged &&
+        (gate.status !== 'FAIL' ||
+            gate.failureCode !==
+                'POSTFLIGHT_RELATION_GIS_CHANGED')
+    ) {
+        throw new ControlledRunnerError(
+            'RUN_ARTIFACT_RELATION_GIS_CHANGED'
+        );
+    }
+    const parseLandRightSnapshot = (
+        snapshotInput: unknown,
+        required: boolean
+    ): DevelopmentLandRightSnapshot | null => {
+        if (snapshotInput === null) {
+            if (required) {
+                throw new ControlledRunnerError(
+                    'RUN_ARTIFACT_LAND_RIGHT_INVALID'
+                );
+            }
+            return null;
+        }
+        if (!fullRefreshRequired) {
+            throw new ControlledRunnerError(
+                'RUN_ARTIFACT_LAND_RIGHT_INVALID'
+            );
+        }
+        const snapshot = asRecord(
+            snapshotInput,
+            'RUN_ARTIFACT_LAND_RIGHT_INVALID'
+        );
+        if (
+            !hasExactKeys(snapshot, [
+                'rowCount',
+                'targetRowCount',
+                'activeTargetRowCount',
+                'allRowsDigest',
+                'nonTargetRowsDigest',
+            ]) ||
+            !Number.isSafeInteger(snapshot.rowCount) ||
+            (snapshot.rowCount as number) < 0 ||
+            (snapshot.rowCount as number) > 10_000 ||
+            !Number.isSafeInteger(snapshot.targetRowCount) ||
+            (snapshot.targetRowCount as number) < 0 ||
+            (snapshot.targetRowCount as number) >
+                (snapshot.rowCount as number) ||
+            !Number.isSafeInteger(snapshot.activeTargetRowCount) ||
+            (snapshot.activeTargetRowCount as number) < 0 ||
+            (snapshot.activeTargetRowCount as number) >
+                (snapshot.targetRowCount as number) ||
+            typeof snapshot.allRowsDigest !== 'string' ||
+            !HEX64_RE.test(snapshot.allRowsDigest) ||
+            typeof snapshot.nonTargetRowsDigest !== 'string' ||
+            !HEX64_RE.test(snapshot.nonTargetRowsDigest)
+        ) {
+            throw new ControlledRunnerError(
+                'RUN_ARTIFACT_LAND_RIGHT_INVALID'
+            );
+        }
+        return snapshot as unknown as DevelopmentLandRightSnapshot;
+    };
+    const landRightPreflight = parseLandRightSnapshot(
+        value.landRightPreflight,
+        gate.status === 'PASS' && fullRefreshRequired
+    );
+    const landRightPostflight = parseLandRightSnapshot(
+        value.landRightPostflight,
+        gate.status === 'PASS' && fullRefreshRequired
+    );
+    let landRightWriteAttribution:
+        | DevelopmentLandRightWriteAttribution
+        | null = null;
+    if (value.landRightWriteAttribution !== null) {
+        if (!fullRefreshRequired) {
+            throw new ControlledRunnerError(
+                'RUN_ARTIFACT_LAND_RIGHT_INVALID'
+            );
+        }
+        const attribution = asRecord(
+            value.landRightWriteAttribution,
+            'RUN_ARTIFACT_LAND_RIGHT_INVALID'
+        );
+        if (
+            !hasExactKeys(attribution, [
+                'changedRowCount',
+                'writerJobCount',
+                'attributedPropertyUnitCount',
+                'attributionDigest',
+            ]) ||
+            !Number.isSafeInteger(attribution.changedRowCount) ||
+            (attribution.changedRowCount as number) < 0 ||
+            (attribution.changedRowCount as number) > 10_000 ||
+            !Number.isSafeInteger(attribution.writerJobCount) ||
+            (attribution.writerJobCount as number) < 0 ||
+            (attribution.writerJobCount as number) >
+                target.targetCount ||
+            !Number.isSafeInteger(
+                attribution.attributedPropertyUnitCount
+            ) ||
+            (attribution.attributedPropertyUnitCount as number) <
+                0 ||
+            (attribution.attributedPropertyUnitCount as number) >
+                target.expectedPropertyUnitCount ||
+            typeof attribution.attributionDigest !== 'string' ||
+            !HEX64_RE.test(attribution.attributionDigest)
+        ) {
+            throw new ControlledRunnerError(
+                'RUN_ARTIFACT_LAND_RIGHT_INVALID'
+            );
+        }
+        landRightWriteAttribution =
+            attribution as unknown as DevelopmentLandRightWriteAttribution;
+    }
+    if (
+        landRightPreflight !== null &&
+        landRightPostflight !== null &&
+        landRightPreflight.nonTargetRowsDigest !==
+            landRightPostflight.nonTargetRowsDigest &&
+        (gate.status !== 'FAIL' ||
+            !String(gate.failureCode).startsWith(
+                'POSTFLIGHT_LAND_RIGHT_'
+            ))
+    ) {
+        throw new ControlledRunnerError(
+            'RUN_ARTIFACT_LAND_RIGHT_NON_TARGET_CHANGED'
+        );
+    }
     const identityChanged =
         preflight !== null &&
         postflight !== null &&
@@ -2662,6 +3852,44 @@ export function validateDevelopmentRunArtifact(
     ) {
         throw new ControlledRunnerError('RUN_ARTIFACT_TARGET_ORDER_INVALID');
     }
+    if (landRightWriteAttribution) {
+        const ldaregResults = results.filter(
+            (result) => result.strategy === 'LDAREG'
+        );
+        const ldaregWriterJobIds = new Set(
+            ldaregResults.map((result) => result.writerJobId)
+        );
+        const expectedLdaregPropertyUnitCount =
+            ldaregResults.reduce(
+                (sum, result) =>
+                    sum +
+                    result.updatedPropertyUnits +
+                    result.unchangedPropertyUnits,
+                0
+            );
+        const hasLdaregResults = ldaregWriterJobIds.size > 0;
+        if (
+            (hasLdaregResults &&
+                (landRightWriteAttribution.writerJobCount !==
+                    ldaregWriterJobIds.size ||
+                    expectedLdaregPropertyUnitCount < 1 ||
+                    landRightWriteAttribution
+                        .attributedPropertyUnitCount !==
+                        expectedLdaregPropertyUnitCount ||
+                    landRightWriteAttribution.changedRowCount <
+                        landRightWriteAttribution
+                            .attributedPropertyUnitCount)) ||
+            (!hasLdaregResults &&
+                (landRightWriteAttribution.changedRowCount !== 0 ||
+                    landRightWriteAttribution.writerJobCount !== 0 ||
+                    landRightWriteAttribution
+                        .attributedPropertyUnitCount !== 0))
+        ) {
+            throw new ControlledRunnerError(
+                'RUN_ARTIFACT_LAND_RIGHT_ATTRIBUTION_INVALID'
+            );
+        }
+    }
     if (
         writeAttribution &&
         (writeAttribution.writerJobCount > results.length ||
@@ -2687,6 +3915,13 @@ export function validateDevelopmentRunArtifact(
             ) ||
             !preflight ||
             !postflight ||
+            (fullRefreshRequired &&
+                (!relationGisPreflight ||
+                    !relationGisPostflight ||
+                    relationGisChanged ||
+                    !landRightPreflight ||
+                    !landRightPostflight ||
+                    !landRightWriteAttribution)) ||
             !writeAttribution
         ) {
             throw new ControlledRunnerError('RUN_ARTIFACT_PASS_INVALID');
@@ -2707,6 +3942,11 @@ export function validateDevelopmentRunArtifact(
         completedAt: value.completedAt,
         preflight,
         postflight,
+        relationGisPreflight,
+        relationGisPostflight,
+        landRightPreflight,
+        landRightPostflight,
+        landRightWriteAttribution,
         writeAttribution,
         results,
         gate: {
@@ -2799,6 +4039,16 @@ export function createDevelopmentPublicRunArtifact(
                 writeAttributionDigest:
                     artifact.writeAttribution?.attributionDigest ?? null,
             },
+            relationGisInvariant: {
+                preflight: artifact.relationGisPreflight,
+                postflight: artifact.relationGisPostflight,
+            },
+            landRightTransition: {
+                preflight: artifact.landRightPreflight,
+                postflight: artifact.landRightPostflight,
+                writeAttribution:
+                    artifact.landRightWriteAttribution,
+            },
             strategyCounts,
             outcomeCounts,
             gate: {
@@ -2829,6 +4079,14 @@ export function validateDevelopmentPublicRunArtifact(
     );
     const outcomeCounts = asRecord(
         value.outcomeCounts,
+        'PUBLIC_RUN_ARTIFACT_INVALID'
+    );
+    const relationGisInvariant = asRecord(
+        value.relationGisInvariant,
+        'PUBLIC_RUN_ARTIFACT_INVALID'
+    );
+    const landRightTransition = asRecord(
+        value.landRightTransition,
         'PUBLIC_RUN_ARTIFACT_INVALID'
     );
     const gate = asRecord(value.gate, 'PUBLIC_RUN_ARTIFACT_INVALID');
@@ -2881,6 +4139,8 @@ export function validateDevelopmentPublicRunArtifact(
             'manifestLabel',
             'aggregateCounts',
             'digests',
+            'relationGisInvariant',
+            'landRightTransition',
             'strategyCounts',
             'outcomeCounts',
             'gate',
@@ -2931,6 +4191,261 @@ export function validateDevelopmentPublicRunArtifact(
     ) {
         throw new ControlledRunnerError('PUBLIC_RUN_ARTIFACT_INVALID');
     }
+    const parsePublicRelationGisSnapshot = (
+        snapshotInput: unknown
+    ): DevelopmentRelationGisInvariantSnapshot | null => {
+        if (snapshotInput === null) return null;
+        const snapshot = asRecord(
+            snapshotInput,
+            'PUBLIC_RUN_ARTIFACT_INVALID'
+        );
+        const tables = asRecord(
+            snapshot.tables,
+            'PUBLIC_RUN_ARTIFACT_INVALID'
+        );
+        if (
+            !hasExactKeys(snapshot, [
+                'scopePnuCount',
+                'propertyUnitCount',
+                'tables',
+                'aggregateDigest',
+            ]) ||
+            !Number.isSafeInteger(snapshot.scopePnuCount) ||
+            (snapshot.scopePnuCount as number) < 1 ||
+            !Number.isSafeInteger(snapshot.propertyUnitCount) ||
+            (snapshot.propertyUnitCount as number) < 1 ||
+            !hasExactKeys(
+                tables,
+                DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES
+            ) ||
+            typeof snapshot.aggregateDigest !== 'string' ||
+            !HEX64_RE.test(snapshot.aggregateDigest)
+        ) {
+            throw new ControlledRunnerError(
+                'PUBLIC_RUN_ARTIFACT_INVALID'
+            );
+        }
+        for (const table of DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES) {
+            const tableInvariant = asRecord(
+                tables[table],
+                'PUBLIC_RUN_ARTIFACT_INVALID'
+            );
+            if (
+                !hasExactKeys(tableInvariant, [
+                    'rowCount',
+                    'digest',
+                ]) ||
+                !Number.isSafeInteger(tableInvariant.rowCount) ||
+                (tableInvariant.rowCount as number) < 0 ||
+                typeof tableInvariant.digest !== 'string' ||
+                !HEX64_RE.test(tableInvariant.digest)
+            ) {
+                throw new ControlledRunnerError(
+                    'PUBLIC_RUN_ARTIFACT_INVALID'
+                );
+            }
+        }
+        const normalized =
+            snapshot as unknown as DevelopmentRelationGisInvariantSnapshot;
+        if (
+            normalized.aggregateDigest !==
+            digestJson(
+                DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES.map(
+                    (table) => ({
+                        table,
+                        ...normalized.tables[table],
+                    })
+                )
+            )
+        ) {
+            throw new ControlledRunnerError(
+                'PUBLIC_RUN_ARTIFACT_INVALID'
+            );
+        }
+        return normalized;
+    };
+    if (
+        !hasExactKeys(relationGisInvariant, [
+            'preflight',
+            'postflight',
+        ])
+    ) {
+        throw new ControlledRunnerError(
+            'PUBLIC_RUN_ARTIFACT_INVALID'
+        );
+    }
+    const publicRelationGisPreflight =
+        parsePublicRelationGisSnapshot(
+            relationGisInvariant.preflight
+        );
+    const publicRelationGisPostflight =
+        parsePublicRelationGisSnapshot(
+            relationGisInvariant.postflight
+        );
+    const publicRelationGisChanged =
+        publicRelationGisPreflight !== null &&
+        publicRelationGisPostflight !== null &&
+        (publicRelationGisPreflight.aggregateDigest !==
+            publicRelationGisPostflight.aggregateDigest ||
+            DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES.some(
+                (table) =>
+                    publicRelationGisPreflight.tables[table]
+                        .rowCount !==
+                        publicRelationGisPostflight.tables[table]
+                            .rowCount ||
+                    publicRelationGisPreflight.tables[table]
+                        .digest !==
+                        publicRelationGisPostflight.tables[table]
+                            .digest
+            ));
+    if (
+        (publicRelationGisPreflight === null) !==
+            (publicRelationGisPostflight === null) ||
+        (publicRelationGisChanged &&
+            (gate.status !== 'FAIL' ||
+                gate.failureCode !==
+                    'POSTFLIGHT_RELATION_GIS_CHANGED'))
+    ) {
+        throw new ControlledRunnerError(
+            'PUBLIC_RUN_ARTIFACT_INVALID'
+        );
+    }
+    const parsePublicLandRightSnapshot = (
+        snapshotInput: unknown
+    ): DevelopmentLandRightSnapshot | null => {
+        if (snapshotInput === null) return null;
+        const snapshot = asRecord(
+            snapshotInput,
+            'PUBLIC_RUN_ARTIFACT_INVALID'
+        );
+        if (
+            !hasExactKeys(snapshot, [
+                'rowCount',
+                'targetRowCount',
+                'activeTargetRowCount',
+                'allRowsDigest',
+                'nonTargetRowsDigest',
+            ]) ||
+            !Number.isSafeInteger(snapshot.rowCount) ||
+            (snapshot.rowCount as number) < 0 ||
+            !Number.isSafeInteger(snapshot.targetRowCount) ||
+            (snapshot.targetRowCount as number) < 0 ||
+            (snapshot.targetRowCount as number) >
+                (snapshot.rowCount as number) ||
+            !Number.isSafeInteger(snapshot.activeTargetRowCount) ||
+            (snapshot.activeTargetRowCount as number) < 0 ||
+            (snapshot.activeTargetRowCount as number) >
+                (snapshot.targetRowCount as number) ||
+            typeof snapshot.allRowsDigest !== 'string' ||
+            !HEX64_RE.test(snapshot.allRowsDigest) ||
+            typeof snapshot.nonTargetRowsDigest !== 'string' ||
+            !HEX64_RE.test(snapshot.nonTargetRowsDigest)
+        ) {
+            throw new ControlledRunnerError(
+                'PUBLIC_RUN_ARTIFACT_INVALID'
+            );
+        }
+        return snapshot as unknown as DevelopmentLandRightSnapshot;
+    };
+    if (
+        !hasExactKeys(landRightTransition, [
+            'preflight',
+            'postflight',
+            'writeAttribution',
+        ])
+    ) {
+        throw new ControlledRunnerError(
+            'PUBLIC_RUN_ARTIFACT_INVALID'
+        );
+    }
+    const publicLandRightPreflight =
+        parsePublicLandRightSnapshot(
+            landRightTransition.preflight
+        );
+    const publicLandRightPostflight =
+        parsePublicLandRightSnapshot(
+            landRightTransition.postflight
+        );
+    let publicLandRightAttribution:
+        | DevelopmentLandRightWriteAttribution
+        | null = null;
+    if (landRightTransition.writeAttribution !== null) {
+        const attribution = asRecord(
+            landRightTransition.writeAttribution,
+            'PUBLIC_RUN_ARTIFACT_INVALID'
+        );
+        if (
+            !hasExactKeys(attribution, [
+                'changedRowCount',
+                'writerJobCount',
+                'attributedPropertyUnitCount',
+                'attributionDigest',
+            ]) ||
+            !Number.isSafeInteger(attribution.changedRowCount) ||
+            (attribution.changedRowCount as number) < 0 ||
+            !Number.isSafeInteger(attribution.writerJobCount) ||
+            (attribution.writerJobCount as number) < 0 ||
+            !Number.isSafeInteger(
+                attribution.attributedPropertyUnitCount
+            ) ||
+            (attribution.attributedPropertyUnitCount as number) <
+                0 ||
+            typeof attribution.attributionDigest !== 'string' ||
+            !HEX64_RE.test(attribution.attributionDigest)
+        ) {
+            throw new ControlledRunnerError(
+                'PUBLIC_RUN_ARTIFACT_INVALID'
+            );
+        }
+        publicLandRightAttribution =
+            attribution as unknown as DevelopmentLandRightWriteAttribution;
+    }
+    const landRightFields = [
+        publicLandRightPreflight,
+        publicLandRightPostflight,
+        publicLandRightAttribution,
+    ];
+    const publicLandRightNonTargetChanged =
+        publicLandRightPreflight !== null &&
+        publicLandRightPostflight !== null &&
+        publicLandRightPreflight.nonTargetRowsDigest !==
+            publicLandRightPostflight.nonTargetRowsDigest;
+    if (
+        (publicLandRightPreflight === null) !==
+            (publicLandRightPostflight === null) ||
+        (publicLandRightAttribution !== null &&
+            (publicLandRightPreflight === null ||
+                publicLandRightPostflight === null)) ||
+        (publicLandRightNonTargetChanged &&
+            (gate.status !== 'FAIL' ||
+                !String(gate.failureCode).startsWith(
+                    'POSTFLIGHT_LAND_RIGHT_'
+                )))
+    ) {
+        throw new ControlledRunnerError(
+            'PUBLIC_RUN_ARTIFACT_INVALID'
+        );
+    }
+    if (
+        publicLandRightAttribution !== null &&
+        (((strategyCounts.LDAREG as number) > 0 &&
+            (publicLandRightAttribution.writerJobCount !==
+                (strategyCounts.LDAREG as number) ||
+                publicLandRightAttribution
+                    .attributedPropertyUnitCount < 1 ||
+                publicLandRightAttribution.changedRowCount <
+                    publicLandRightAttribution
+                        .attributedPropertyUnitCount)) ||
+            ((strategyCounts.LDAREG as number) === 0 &&
+                (publicLandRightAttribution.changedRowCount !== 0 ||
+                    publicLandRightAttribution.writerJobCount !== 0 ||
+                    publicLandRightAttribution
+                        .attributedPropertyUnitCount !== 0)))
+    ) {
+        throw new ControlledRunnerError(
+            'PUBLIC_RUN_ARTIFACT_INVALID'
+        );
+    }
     const preflightFields = [
         aggregateCounts.preflightActivePropertyUnitCount,
         aggregateCounts.preflightActivePnuCount,
@@ -2978,7 +4493,28 @@ export function validateDevelopmentPublicRunArtifact(
                     .some((key) => outcomeCounts[key] !== 0) ||
                 preflightFields.some((field) => field === null) ||
                 postflightFields.some((field) => field === null) ||
-                attributionFields.some((field) => field === null))) ||
+                attributionFields.some((field) => field === null) ||
+                (manifestLabel ===
+                    'mia-seven-full-295-components-api-readonly-20260728' &&
+                    (aggregateCounts.targetCount !== 295 ||
+                        aggregateCounts.expectedPropertyUnitCount !==
+                            429 ||
+                        digests.manifestDigest !==
+                            MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_MANIFEST_DIGEST ||
+                        publicRelationGisPreflight === null ||
+                        publicRelationGisPostflight === null ||
+                        publicRelationGisChanged ||
+                        publicRelationGisPreflight.scopePnuCount !==
+                            300 ||
+                        publicRelationGisPreflight.propertyUnitCount !==
+                            429 ||
+                        publicRelationGisPostflight.scopePnuCount !==
+                            300 ||
+                        publicRelationGisPostflight.propertyUnitCount !==
+                            429 ||
+                        landRightFields.some(
+                            (field) => field === null
+                        ))))) ||
         (gate.status === 'FAIL' && gate.failureCode === null)
     ) {
         throw new ControlledRunnerError('PUBLIC_RUN_ARTIFACT_INVALID');

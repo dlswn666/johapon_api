@@ -1154,12 +1154,18 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             .filter((index) => index >= 0)
     );
     if (placeholderIndexes.size > 0) {
+        componentMatchDigest.push({
+            kind: 'LDAREG_NON_APPLICABLE_PLACEHOLDER',
+            ignoredCount: placeholderIndexes.size,
+        });
+    }
+    if (placeholderIndexes.size > 1) {
         issues.push({
             code: 'RATIO_PARSE_FAILED',
             targetPnu: canonicalScan.pnu,
         });
+        ratioParseFailed = true;
     }
-    if (placeholderIndexes.size > 1) ratioParseFailed = true;
 
     const observations: LdaregObservationInput[] =
         canonicalScan.ldaregRows.flatMap((row, idx) => {

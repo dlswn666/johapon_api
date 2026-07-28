@@ -307,7 +307,15 @@ test('미아7 실응답형: 0000 동 sentinel·숫자 층·ratio 없는 0000 pla
         result.issues.filter(
             (issue) => issue.code === 'RATIO_PARSE_FAILED'
         ).length,
-        1
+        0
+    );
+    assert.ok(
+        result.componentMatchDigest.some(
+            (entry) =>
+                entry.kind ===
+                    'LDAREG_NON_APPLICABLE_PLACEHOLDER' &&
+                entry.ignoredCount === 1
+        )
     );
 });
 
@@ -1599,7 +1607,7 @@ test('미아7 791-2280/2281 실응답형: base EXPOS 4+attached zero와 basis ch
         result.issues.filter(
             (issue) => issue.code === 'RATIO_PARSE_FAILED'
         ).length,
-        1
+        0
     );
     const rootDigest = result.componentMatchDigest.find(
         (entry) =>
@@ -2088,6 +2096,7 @@ test('single-root·양쪽 FH unique·한쪽 dong 누락일 때만 EXPOS floor+ho
         propertyUnits: [
             {
                 ...property,
+                dong: '청성주택6차',
                 ho: '101',
             },
         ],

@@ -182,11 +182,19 @@ function failureAudit(
     failureCode: string = 'CAPTURE_SETUP_REJECTED'
 ): DevelopmentEvidenceCaptureAudit {
     return {
-        version: 'land-area-development-evidence-capture-audit@1',
+        version: 'land-area-development-evidence-capture-audit@2',
         databaseTarget: 'development',
         unionId: '00000000-0000-0000-0000-000000000000',
         targetCount: 0,
         expectedPropertyUnitCount: 0,
+        activePnuCount: 0,
+        activePnuDigest: '0'.repeat(64),
+        initialActivePropertyIdentityDigest: '0'.repeat(64),
+        finalActivePropertyIdentityDigest: '0'.repeat(64),
+        activePropertyIdentityStable: false,
+        resolvedComponentCount: 0,
+        scannedPnuCount: 0,
+        sameRunOfficialComponentCount: 0,
         manifestDigest: '0'.repeat(64),
         captureRunId,
         capturedAt: new Date().toISOString(),
@@ -212,6 +220,11 @@ function failureAudit(
         evidenceManifestSha256: null,
         gate: {
             status: 'FAIL',
+            failureCodes: [failureCode],
+        },
+        promotionGate: {
+            status: 'BLOCKED',
+            writeEligible: false,
             failureCodes: [failureCode],
         },
     };

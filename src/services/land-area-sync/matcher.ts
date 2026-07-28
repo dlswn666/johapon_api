@@ -216,6 +216,35 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
     const { source, scopeRootIdentity, exposUnits, buildingUnits, propertyUnits, unionId } = input;
     const sourceDfh = dfhKey(source);
     let sourceForUnitMatching = source;
+    const expectedPnuScope = new Set(source.expectedPnuScope);
+    const eligiblePropertiesForBuildingUnit = (
+        buildingUnitId: string
+    ): PropertyUnitCandidate[] =>
+        propertyUnits.filter(
+            (property) =>
+                property.unionId === unionId &&
+                property.buildingUnitId === buildingUnitId &&
+                !property.isDeleted &&
+                property.pnu !== null &&
+                expectedPnuScope.has(property.pnu)
+        );
+    const withExposUnitTuple = (
+        matched: ExposUnitCandidate
+    ): MatchSource => ({
+        ...source,
+        dong:
+            nonEmpty(matched.dong) !== ''
+                ? matched.dong
+                : source.dong ?? null,
+        floor:
+            nonEmpty(matched.floor) !== ''
+                ? matched.floor
+                : source.floor ?? null,
+        ho:
+            nonEmpty(matched.ho) !== ''
+                ? matched.ho
+                : source.ho ?? null,
+    });
 
     // 1) Building HUB 전유부 동·층·호 exact match
     const exposMatches = exposUnits.filter((e) => dfhKey(e) === sourceDfh);
@@ -253,6 +282,8 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
                     );
                 }
                 expos = byFloorHo[0];
+                sourceForUnitMatching =
+                    withExposUnitTuple(expos);
             }
         }
         if (
@@ -286,12 +317,8 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
                     );
                 }
                 expos = providerMatches[0];
-                sourceForUnitMatching = {
-                    ...source,
-                    dong: expos.dong ?? source.dong ?? null,
-                    floor: expos.floor ?? null,
-                    ho: expos.ho ?? null,
-                };
+                sourceForUnitMatching =
+                    withExposUnitTuple(expos);
             }
         }
         if (!expos) {
@@ -326,14 +353,36 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
         const byTuple = buildingUnits.filter(
             (b) => dfhKey(b) === matchedSourceDfh
         );
-        if (byTuple.length > 1) {
-            // 서로 다른 building_unit이 같은 정규화 key로 수렴 = 정규화 충돌
-            return noChange('NORMALIZED_TUPLE_BU', 'COLLISION', 'UNIT_NORMALIZATION_COLLISION');
+        const activeBackedExact = byTuple.filter(
+            (candidate) =>
+                eligiblePropertiesForBuildingUnit(candidate.id)
+                    .length > 0
+        );
+        const exactBuildingIds = new Set(
+            byTuple
+                .map((candidate) => nonEmpty(candidate.buildingId))
+                .filter(Boolean)
+        );
+        const oneProvenExactBuildingScope =
+            exactBuildingIds.size === 1 &&
+            byTuple.every(
+                (candidate) =>
+                    nonEmpty(candidate.buildingId) !== ''
+            );
+        if (
+            activeBackedExact.length > 1 ||
+            (byTuple.length > 1 &&
+                !oneProvenExactBuildingScope)
+        ) {
+            return noChange(
+                'NORMALIZED_TUPLE_BU',
+                'COLLISION',
+                'UNIT_NORMALIZATION_COLLISION'
+            );
         }
-        if (byTuple.length === 1) {
-            resolvedBuildingUnitId = byTuple[0].id;
-        }
-        if (byTuple.length === 0) {
+        if (activeBackedExact.length === 1) {
+            resolvedBuildingUnitId = activeBackedExact[0].id;
+        } else {
             const buildingIds = new Set(
                 buildingUnits
                     .map((candidate) => nonEmpty(candidate.buildingId))
@@ -352,14 +401,41 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
                       )
                   )
                 : [];
-            if (byKnownFields.length > 1) {
+            const activeBackedKnownFields =
+                byKnownFields.filter(
+                    (candidate) =>
+                        eligiblePropertiesForBuildingUnit(
+                            candidate.id
+                        ).length > 0
+                );
+            if (activeBackedKnownFields.length > 1) {
                 return noChange(
                     'NORMALIZED_KNOWN_FIELDS_BU',
                     'COLLISION',
                     'UNIT_NORMALIZATION_COLLISION'
                 );
             }
-            if (byKnownFields.length === 1) {
+            if (activeBackedKnownFields.length === 1) {
+                resolvedBuildingUnitId =
+                    activeBackedKnownFields[0].id;
+            } else if (byTuple.length > 1) {
+                // 활성 물건지 연결로도 단일 후보를 증명하지 못한 exact 충돌.
+                return noChange(
+                    'NORMALIZED_TUPLE_BU',
+                    'COLLISION',
+                    'UNIT_NORMALIZATION_COLLISION'
+                );
+            } else if (byTuple.length === 1) {
+                // 기존 exact 우선순위를 보존한다. 다음 단계에서 활성 property
+                // 연결 부재를 PROPERTY_UNIT_NOT_FOUND로 닫는다.
+                resolvedBuildingUnitId = byTuple[0].id;
+            } else if (byKnownFields.length > 1) {
+                return noChange(
+                    'NORMALIZED_KNOWN_FIELDS_BU',
+                    'COLLISION',
+                    'UNIT_NORMALIZATION_COLLISION'
+                );
+            } else if (byKnownFields.length === 1) {
                 resolvedBuildingUnitId = byKnownFields[0].id;
             }
         }
@@ -368,16 +444,16 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
 
     // 5) building_unit 링크가 있으면 property_unit 정확히 1건
     if (resolvedBuildingUnitId !== null) {
-        const props = propertyUnits.filter(
-            (p) => p.unionId === unionId && p.buildingUnitId === resolvedBuildingUnitId && !p.isDeleted
-        );
+        const props =
+            eligiblePropertiesForBuildingUnit(
+                resolvedBuildingUnitId
+            );
         if (props.length === 0) return noChange('PROPERTY_UNIT_BY_BU', 'NONE', 'PROPERTY_UNIT_NOT_FOUND');
         if (props.length > 1) return noChange('PROPERTY_UNIT_BY_BU', 'AMBIGUOUS', 'PROPERTY_UNIT_AMBIGUOUS');
         return { kind: 'MATCHED', propertyUnitId: props[0].id, buildingUnitRef: resolvedBuildingUnitId, via: 'PROPERTY_UNIT_BY_BU' };
     }
 
     // 6) 연결 없음 → expected PNU scope + normalized tuple + building_unit_id IS NULL fallback
-    const scope = new Set(source.expectedPnuScope);
     const sourceDh = dhKey(sourceForUnitMatching);
     const fallback = propertyUnits.filter(
         (p) =>
@@ -385,7 +461,7 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
             p.buildingUnitId === null &&
             !p.isDeleted &&
             p.pnu != null &&
-            scope.has(p.pnu) &&
+            expectedPnuScope.has(p.pnu) &&
             dhKey(p) === sourceDh
     );
     if (fallback.length === 0) return noChange('PROPERTY_UNIT_FALLBACK', 'NONE', 'PROPERTY_UNIT_NOT_FOUND');

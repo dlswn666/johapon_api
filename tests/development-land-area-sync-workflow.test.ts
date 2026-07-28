@@ -92,7 +92,7 @@ test('791-2280 API target은 read-only capture에서만 선택되고 v2 전체 s
     );
 });
 
-test('미아7 전체 299 PNU·429 물건지 API 재조회는 read-only capture에서만 exact routing한다', () => {
+test('미아7 전체 299 anchor API 재조회 legacy route는 read-only capture에 보존한다', () => {
     const label = 'mia-seven-full-299-api-readonly-20260728';
     const selection = captureWorkflow.slice(
         captureWorkflow.indexOf(`${label})`),
@@ -100,10 +100,6 @@ test('미아7 전체 299 PNU·429 물건지 API 재조회는 read-only capture�
             'mia-seven-auto-286-20260725)',
             captureWorkflow.indexOf(`${label})`)
         )
-    );
-    assert.match(
-        captureWorkflow,
-        new RegExp(`default: ${label}`)
     );
     assert.match(captureWorkflow, new RegExp(`- ${label}`));
     assert.match(
@@ -117,6 +113,105 @@ test('미아7 전체 299 PNU·429 물건지 API 재조회는 read-only capture�
         workflow,
         /mia-seven-full-299-api-readonly-target-20260728\.json/
     );
+});
+
+test('미아7 295 component·429 물건지 전체 재조회는 299 active PNU와 300 scanned PNU를 분리해 검증한다', () => {
+    const label =
+        'mia-seven-full-295-components-api-readonly-20260728';
+    const selection = captureWorkflow.slice(
+        captureWorkflow.indexOf(`${label})`),
+        captureWorkflow.indexOf(
+            'mia-seven-full-299-api-readonly-20260728)',
+            captureWorkflow.indexOf(`${label})`)
+        )
+    );
+    assert.match(
+        captureWorkflow,
+        new RegExp(`default: ${label}`)
+    );
+    assert.match(captureWorkflow, new RegExp(`- ${label}`));
+    assert.match(
+        selection,
+        /mia-seven-full-295-components-api-readonly-target-20260728\.json/
+    );
+    assert.match(selection, /target_count="295"/);
+    assert.match(selection, /property_unit_count="429"/);
+    assert.match(
+        captureWorkflow,
+        /audit\?\.activePnuCount !== target\.expectedUnionActivePnuCount/
+    );
+    assert.match(
+        captureWorkflow,
+        /audit\?\.resolvedComponentCount !== target\.targetCount/
+    );
+    assert.match(
+        captureWorkflow,
+        /audit\?\.scannedPnuCount !== approvedScopePnus\.length/
+    );
+    assert.match(
+        captureWorkflow,
+        /audit\?\.sameRunOfficialComponentCount !== target\.targetCount/
+    );
+    assert.match(
+        captureWorkflow,
+        /audit\?\.promotionGate\?\.status !== "PASS"/
+    );
+    assert.match(
+        captureWorkflow,
+        /audit\?\.promotionGate\?\.writeEligible !== true/
+    );
+    assert.match(workflow, new RegExp(label));
+    assert.match(
+        workflow,
+        /mia-seven-full-295-components-api-readonly-target-20260728\.json/
+    );
+    assert.match(
+        workflow,
+        /db_approval_path=""[\s\S]+evidence_path=""[\s\S]+full_refresh_mode="1"/
+    );
+    assert.match(
+        workflow,
+        /if \[\[ "\$\{FULL_REFRESH_MODE\}" == "0" \]\]; then[\s\S]+scp "\$\{ssh_options\[@\]\}" "\$\{DB_APPROVAL_PATH\}"/
+    );
+    assert.match(
+        guardian,
+        /-e LAND_AREA_SYNC_ENABLED=[\s\S]+development-land-area-evidence-capture\.js/
+    );
+    assert.match(
+        guardian,
+        /audit\?\.promotionGate\?\.status !== "PASS"[\s\S]+audit\?\.promotionGate\?\.writeEligible !== true/
+    );
+    assert.match(
+        guardian,
+        /audit\?\.sameRunOfficialComponentCount !== target\.targetCount/
+    );
+    assert.match(
+        guardian,
+        /runner\.validateDevelopmentRunnerManifests\(target, approval, evidence\)/
+    );
+    assert.match(
+        runner,
+        /DEVELOPMENT_FULL_REFRESH_ADMISSION_CUTOFF_MS\s*=\s*225 \* 60_000/
+    );
+    assert.match(
+        runner,
+        /FULL_REFRESH_ADMISSION_CUTOFF_REACHED/
+    );
+    for (const table of [
+        'land_lots',
+        'building_land_lots',
+        'buildings',
+        'building_units',
+        'building_external_refs',
+        'building_registry_land_lot_relations',
+        'building_land_lot_manual_overrides',
+    ]) {
+        assert.match(cli, new RegExp(`['"]${table}['"]`));
+    }
+    assert.match(cli, /select\('\*', \{ count: 'exact' \}\)/);
+    assert.match(cli, /pageSize = 500/);
+    assert.match(cli, /\$\{code\}_TRUNCATED/);
+    assert.match(cli, /readPropertyUnitLandRights/);
 });
 
 test('read-only capture는 raw evidence를 업로드하지 않고 비식별 집계만 게시한 뒤 private 파일을 제거한다', () => {
@@ -151,6 +246,11 @@ test('read-only capture는 raw evidence를 업로드하지 않고 비식별 집�
     );
     assert.match(publicArtifactBlock, /redactedAggregate/);
     assert.match(publicArtifactBlock, /redactedIssueCounts/);
+    assert.match(publicArtifactBlock, /activePnuCount/);
+    assert.match(publicArtifactBlock, /resolvedComponentCount/);
+    assert.match(publicArtifactBlock, /scannedPnuCount/);
+    assert.match(publicArtifactBlock, /sameRunOfficialComponentCount/);
+    assert.match(publicArtifactBlock, /promotionGate/);
     assert.doesNotMatch(publicArtifactBlock, /anchorIndex/);
     assert.doesNotMatch(publicArtifactBlock, /redactedDiagnostics/);
     assert.match(publicArtifactBlock, /productionWrites: 0/);
@@ -202,7 +302,7 @@ test('workflow는 SSH와 분리된 guardian이 공통 operation lock을 terminal
         /application_root="\$\{HOME\}\/alimtalk-proxy"[\s\S]+operation_lock_path="\$\{application_root\}\/\.land-area-sync-operation\.lock"/
     );
     assert.match(guardian, /exec 8>>"\$\{operation_lock_path\}"/);
-    assert.match(guardian, /flock -w 900 8/);
+    assert.match(guardian, /flock -w 300 8/);
     assert.match(
         workflow,
         /nohup setsid env[\s\S]+bash "\$\{guardian\}"/
@@ -215,6 +315,38 @@ test('workflow는 SSH와 분리된 guardian이 공통 operation lock을 terminal
     assert.doesNotMatch(
         `${workflow}\n${guardian}`,
         /production_lock_path|\.tonghari-api-production\.lock/
+    );
+    assert.match(workflow, /timeout-minutes: 420/);
+    assert.match(guardian, /capture_timeout_seconds=3600/);
+    assert.match(guardian, /runner_timeout_seconds=18000/);
+    assert.match(guardian, /post_timeout_quarantine_seconds=720/);
+    assert.match(
+        guardian,
+        /timeout --foreground --kill-after=30s "\$\{capture_timeout_seconds\}"[\s\S]+development-land-area-evidence-capture\.js/
+    );
+    assert.match(
+        guardian,
+        /timeout --foreground --kill-after=30s "\$\{runner_timeout_seconds\}"/
+    );
+    assert.match(
+        guardian,
+        /runner_status.*124.*runner_status.*137[\s\S]+sleep "\$\{post_timeout_quarantine_seconds\}"/
+    );
+    assert.ok(
+        3_600 + 18_000 + 720 + 300 + 600 < 420 * 60,
+        'lock/capture/runner/quarantine/cleanup은 workflow hard timeout에 setup 여유를 남겨야 한다'
+    );
+    assert.match(
+        guardian,
+        /host_self_cleanup_delay_seconds=1200[\s\S]+schedule_host_self_cleanup/
+    );
+    assert.match(
+        guardian,
+        /exec 8>&-[\s\S]+sleep "\$\{host_self_cleanup_delay_seconds\}"[\s\S]+rm -f --[\s\S]+artifact\.json[\s\S]+rmdir -- "\$\{host_root\}"/
+    );
+    assert.match(
+        guardian,
+        /cleanup_complete=1[\s\S]+write_private_line "\$\{host_status\}" "\$\{final_status\}"[\s\S]+schedule_host_self_cleanup[\s\S]+trap - EXIT/
     );
 });
 
@@ -280,10 +412,14 @@ test('image는 non-root runner private directory를 mode 700으로 준비한다'
     assert.match(dockerfile, /\.development-land-area-sync/);
     assert.match(
         dockerfile,
-        /chown -R nodejs:nodejs[\s\S]+\.development-land-area-sync/
+        /\.development-land-area-evidence-capture/
     );
     assert.match(
         dockerfile,
-        /chmod 700[\s\S]+\.development-land-area-sync/
+        /chown -R nodejs:nodejs[\s\S]+\.development-land-area-sync[\s\S]+\.development-land-area-evidence-capture/
+    );
+    assert.match(
+        dockerfile,
+        /chmod 700[\s\S]+\.development-land-area-sync[\s\S]+\.development-land-area-evidence-capture/
     );
 });

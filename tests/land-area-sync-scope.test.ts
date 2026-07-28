@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     resolveParcelScopeCompleteness,
+    resolveSameRunOfficialDevelopmentFullRefreshComponent,
+    resolveSameRunOfficialReadOnlyComponent,
+    createSameRunOfficialReadOnlyEffectiveScope,
     computeScopeHash,
     verifySinglePnuConfirmation,
     parseDbScopeResolution,
@@ -19,6 +22,7 @@ const MULTIPLEX = HOUSING_PURPOSE_ALLOWLIST.find((p) => p.category === 'MULTIPLE
 
 const ANCHOR = '1168010100107360024';
 const OTHER_PNU = '1168010100107360025';
+const THIRD_PNU = '1168010100107360026';
 const PK = '1002003004005';
 
 // ── scan 빌더 ─────────────────────────────────────────────────────
@@ -146,6 +150,237 @@ test('cache 없음 + attached row → REVIEW (관계 생성·승격 없음)', ()
     );
     assert.equal(r.state, 'REVIEW_REQUIRED');
     assert.ok(r.issues.includes('SCOPE_CACHE_SCAN_CONFLICT'));
+});
+
+test('READ_ONLY same-run official closure는 1→2/1→3 LDAREG component를 결정적으로 해소한다', () => {
+    const oneAttachedInput = gate({
+        baseScans: [
+            base({
+                title: titleComplete([
+                    titleRow(PK, '1', MULTIPLEX),
+                ]),
+                attached: attachedComplete([
+                    attachedRow(ANCHOR, OTHER_PNU, PK),
+                ]),
+            }),
+        ],
+    });
+    const one = resolveSameRunOfficialReadOnlyComponent({
+        ...oneAttachedInput,
+        anchorPnu: ANCHOR,
+    });
+    assert.ok(one);
+    assert.deepEqual(one.memberPnus, [ANCHOR, OTHER_PNU]);
+    assert.equal(one.pairCount, 1);
+    assert.match(one.officialComponentDigest, /^[0-9a-f]{64}$/);
+
+    const twoAttachedInput = gate({
+        baseScans: [
+            base({
+                title: titleComplete([
+                    titleRow(PK, '2', MULTIPLEX),
+                ]),
+                attached: attachedComplete([
+                    attachedRow(ANCHOR, THIRD_PNU, PK),
+                    attachedRow(ANCHOR, OTHER_PNU, PK),
+                ]),
+            }),
+        ],
+    });
+    const two = resolveSameRunOfficialReadOnlyComponent({
+        ...twoAttachedInput,
+        anchorPnu: ANCHOR,
+    });
+    const repeated = resolveSameRunOfficialReadOnlyComponent({
+        ...twoAttachedInput,
+        anchorPnu: ANCHOR,
+    });
+    assert.ok(two);
+    assert.deepEqual(two.memberPnus, [
+        ANCHOR,
+        OTHER_PNU,
+        THIRD_PNU,
+    ]);
+    assert.equal(two.pairCount, 2);
+    assert.equal(
+        two.officialComponentDigest,
+        repeated?.officialComponentDigest
+    );
+
+    const effective =
+        createSameRunOfficialReadOnlyEffectiveScope({
+            dbScope: db(),
+            component: two,
+            propertyMembership: [
+                {
+                    propertyUnitId: 'p2',
+                    pnu: THIRD_PNU,
+                },
+                {
+                    propertyUnitId: 'p1',
+                    pnu: ANCHOR,
+                },
+            ],
+        });
+    assert.equal(effective.dbState, 'LINKED');
+    assert.deepEqual(effective.linkedBasePnus, [ANCHOR]);
+    assert.deepEqual(effective.linkedPnus, [
+        ANCHOR,
+        OTHER_PNU,
+        THIRD_PNU,
+    ]);
+    assert.deepEqual(
+        (
+            effective.propertyMembership as Array<{
+                propertyUnitId: string;
+            }>
+        ).map((row) => row.propertyUnitId),
+        ['p1', 'p2']
+    );
+});
+
+test('DEV 전체 갱신은 LADFRL과 LDAREG singleton을 모두 pairCount=0 공식 component로 고정한다', () => {
+    const relationPnu = OTHER_PNU;
+    const ladfrlComponent =
+        resolveSameRunOfficialDevelopmentFullRefreshComponent({
+            ...gate({
+                dbScope: db({
+                    dbState: 'LINKED',
+                    componentPnus: [relationPnu],
+                    linkedBasePnus: [relationPnu],
+                    linkedPnus: [relationPnu],
+                    linkedEvidenceKeys: ['relation-evidence'],
+                    dbScopeHash: 'relation-derived-concurrency-hash',
+                }),
+            }),
+            anchorPnu: ANCHOR,
+        });
+    assert.ok(ladfrlComponent);
+    assert.deepEqual(ladfrlComponent, {
+        source:
+            'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
+        canonicalBasePnu: ANCHOR,
+        memberPnus: [ANCHOR],
+        managementPk: PK,
+        pairCount: 0,
+        officialComponentDigest:
+            ladfrlComponent.officialComponentDigest,
+    });
+    assert.match(
+        ladfrlComponent.officialComponentDigest,
+        /^[0-9a-f]{64}$/
+    );
+
+    const ldaregComponent =
+        resolveSameRunOfficialDevelopmentFullRefreshComponent({
+            ...gate({
+                dbScope: db({
+                    dbState: 'LINKED',
+                    componentPnus: [relationPnu],
+                    linkedBasePnus: [relationPnu],
+                    linkedPnus: [relationPnu],
+                    linkedEvidenceKeys: ['relation-evidence'],
+                    dbScopeHash:
+                        'relation-derived-concurrency-hash',
+                }),
+                baseScans: [
+                    base({
+                        title: titleComplete([
+                            titleRow(PK, '0', MULTIPLEX),
+                        ]),
+                    }),
+                ],
+            }),
+            anchorPnu: ANCHOR,
+        });
+    assert.ok(ldaregComponent);
+    assert.equal(ldaregComponent.pairCount, 0);
+    assert.deepEqual(ldaregComponent.memberPnus, [ANCHOR]);
+    assert.match(
+        ldaregComponent.officialComponentDigest,
+        /^[0-9a-f]{64}$/
+    );
+});
+
+test('READ_ONLY same-run official closure는 기존 blocker·bylot 불일치·중복 pair를 fail-closed한다', () => {
+    const scans = [
+        base({
+            title: titleComplete([
+                titleRow(PK, '1', MULTIPLEX),
+            ]),
+            attached: attachedComplete([
+                attachedRow(ANCHOR, OTHER_PNU, PK),
+            ]),
+        }),
+    ];
+    assert.equal(
+        resolveSameRunOfficialReadOnlyComponent({
+            ...gate({
+                dbScope: db({
+                    dbState: 'BLOCKING_EVIDENCE',
+                    blockingEvidence: [
+                        {
+                            sourceKind: 'API_RELATION',
+                            sourceId: 'x',
+                            state: 'CONFLICT',
+                        },
+                    ],
+                }),
+                baseScans: scans,
+            }),
+            anchorPnu: ANCHOR,
+        }),
+        null
+    );
+    assert.equal(
+        resolveSameRunOfficialReadOnlyComponent({
+            ...gate({
+                baseScans: [
+                    base({
+                        title: titleComplete([
+                            titleRow(PK, '0', MULTIPLEX),
+                        ]),
+                        attached: attachedComplete([
+                            attachedRow(
+                                ANCHOR,
+                                OTHER_PNU,
+                                PK
+                            ),
+                        ]),
+                    }),
+                ],
+            }),
+            anchorPnu: ANCHOR,
+        }),
+        null
+    );
+    assert.equal(
+        resolveSameRunOfficialReadOnlyComponent({
+            ...gate({
+                baseScans: [
+                    base({
+                        title: titleComplete([
+                            titleRow(PK, '2', MULTIPLEX),
+                        ]),
+                        attached: attachedComplete([
+                            attachedRow(
+                                ANCHOR,
+                                OTHER_PNU,
+                                PK
+                            ),
+                            attachedRow(
+                                ANCHOR,
+                                OTHER_PNU,
+                                PK
+                            ),
+                        ]),
+                    }),
+                ],
+            }),
+            anchorPnu: ANCHOR,
+        }),
+        null
+    );
 });
 
 test('bylot0 + attached row → REVIEW / BYLOT_ATTACHED_COUNT_MISMATCH', () => {
