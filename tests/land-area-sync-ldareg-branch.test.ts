@@ -6,6 +6,7 @@ import {
     validateLdaregReplication,
     type LdaregBranchInput,
 } from '../src/services/land-area-sync/ldareg-branch';
+import { sumCurrentNumerators } from '../src/services/land-area-sync/service';
 import { providerUnitShapeWitness } from '../src/services/land-area-sync/provider-unit-shape-bridge';
 import type {
     BuildingUnitCandidate,
@@ -1796,6 +1797,273 @@ test('기준·부속 PNU의 동일 EXPOS replica는 한 후보로 축약하지�
     );
 });
 
+test('DEV opt-in active-PNU replica는 1→3 동일 호실 property를 PNU별 exact match하고 각 numerator를 한 logical identity로 보존한다', () => {
+    const pnuB = '1168010100107360025';
+    const pnuC = '1168010100107360026';
+    const targetPnus = [ANCHOR, pnuB, pnuC];
+    const units = [
+        { floor: '1', ho: '101', numerator: '10' },
+        { floor: '2', ho: '201', numerator: '20' },
+    ];
+    const perPnu = targetPnus.map((pnu) => ({
+        pnu,
+        ldaregRows: units.map((unit, index) => ({
+            pnu,
+            agbldgSn: String(index + 1),
+            buldFloorNm: unit.floor,
+            buldHoNm: unit.ho,
+            ldaQotaRate: `${unit.numerator}/150`,
+            clsSeCode: '0',
+        })),
+        exposRows: units.map((unit) => ({
+            pnu,
+            mgmBldrgstPk: PK,
+            flrNoNm: unit.floor,
+            hoNm: unit.ho,
+        })),
+    }));
+    const propertyUnits = targetPnus.flatMap((pnu, pnuIndex) =>
+        units.map((unit, unitIndex) => ({
+            id: `property-${pnuIndex}-${unitIndex}`,
+            unionId: 'union-1',
+            buildingUnitId: `building-unit-${pnuIndex}-${unitIndex}`,
+            pnu,
+            isDeleted: false,
+            dong: null,
+            ho: unit.ho,
+        }))
+    );
+    const buildingUnits = targetPnus.flatMap((_pnu, pnuIndex) =>
+        units.map((unit, unitIndex) => ({
+            id: `building-unit-${pnuIndex}-${unitIndex}`,
+            floor: unit.floor,
+            ho: unit.ho,
+        }))
+    );
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: targetPnus,
+        rootIdentity: PK,
+        perPnu,
+        buildingUnits,
+        propertyUnits,
+        scopeLadfrlAreas: targetPnus.map((pnu) => ({
+            pnu,
+            area: '50',
+        })),
+        scopeLadfrlTotal: '150',
+        officialPropertyMembershipMode:
+            'PER_ACTIVE_PNU_REPLICA',
+    });
+
+    assert.equal(result.blocking, false);
+    assert.equal(result.items.length, 6);
+    assert.deepEqual(
+        result.matchedPropertyUnitIds.slice().sort(),
+        propertyUnits.map((property) => property.id).sort()
+    );
+    for (const item of result.items) {
+        assert.deepEqual(item.expectedTargetPnus, targetPnus);
+        assert.equal(item.components.length, 3);
+        assert.equal(
+            new Set(
+                item.components.map(
+                    (component) => component.sourceIdentity
+                )
+            ).size,
+            1
+        );
+        assert.equal(
+            new Set(
+                item.components.map(
+                    (component) => component.ratioNumerator
+                )
+            ).size,
+            1,
+            '동일 numerator를 PNU 개수만큼 별도 권리로 합산하지 않는다'
+        );
+        assert.deepEqual(
+            item.components.map(
+                (component) => component.targetPnu
+            ),
+            targetPnus
+        );
+        const expectedNumerator = item.components[0].ratioNumerator;
+        assert.equal(
+            sumCurrentNumerators(item),
+            expectedNumerator,
+            `1→3 replica projection은 ${expectedNumerator}을 3배 합산하지 않는다`
+        );
+    }
+});
+
+test('DEV active-PNU replica는 한 PNU의 호실 누락·중복 room ambiguity를 whole-component blocking한다', () => {
+    const pnuB = '1168010100107360025';
+    const targetPnus = [ANCHOR, pnuB];
+    const perPnu = targetPnus.map((pnu) => ({
+        pnu,
+        ldaregRows: [
+            {
+                pnu,
+                agbldgSn: '1',
+                buldFloorNm: '1',
+                buldHoNm: '101',
+                ldaQotaRate: '10/100',
+                clsSeCode: '0',
+            },
+            {
+                pnu,
+                agbldgSn: '2',
+                buldFloorNm: '2',
+                buldHoNm: '201',
+                ldaQotaRate: '20/100',
+                clsSeCode: '0',
+            },
+        ],
+        exposRows: [
+            {
+                pnu,
+                mgmBldrgstPk: PK,
+                flrNoNm: '1',
+                hoNm: '101',
+            },
+            {
+                pnu,
+                mgmBldrgstPk: PK,
+                flrNoNm: '2',
+                hoNm: '201',
+            },
+        ],
+    }));
+    const baseProperties: PropertyUnitCandidate[] = [
+        {
+            id: 'a-101',
+            unionId: 'union-1',
+            buildingUnitId: null,
+            pnu: ANCHOR,
+            isDeleted: false,
+            ho: '101',
+        },
+        {
+            id: 'a-201',
+            unionId: 'union-1',
+            buildingUnitId: null,
+            pnu: ANCHOR,
+            isDeleted: false,
+            ho: '201',
+        },
+        {
+            id: 'b-101',
+            unionId: 'union-1',
+            buildingUnitId: null,
+            pnu: pnuB,
+            isDeleted: false,
+            ho: '101',
+        },
+    ];
+    const run = (propertyUnits: PropertyUnitCandidate[]) =>
+        assemble({
+            unionId: 'union-1',
+            scannedPnus: targetPnus,
+            rootIdentity: PK,
+            perPnu,
+            buildingUnits: [],
+            propertyUnits,
+            scopeLadfrlAreas: targetPnus.map((pnu) => ({
+                pnu,
+                area: '50',
+            })),
+            scopeLadfrlTotal: '100',
+            officialPropertyMembershipMode:
+                'PER_ACTIVE_PNU_REPLICA',
+        });
+
+    const missing = run(baseProperties);
+    assert.equal(missing.blocking, true);
+    assert.equal(missing.items.length, 0);
+
+    const ambiguous = run([
+        ...baseProperties,
+        {
+            id: 'b-101-duplicate',
+            unionId: 'union-1',
+            buildingUnitId: null,
+            pnu: pnuB,
+            isDeleted: false,
+            ho: '101',
+        },
+    ]);
+    assert.equal(ambiguous.blocking, true);
+    assert.equal(ambiguous.items.length, 0);
+});
+
+test('DEV query-only attached + SINGLE cohort도 unmatched active property를 whole-component blocking한다', () => {
+    const queryOnlyAttached = '1168010100107360025';
+    const targetPnus = [ANCHOR, queryOnlyAttached];
+    const perPnu = targetPnus.map((pnu) => ({
+        pnu,
+        ldaregRows: [
+            {
+                pnu,
+                agbldgSn: '1',
+                buldFloorNm: '3',
+                buldHoNm: '301',
+                ldaQotaRate: '10/100',
+                clsSeCode: '0',
+            },
+        ],
+        exposRows:
+            pnu === ANCHOR
+                ? [
+                      {
+                          pnu,
+                          mgmBldrgstPk: PK,
+                          flrNoNm: '3',
+                          hoNm: '301',
+                      },
+                  ]
+                : [],
+    }));
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: targetPnus,
+        rootIdentity: PK,
+        perPnu,
+        buildingUnits: [],
+        propertyUnits: [
+            {
+                id: 'matched-301',
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                ho: '301',
+            },
+            {
+                id: 'unmatched-401',
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                ho: '401',
+            },
+        ],
+        scopeLadfrlAreas: [
+            { pnu: ANCHOR, area: '50' },
+            { pnu: queryOnlyAttached, area: '50' },
+        ],
+        scopeLadfrlTotal: '100',
+        officialPropertyMembershipMode: 'SINGLE_LOGICAL_SET',
+    });
+
+    assert.equal(result.blocking, true);
+    assert.ok(
+        result.issues.some(
+            (issue) => issue.code === 'PROPERTY_UNIT_NOT_FOUND'
+        )
+    );
+});
+
 test('비적용 placeholder가 아닌 CURRENT 비율 파싱 실패는 전체 blocking한다', () => {
     const result = assemble({
         unionId: 'union-1',
@@ -2725,6 +2993,63 @@ test('canonical expos source는 linked base의 nonzero exact dataset만 허용�
         ),
         null,
         '두 번째 base의 expos zero를 attached zero처럼 무시하지 않는다'
+    );
+});
+
+test('DEV official component만 base EXPOS zero + attached nonzero aggregate를 허용하고 all-zero는 차단한다', () => {
+    const attached = '1168010100107360025';
+    const attachedOnly = [
+        {
+            pnu: ANCHOR,
+            ldaregRows: [],
+            exposRows: [],
+        },
+        {
+            pnu: attached,
+            ldaregRows: [],
+            exposRows: [
+                {
+                    pnu: attached,
+                    mgmBldrgstPk: PK,
+                    flrNoNm: '3',
+                    hoNm: '301',
+                },
+            ],
+        },
+    ];
+    assert.equal(
+        selectCanonicalExposSourcePnu(
+            [ANCHOR],
+            attachedOnly,
+            [PK]
+        ),
+        null,
+        'normal/prod 계약은 base EXPOS zero를 계속 차단한다'
+    );
+    assert.equal(
+        selectCanonicalExposSourcePnu(
+            [ANCHOR],
+            attachedOnly,
+            [PK],
+            {
+                allowComponentWideAggregateForEmptyBase: true,
+            }
+        ),
+        ANCHOR
+    );
+    assert.equal(
+        selectCanonicalExposSourcePnu(
+            [ANCHOR],
+            attachedOnly.map((scan) => ({
+                ...scan,
+                exposRows: [],
+            })),
+            [PK],
+            {
+                allowComponentWideAggregateForEmptyBase: true,
+            }
+        ),
+        null
     );
 });
 

@@ -17,6 +17,7 @@ import {
     parseDbScopeResolution,
     resolveParcelScopeCompleteness,
     resolveSameRunOfficialDevelopmentFullRefreshComponent,
+    resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent,
     resolveSameRunOfficialReadOnlyComponent,
     type DbScopeResolution,
     type BasePnuScan,
@@ -32,7 +33,9 @@ import {
 import { buildScopeEvidence, buildScopeSnapshot, capIssues, sanitizeIssue, emptyCounts } from './preview';
 import {
     assembleLdaregApply,
+    resolveLdaregPropertyMembershipLayout,
     selectCanonicalExposSourcePnu,
+    type LdaregPropertyMembershipMode,
     type LdaregPnuScan,
 } from './ldareg-branch';
 import { resolveScopeLadfrlAreas } from './ladfrl-scope';
@@ -158,6 +161,57 @@ function str(v: unknown): string {
 
 function membershipArray(m: unknown): Array<Record<string, unknown>> {
     return Array.isArray(m) ? m.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object') : [];
+}
+
+export type DevelopmentFullRefreshLdaregPropertyMembershipMode =
+    LdaregPropertyMembershipMode;
+
+/**
+ * DEV 전체 갱신의 positive official component에서만 쓰는 활성 호실 membership gate.
+ *
+ * - 모든 활성 row가 official member PNU 안에 있고 non-empty ho identity를 가져야 한다.
+ * - 둘 이상의 PNU가 property를 보유하면 각 PNU의 normalized dong+ho 집합이 exact 같아야
+ *   한다. query-only attached PNU(활성 property 0)는 match cohort에서 제외한다.
+ * - 한 PNU 안의 중복 room identity, 중복 id, 부분 cohort는 모두 null(REVIEW)이다.
+ *
+ * MANUAL/land_area/source 값은 입력에도 없으며 판정에 사용하지 않는다.
+ */
+export function resolveDevelopmentFullRefreshLdaregPropertyMembershipMode(
+    input: {
+        unionId: string;
+        component: SameRunOfficialDevelopmentFullRefreshComponent;
+        propertyUnits: PropertyUnitCandidate[];
+    }
+): DevelopmentFullRefreshLdaregPropertyMembershipMode | null {
+    const { unionId, component } = input;
+    const memberPnus = [...new Set(component.memberPnus)].sort();
+    if (
+        component.pairCount <= 0 ||
+        memberPnus.length !== component.memberPnus.length ||
+        memberPnus.length !== component.pairCount + 1 ||
+        !memberPnus.includes(component.canonicalBasePnu)
+    ) {
+        return null;
+    }
+    const memberSet = new Set(memberPnus);
+    if (
+        input.propertyUnits
+            .filter((row) => !row.isDeleted)
+            .some(
+                (row) =>
+                    typeof row.pnu !== 'string' ||
+                    !memberSet.has(row.pnu)
+            )
+    ) {
+        return null;
+    }
+    return (
+        resolveLdaregPropertyMembershipLayout({
+            unionId,
+            expectedTargetPnus: memberPnus,
+            propertyUnits: input.propertyUnits,
+        })?.mode ?? null
+    );
 }
 
 function aborted(signal?: AbortSignal): boolean {
@@ -317,6 +371,10 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
     let developmentFullRefreshScopeResolution:
         | SameRunOfficialDevelopmentFullRefreshComponent
         | null = null;
+    let developmentFullRefreshLdaregPropertyMembershipMode:
+        | DevelopmentFullRefreshLdaregPropertyMembershipMode
+        | null = null;
+    let developmentFullRefreshLdaregClassificationOverride = false;
     let gate = resolveParcelScopeCompleteness({
         dbScope: effectiveDbScope,
         baseScans,
@@ -385,6 +443,19 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
                         right.propertyUnitId
                     )
                 );
+            const ldaregPropertyMembershipMode =
+                developmentFullRefresh &&
+                component.pairCount > 0
+                    ? resolveDevelopmentFullRefreshLdaregPropertyMembershipMode(
+                          {
+                              unionId,
+                              component:
+                                  component as SameRunOfficialDevelopmentFullRefreshComponent,
+                              propertyUnits:
+                                  preloadedPropertyUnits,
+                          }
+                      )
+                    : null;
             effectiveDbScope = developmentFullRefresh
                 ? createSameRunOfficialDevelopmentFullRefreshEffectiveScope(
                       {
@@ -407,12 +478,41 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
             });
             if (gate.state === 'LINKED_SCOPE_RESOLVED') {
                 if (developmentFullRefresh) {
-                    developmentFullRefreshScopeResolution =
-                        component as SameRunOfficialDevelopmentFullRefreshComponent;
+                    if (
+                        component.pairCount === 0 ||
+                        ldaregPropertyMembershipMode !== null
+                    ) {
+                        developmentFullRefreshScopeResolution =
+                            component as SameRunOfficialDevelopmentFullRefreshComponent;
+                        developmentFullRefreshLdaregPropertyMembershipMode =
+                            ldaregPropertyMembershipMode;
+                    }
                 } else {
                     readOnlyScopeResolution =
                         component as SameRunOfficialReadOnlyComponent;
                 }
+            } else if (
+                developmentFullRefresh &&
+                component.pairCount > 0 &&
+                ldaregPropertyMembershipMode !== null &&
+                gate.state === 'REVIEW_REQUIRED' &&
+                gate.issues.length === 1 &&
+                gate.issues[0] ===
+                    'BUILDING_CLASSIFICATION_CONFLICT' &&
+                gate.classification.kind ===
+                    'REVIEW_REQUIRED' &&
+                gate.classification.issue ===
+                    'BUILDING_CLASSIFICATION_CONFLICT'
+            ) {
+                // component scope는 strict official evidence로 확정됐다. 다만 일반
+                // classifier 계약은 그대로 REVIEW이며, DEV full-refresh + positive
+                // component + exact room membership에서만 LDAREG strict branch로 보낸다.
+                developmentFullRefreshScopeResolution =
+                    component as SameRunOfficialDevelopmentFullRefreshComponent;
+                developmentFullRefreshLdaregPropertyMembershipMode =
+                    ldaregPropertyMembershipMode;
+                developmentFullRefreshLdaregClassificationOverride =
+                    true;
             }
         }
     }
@@ -442,10 +542,19 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
     let parcelSingletonBasis:
         | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
         | null = null;
+    const parcelSingletonReviewIssues =
+        gate.issues.length === 1 &&
+        gate.issues[0] ===
+            'BUILDING_CLASSIFICATION_CONFLICT'
+            ? true
+            : developmentFullRefresh !== null &&
+              gate.issues.length === 2 &&
+              gate.issues[0] ===
+                  'BUILDING_CLASSIFICATION_CONFLICT' &&
+              gate.issues[1] === 'SCOPE_NOT_LINKED';
     if (
         gate.state === 'REVIEW_REQUIRED' &&
-        gate.issues.length === 1 &&
-        gate.issues[0] === 'BUILDING_CLASSIFICATION_CONFLICT' &&
+        parcelSingletonReviewIssues &&
         gate.scannedPnus.length === 1
     ) {
         const [propertyUnits, buildingUnits] = await Promise.all([
@@ -463,11 +572,87 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         });
         if (decision.kind === 'ELIGIBLE') {
             parcelSingletonBasis = decision.basis;
+            if (
+                developmentFullRefresh !== null &&
+                developmentFullRefreshScopeResolution === null
+            ) {
+                const component =
+                    resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+                        {
+                            anchorPnu,
+                            dbScope,
+                            baseScans,
+                            policy,
+                            parcelSingletonBasis:
+                                decision.basis,
+                        }
+                    );
+                if (component) {
+                    deps.assertCanaryScopeAllowed(
+                        unionId,
+                        component.memberPnus
+                    );
+                    const memberSet = new Set(
+                        component.memberPnus
+                    );
+                    const activePropertyUnits =
+                        propertyUnits.filter(
+                            (row) => !row.isDeleted
+                        );
+                    if (
+                        activePropertyUnits.some(
+                            (row) =>
+                                row.unionId !== unionId ||
+                                typeof row.pnu !== 'string' ||
+                                !memberSet.has(row.pnu)
+                        ) ||
+                        new Set(
+                            activePropertyUnits.map(
+                                (row) => row.id
+                            )
+                        ).size !==
+                            activePropertyUnits.length
+                    ) {
+                        throw new Error(
+                            'DEVELOPMENT_FULL_REFRESH_SCOPE_MEMBERSHIP_INVALID'
+                        );
+                    }
+                    const propertyMembership =
+                        activePropertyUnits
+                            .map((row) => ({
+                                propertyUnitId: row.id,
+                                pnu: row.pnu,
+                            }))
+                            .sort((left, right) =>
+                                left.propertyUnitId.localeCompare(
+                                    right.propertyUnitId
+                                )
+                            );
+                    preloadedPropertyUnits =
+                        propertyUnits;
+                    effectiveDbScope =
+                        createSameRunOfficialDevelopmentFullRefreshEffectiveScope(
+                            {
+                                dbScope,
+                                component,
+                                propertyMembership,
+                            }
+                        );
+                    gate = resolveParcelScopeCompleteness({
+                        dbScope: effectiveDbScope,
+                        baseScans,
+                        policy,
+                    });
+                    developmentFullRefreshScopeResolution =
+                        component;
+                }
+            }
         }
     }
     if (
         gate.state === 'REVIEW_REQUIRED' &&
-        parcelSingletonBasis === null
+        parcelSingletonBasis === null &&
+        !developmentFullRefreshLdaregClassificationOverride
     ) {
         await finalizeDiscoveryTerminal(deps, jobId, unionId, {
             status: 'COMPLETED',
@@ -478,9 +663,28 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         });
         return;
     }
+    if (
+        developmentFullRefresh !== null &&
+        developmentFullRefreshScopeResolution === null
+    ) {
+        await finalizeDiscoveryTerminal(deps, jobId, unionId, {
+            status: 'COMPLETED',
+            scopeState: 'REVIEW_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
+            issues: (
+                gate.issues.length > 0
+                    ? gate.issues
+                    : ['SCOPE_NOT_LINKED' as const]
+            ).map((code) => ({ code })),
+            counts: gateCounts(baseScans),
+        });
+        return;
+    }
 
     const strategy: LandAreaSyncStrategy | null =
-        parcelSingletonBasis !== null
+        developmentFullRefreshLdaregClassificationOverride
+            ? 'LDAREG'
+            : parcelSingletonBasis !== null
             ? 'LADFRL'
             : gate.classification.kind === 'CLASSIFIED'
               ? gate.classification.family
@@ -510,7 +714,11 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         dbScope: effectiveDbScope,
         scopeEvidence,
         // gate 는 SINGLE_PNU_CONFIRMED 를 스스로 발급하지 않는다. 방어적으로 confirmation 요구로 취급.
-        gateState: gate.state === 'LINKED_SCOPE_RESOLVED' ? 'LINKED_SCOPE_RESOLVED' : 'SINGLE_SCOPE_CONFIRMATION_REQUIRED',
+        gateState:
+            gate.state === 'LINKED_SCOPE_RESOLVED' ||
+            developmentFullRefreshLdaregClassificationOverride
+                ? 'LINKED_SCOPE_RESOLVED'
+                : 'SINGLE_SCOPE_CONFIRMATION_REQUIRED',
         scannedPnus: gate.scannedPnus,
         bylot: gate.bylot,
         dbScopeHash: gate.dbScopeHash,
@@ -523,6 +731,7 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         readOnlyScopeResolution,
         developmentFullRefresh,
         developmentFullRefreshScopeResolution,
+        developmentFullRefreshLdaregPropertyMembershipMode,
     };
 
     if (strategy === 'LADFRL') {
@@ -572,6 +781,10 @@ interface BranchContext {
     /** relation과 독립적으로 같은 실행에서 확정한 공식 component. */
     developmentFullRefreshScopeResolution:
         | SameRunOfficialDevelopmentFullRefreshComponent
+        | null;
+    /** positive component의 활성 property 배치 형태. LDAREG matcher opt-in에만 사용한다. */
+    developmentFullRefreshLdaregPropertyMembershipMode:
+        | DevelopmentFullRefreshLdaregPropertyMembershipMode
         | null;
 }
 
@@ -884,7 +1097,13 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
     const canonicalSourcePnu = selectCanonicalExposSourcePnu(
         canonicalBasePnus,
         perPnu,
-        acceptedRootIdentities
+        acceptedRootIdentities,
+        {
+            allowComponentWideAggregateForEmptyBase:
+                ctx.developmentFullRefresh !== null &&
+                (ctx.developmentFullRefreshScopeResolution
+                    ?.pairCount ?? 0) > 0,
+        }
     );
     if (
         !expectedCanonicalSourcePnu ||
@@ -911,6 +1130,9 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
         canonicalSourcePnu,
         buildingUnits,
         propertyUnits,
+        officialPropertyMembershipMode:
+            ctx.developmentFullRefreshLdaregPropertyMembershipMode ??
+            undefined,
     });
 
     const counts: LandAreaSyncCounts = {
@@ -1105,7 +1327,9 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
     await callApplyAndRecord(ctx, 'LDAREG', snapshot, items, counts, assembled.issues);
 }
 
-function sumCurrentNumerators(item: LandAreaSyncApplyLdaregItem): string {
+export function sumCurrentNumerators(
+    item: LandAreaSyncApplyLdaregItem
+): string {
     const numeratorByIdentity = new Map<string, string>();
     for (const c of item.components) {
         if (c.sourceState !== 'CURRENT') continue;

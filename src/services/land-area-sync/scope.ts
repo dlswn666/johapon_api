@@ -204,6 +204,9 @@ export interface SameRunOfficialDevelopmentFullRefreshComponent
     source: typeof SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE;
 }
 
+export type DevelopmentFullRefreshParcelSingletonBasis =
+    'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON';
+
 function scanRows<T>(scan: StrictScan<T>): T[] {
     return scan.state === 'COMPLETE' ? scan.rows : [];
 }
@@ -407,6 +410,22 @@ export function resolveParcelScopeCompleteness(input: ParcelScopeInput): ParcelS
 export function resolveSameRunOfficialReadOnlyComponent(
     input: ParcelScopeInput & { anchorPnu: string }
 ): SameRunOfficialReadOnlyComponent | null {
+    return resolveStrictSameRunOfficialAttachedComponent(input, false);
+}
+
+/**
+ * 같은 실행의 title self PK + attached pair + bylot count만으로 positive component를
+ * 조립한다. 일반 READ_ONLY_CAPTURE는 기존대로 LDAREG 분류까지 요구하고, repo-pinned
+ * DEV 전체 갱신만 BUILDING_CLASSIFICATION_CONFLICT를 component 범위 판정과 분리한다.
+ *
+ * 분류 conflict 허용은 scope 조립까지만이다. 실제 LDAREG 전략 선택은 service 계층에서
+ * 활성 property 전체의 호 identity를 확인한 뒤, LDAREG branch의 component-wide strict
+ * scan/matcher/replica/ratio gate를 그대로 통과해야 한다.
+ */
+function resolveStrictSameRunOfficialAttachedComponent(
+    input: ParcelScopeInput & { anchorPnu: string },
+    allowClassificationConflict: boolean
+): SameRunOfficialReadOnlyComponent | null {
     const { anchorPnu, dbScope, baseScans } = input;
     if (
         dbScope.dbState !== 'NO_EVIDENCE' ||
@@ -424,12 +443,30 @@ export function resolveSameRunOfficialReadOnlyComponent(
     }
 
     const normalGate = resolveParcelScopeCompleteness(input);
+    const expectedIssues =
+        allowClassificationConflict &&
+        normalGate.classification.kind === 'REVIEW_REQUIRED' &&
+        normalGate.classification.issue ===
+            'BUILDING_CLASSIFICATION_CONFLICT'
+            ? [
+                  'BUILDING_CLASSIFICATION_CONFLICT',
+                  'SCOPE_CACHE_SCAN_CONFLICT',
+              ]
+            : ['SCOPE_CACHE_SCAN_CONFLICT'];
     if (
         normalGate.state !== 'REVIEW_REQUIRED' ||
-        normalGate.issues.length !== 1 ||
-        normalGate.issues[0] !== 'SCOPE_CACHE_SCAN_CONFLICT' ||
-        normalGate.classification.kind !== 'CLASSIFIED' ||
-        normalGate.classification.family !== 'LDAREG' ||
+        normalGate.issues.length !== expectedIssues.length ||
+        expectedIssues.some(
+            (issue) =>
+                !normalGate.issues.includes(
+                    issue as LandAreaSyncIssueCode
+                )
+        ) ||
+        (normalGate.classification.kind === 'CLASSIFIED'
+            ? normalGate.classification.family !== 'LDAREG'
+            : !allowClassificationConflict ||
+              normalGate.classification.issue !==
+                  'BUILDING_CLASSIFICATION_CONFLICT') ||
         normalGate.bylot.status !== 'RESOLVED'
     ) {
         return null;
@@ -461,6 +498,24 @@ export function resolveSameRunOfficialReadOnlyComponent(
         ),
     ].sort();
     if (titleSelfPks.length !== 1) return null;
+    const titleRootPks = [
+        ...new Set(
+            baseScans[0].title.rows
+                .map(
+                    (row) =>
+                        normalizeRegistryManagementPk(
+                            row.mgmUpBldrgstPk
+                        ) ??
+                        normalizeRegistryManagementPk(
+                            row.mgmBldrgstPk
+                        )
+                )
+                .filter(
+                    (value): value is string => value !== null
+                )
+        ),
+    ].sort();
+    if (titleRootPks.length !== 1) return null;
     const managementPk = titleSelfPks[0];
     if (
         attached.pairs.some(
@@ -543,9 +598,18 @@ export function resolveSameRunOfficialDevelopmentFullRefreshComponent(
         ...input,
         dbScope: officialOnlyDbScope,
     });
-    if (component) {
+    const strictAttachedComponent =
+        component ??
+        resolveStrictSameRunOfficialAttachedComponent(
+            {
+                ...input,
+                dbScope: officialOnlyDbScope,
+            },
+            true
+        );
+    if (strictAttachedComponent) {
         return {
-            ...component,
+            ...strictAttachedComponent,
             source:
                 SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE,
         };
@@ -602,6 +666,149 @@ export function resolveSameRunOfficialDevelopmentFullRefreshComponent(
     }
     const managementPk = titleSelfPks[0];
     const memberPnus = [input.anchorPnu];
+    return {
+        source:
+            SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE,
+        canonicalBasePnu: input.anchorPnu,
+        memberPnus,
+        managementPk,
+        pairCount: 0,
+        officialComponentDigest: sha256Hex(
+            canonicalStableStringify({
+                version:
+                    'land-area-sync.same-run-official-component@1',
+                canonicalBasePnu: input.anchorPnu,
+                memberPnus,
+                managementPk,
+                pairs: [],
+                externalScopeDigest:
+                    singletonGate.externalScopeDigest,
+            })
+        ),
+    };
+}
+
+/**
+ * 공통 분류가 확정되지 않았지만 DB의 exact 단일 property와 unit identity 부재를 별도
+ * 판정한 DEV 전체 갱신 LADFRL 전용 closure다.
+ *
+ * 이 함수는 parcel-singleton 판정 자체를 대체하지 않는다. 호출자가 그 판정을 통과한
+ * basis를 명시해야 하며, 같은 실행의 title/attached scan이 완전하고 공식 부속지번
+ * 근거가 0일 때만 pairCount=0 component를 만든다. title 자체가 COMPLETE_ZERO이거나
+ * 관리번호가 여러 개인 경우에는 공식 scan digest에서 결정적인 synthetic identity를
+ * 만들되, provider 실패·pagination 미완료·bylot 상충·attached 행은 모두 차단한다.
+ */
+export function resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+    input: ParcelScopeInput & {
+        anchorPnu: string;
+        parcelSingletonBasis: DevelopmentFullRefreshParcelSingletonBasis;
+    }
+): SameRunOfficialDevelopmentFullRefreshComponent | null {
+    if (
+        input.parcelSingletonBasis !==
+            'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON' ||
+        input.baseScans.length !== 1 ||
+        input.baseScans[0].pnu !== input.anchorPnu
+    ) {
+        return null;
+    }
+    const baseScan = input.baseScans[0];
+    if (
+        (baseScan.title.state !== 'COMPLETE' &&
+            baseScan.title.state !== 'COMPLETE_ZERO') ||
+        baseScan.attached.state !== 'COMPLETE_ZERO'
+    ) {
+        return null;
+    }
+
+    const officialOnlyDbScope =
+        createDevelopmentFullRefreshOfficialOnlyDbScope(
+            input.dbScope,
+            input.anchorPnu
+        );
+    if (!officialOnlyDbScope) return null;
+    const singletonGate = resolveParcelScopeCompleteness({
+        ...input,
+        dbScope: officialOnlyDbScope,
+    });
+    const allowedIssues =
+        singletonGate.issues.length === 1 &&
+        singletonGate.issues[0] ===
+            'BUILDING_CLASSIFICATION_CONFLICT'
+            ? true
+            : singletonGate.issues.length === 2 &&
+              singletonGate.issues[0] ===
+                  'BUILDING_CLASSIFICATION_CONFLICT' &&
+              singletonGate.issues[1] === 'SCOPE_NOT_LINKED';
+    if (
+        singletonGate.state !== 'REVIEW_REQUIRED' ||
+        !allowedIssues ||
+        singletonGate.classification.kind !== 'REVIEW_REQUIRED' ||
+        singletonGate.classification.issue !==
+            'BUILDING_CLASSIFICATION_CONFLICT' ||
+        singletonGate.bylot.status !== 'RESOLVED'
+    ) {
+        return null;
+    }
+
+    const titleSelfPks =
+        baseScan.title.state === 'COMPLETE'
+            ? [
+                  ...new Set(
+                      baseScan.title.rows
+                          .map((row) =>
+                              normalizeRegistryManagementPk(
+                                  row.mgmBldrgstPk
+                              )
+                          )
+                          .filter(
+                              (
+                                  value
+                              ): value is string =>
+                                  value !== null
+                          )
+                  ),
+              ].sort()
+            : [];
+    if (
+        baseScan.title.state === 'COMPLETE' &&
+        titleSelfPks.length === 0
+    ) {
+        return null;
+    }
+    if (
+        singletonGate.expectedPks.length !==
+            titleSelfPks.length ||
+        singletonGate.expectedPks.some(
+            (value, index) => value !== titleSelfPks[index]
+        ) ||
+        singletonGate.bylot.evidence.length !==
+            titleSelfPks.length ||
+        singletonGate.bylot.evidence.some(
+            (evidence, index) =>
+                evidence.mgmBldrgstPk !==
+                    titleSelfPks[index] ||
+                evidence.count !== 0
+        )
+    ) {
+        return null;
+    }
+
+    const memberPnus = [input.anchorPnu];
+    const singletonEvidenceDigest = sha256Hex(
+        canonicalStableStringify({
+            version:
+                'land-area-sync.development-full-refresh-parcel-singleton-evidence@1',
+            canonicalBasePnu: input.anchorPnu,
+            titleSelfPks,
+            externalScopeDigest:
+                singletonGate.externalScopeDigest,
+        })
+    );
+    const managementPk =
+        titleSelfPks.length === 1
+            ? titleSelfPks[0]
+            : `full-refresh-singleton:${singletonEvidenceDigest}`;
     return {
         source:
             SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE,

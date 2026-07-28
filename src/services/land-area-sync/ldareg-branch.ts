@@ -78,6 +78,13 @@ export interface LdaregBranchInput {
     canonicalSourcePnu: string;
     buildingUnits: BuildingUnitCandidate[];
     propertyUnits: PropertyUnitCandidate[];
+    /**
+     * repo-pinned DEV full-refresh에서만 켜는 active property 전수 membership 모드.
+     * SINGLE도 exact bijection을 강제하고, PNU replica는 각 logical unit을
+     * property-bearing PNU 안에서 각각 match한 뒤 각 물리 property item에 component
+     * 전체 query-PNU provenance를 붙인다.
+     */
+    officialPropertyMembershipMode?: LdaregPropertyMembershipMode;
 }
 
 const LDAREG_REPEAT_FIELDS = [
@@ -548,7 +555,15 @@ function collectScopeExposUnits(
 export function selectCanonicalExposSourcePnu(
     basePnus: string[],
     perPnu: LdaregPnuScan[],
-    acceptedRootIdentities: readonly string[]
+    acceptedRootIdentities: readonly string[],
+    options?: {
+        /**
+         * DEV full-refresh official positive component 전용. canonical base EXPOS가
+         * zero여도 component 전체 complete scan aggregate가 nonzero이면 base PNU를
+         * canonical LDAREG source로 유지한다.
+         */
+        allowComponentWideAggregateForEmptyBase?: boolean;
+    }
 ): string | null {
     const basisRootIndex = buildScopeBasisRootIndex(
         perPnu,
@@ -559,9 +574,30 @@ export function selectCanonicalExposSourcePnu(
     const candidates = [...new Set(basePnus)].sort();
     if (
         candidates.length === 0 ||
-        candidates.some((pnu) => (scansByPnu.get(pnu)?.exposRows.length ?? 0) === 0)
+        scansByPnu.size !== perPnu.length ||
+        candidates.some((pnu) => !scansByPnu.has(pnu))
     ) {
         return null;
+    }
+    const emptyBasePnus = candidates.filter(
+        (pnu) =>
+            (scansByPnu.get(pnu)?.exposRows.length ?? 0) === 0
+    );
+    if (emptyBasePnus.length > 0) {
+        if (
+            options?.allowComponentWideAggregateForEmptyBase !==
+                true ||
+            candidates.length !== 1
+        ) {
+            return null;
+        }
+        const aggregate = collectScopeExposUnits(
+            perPnu,
+            basisRootIndex
+        );
+        return aggregate.ok && aggregate.units.length > 0
+            ? candidates[0]
+            : null;
     }
 
     const digestFor = (pnu: string): string | null => {
@@ -601,6 +637,94 @@ export function selectCanonicalExposSourcePnu(
 /** building_unit 후보 floor 표기를 matcher 주입 전 정규화한다(integer ↔ '3층'). */
 function normalizeBuildingUnitFloor(candidate: BuildingUnitCandidate): BuildingUnitCandidate {
     return { ...candidate, floor: candidate.floor == null ? null : normalizeFloorLabel(candidate.floor) || null };
+}
+
+export type LdaregPropertyMembershipMode =
+    | 'SINGLE_LOGICAL_SET'
+    | 'PER_ACTIVE_PNU_REPLICA';
+
+export interface LdaregPropertyMembershipLayout {
+    mode: LdaregPropertyMembershipMode;
+    propertyBearingPnus: string[];
+    activePropertyIds: string[];
+}
+
+/** active scope property의 normalized room cohort를 한 번만 판정해 service/assembler가 공유한다. */
+export function resolveLdaregPropertyMembershipLayout(input: {
+    unionId: string;
+    expectedTargetPnus: string[];
+    propertyUnits: PropertyUnitCandidate[];
+}): LdaregPropertyMembershipLayout | null {
+    const expectedPnuSet = new Set(input.expectedTargetPnus);
+    const active = input.propertyUnits.filter(
+        (property) => !property.isDeleted
+    );
+    if (
+        active.length === 0 ||
+        active.some(
+            (property) => property.unionId !== input.unionId
+        ) ||
+        new Set(active.map((property) => property.id)).size !==
+            active.length ||
+        active.some(
+            (property) =>
+                property.pnu === null ||
+                !expectedPnuSet.has(property.pnu)
+        )
+    ) {
+        return null;
+    }
+
+    const roomKeysByPnu = new Map<string, Set<string>>();
+    for (const property of active) {
+        const normalized = normalizeUnitTuple(property);
+        if (normalized.ho === '' || property.pnu === null) {
+            return null;
+        }
+        const roomKey = JSON.stringify({
+            dong: normalized.dong,
+            ho: normalized.ho,
+        });
+        const keys =
+            roomKeysByPnu.get(property.pnu) ?? new Set<string>();
+        if (keys.has(roomKey)) return null;
+        keys.add(roomKey);
+        roomKeysByPnu.set(property.pnu, keys);
+    }
+
+    const propertyBearingPnus = [...roomKeysByPnu.keys()].sort();
+    if (propertyBearingPnus.length === 1) {
+        return {
+            mode: 'SINGLE_LOGICAL_SET',
+            propertyBearingPnus,
+            activePropertyIds: active
+                .map((property) => property.id)
+                .sort(),
+        };
+    }
+    const reference = [
+        ...roomKeysByPnu.get(propertyBearingPnus[0])!,
+    ].sort();
+    if (
+        propertyBearingPnus.slice(1).some((pnu) => {
+            const candidate = [...roomKeysByPnu.get(pnu)!].sort();
+            return (
+                candidate.length !== reference.length ||
+                candidate.some(
+                    (value, index) => value !== reference[index]
+                )
+            );
+        })
+    ) {
+        return null;
+    }
+    return {
+        mode: 'PER_ACTIVE_PNU_REPLICA',
+        propertyBearingPnus,
+        activePropertyIds: active
+            .map((property) => property.id)
+            .sort(),
+    };
 }
 
 interface ExposFloorHoFallbackEvidence {
@@ -1078,6 +1202,19 @@ function evaluateExposProviderShapeBridge(
 export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResult {
     const { unionId, scannedPnus, rootIdentity, perPnu, propertyUnits } = input;
     const expectedTargetPnus = [...new Set(scannedPnus)].sort();
+    const officialPropertyMembershipLayout =
+        input.officialPropertyMembershipMode
+            ? resolveLdaregPropertyMembershipLayout({
+                  unionId,
+                  expectedTargetPnus,
+                  propertyUnits,
+              })
+            : null;
+    const propertyReplicaCohort =
+        officialPropertyMembershipLayout?.mode ===
+        'PER_ACTIVE_PNU_REPLICA'
+            ? officialPropertyMembershipLayout
+            : null;
     const scopeLadfrlAreas = [...input.scopeLadfrlAreas].sort((a, b) => a.pnu.localeCompare(b.pnu));
     const scopeLadfrlTotal = Number(input.scopeLadfrlTotal);
     const buildingUnits = input.buildingUnits.map(normalizeBuildingUnitFloor);
@@ -1098,7 +1235,10 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         !replication.ok ||
         !canonicalScan ||
         !scopeExpos.ok ||
-        scopeExpos.units.length === 0
+        scopeExpos.units.length === 0 ||
+        (input.officialPropertyMembershipMode !== undefined &&
+            officialPropertyMembershipLayout?.mode !==
+                input.officialPropertyMembershipMode)
     ) {
         return {
             items: [],
@@ -1239,6 +1379,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         rowsByPnuAndKey.set(scan.pnu, byKey);
     }
 
+    const matchedOfficialPropertyIds = new Set<string>();
     for (const record of dedup.records) {
         const canonicalRaw =
             record.sourceRowIndex >= 0
@@ -1266,30 +1407,94 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
                 : null,
             expectedPnuScope: expectedTargetPnus,
         };
-        const decision = matchLdaregUnit({
-            source,
-            scopeRootIdentity: rootIdentity,
-            exposUnits,
-            buildingUnits,
-            propertyUnits,
-            unionId,
-            allowExposFloorHoFallback: floorHoFallback.allowed,
-            allowProviderShapeBridge:
-                providerShapeBridge.allowed,
-        });
-        if (decision.kind === 'NO_CHANGE') {
+        const matchedDecisions: Array<{
+            propertyUnitId: string;
+            buildingUnitRef: string | null;
+            matchTargetPnu: string;
+        }> = [];
+        const matchTargetPnus =
+            propertyReplicaCohort?.propertyBearingPnus ?? [
+                canonicalScan.pnu,
+            ];
+        let recordMatchFailed = false;
+        for (const matchTargetPnu of matchTargetPnus) {
+            const scopedPropertyUnits = propertyReplicaCohort
+                ? propertyUnits.filter(
+                      (property) =>
+                          property.unionId === unionId &&
+                          !property.isDeleted &&
+                          property.pnu === matchTargetPnu
+                  )
+                : propertyUnits;
+            const scopedBuildingUnitIds = new Set(
+                scopedPropertyUnits
+                    .map((property) => property.buildingUnitId)
+                    .filter(
+                        (value): value is string =>
+                            typeof value === 'string' &&
+                            value.length > 0
+                    )
+            );
+            const scopedBuildingUnits = propertyReplicaCohort
+                ? buildingUnits.filter((buildingUnit) =>
+                      scopedBuildingUnitIds.has(buildingUnit.id)
+                  )
+                : buildingUnits;
+            const decision = matchLdaregUnit({
+                source: propertyReplicaCohort
+                    ? {
+                          ...source,
+                          targetPnu: matchTargetPnu,
+                          expectedPnuScope: [matchTargetPnu],
+                      }
+                    : source,
+                scopeRootIdentity: rootIdentity,
+                exposUnits,
+                buildingUnits: scopedBuildingUnits,
+                propertyUnits: scopedPropertyUnits,
+                unionId,
+                allowExposFloorHoFallback:
+                    floorHoFallback.allowed,
+                allowProviderShapeBridge:
+                    providerShapeBridge.allowed,
+            });
+            if (decision.kind === 'NO_CHANGE') {
+                unitMatchIncomplete = true;
+                recordMatchFailed = true;
+                issues.push({
+                    code: decision.issue,
+                    targetPnu: matchTargetPnu,
+                });
+                continue;
+            }
+            matchedDecisions.push({
+                propertyUnitId: decision.propertyUnitId,
+                buildingUnitRef: decision.buildingUnitRef,
+                matchTargetPnu,
+            });
+        }
+        if (
+            recordMatchFailed ||
+            matchedDecisions.length !== matchTargetPnus.length ||
+            new Set(
+                matchedDecisions.map(
+                    (decision) => decision.propertyUnitId
+                )
+            ).size !== matchedDecisions.length
+        ) {
             unitMatchIncomplete = true;
-            issues.push({ code: decision.issue, targetPnu: canonicalScan.pnu });
             continue;
         }
 
         if (record.sourceStateAmbiguous) {
             sourceStateAmbiguous = true;
-            issues.push({
-                code: 'LDAREG_IDENTITY_CONFLICT',
-                propertyUnitId: decision.propertyUnitId,
-                targetPnu: canonicalScan.pnu,
-            });
+            for (const decision of matchedDecisions) {
+                issues.push({
+                    code: 'LDAREG_IDENTITY_CONFLICT',
+                    propertyUnitId: decision.propertyUnitId,
+                    targetPnu: decision.matchTargetPnu,
+                });
+            }
         }
 
         let ratio:
@@ -1305,7 +1510,8 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
                 ratioParseFailed = true;
                 issues.push({
                     code: parsed.issue,
-                    propertyUnitId: decision.propertyUnitId,
+                    propertyUnitId:
+                        matchedDecisions[0].propertyUnitId,
                     targetPnu: canonicalScan.pnu,
                 });
                 continue;
@@ -1315,7 +1521,8 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
                 denominatorMismatch = true;
                 issues.push({
                     code: denomCheck.issue,
-                    propertyUnitId: decision.propertyUnitId,
+                    propertyUnitId:
+                        matchedDecisions[0].propertyUnitId,
                     targetPnu: canonicalScan.pnu,
                 });
                 continue;
@@ -1324,50 +1531,105 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             parsedRows += expectedTargetPnus.length;
         }
 
-        for (const targetPnu of expectedTargetPnus) {
-            const targetRaw = rowsByPnuAndKey.get(targetPnu)?.get(canonicalKey)?.[0];
-            if (!targetRaw) {
-                ratioParseFailed = true;
-                issues.push({ code: 'LDAREG_IDENTITY_CONFLICT', targetPnu });
-                continue;
-            }
-            const component: LandAreaSyncApplyLdaregComponent =
-                record.state === 'CLOSED'
-                    ? {
-                          targetPnu,
-                          sourceState: 'CLOSED',
-                          matchMethod: decision.buildingUnitRef
-                              ? 'BUILDING_UNIT_ID'
-                              : 'PNU_DONG_HO',
-                          matchedBuildingUnitId: decision.buildingUnitRef,
-                          sourceIdentity: record.identity.value,
-                          sourceAgbldgSn:
-                              record.identity.kind === 'PRIMARY' ? record.agbldgSn : null,
-                          ratioRaw: str(record.ldaQotaRateRaw) || '0/1',
-                          ratioNumerator: '0',
-                          ratioDenominator: '1',
-                          retiredReason: 'CLS_SE_CODE_CLOSED',
-                          sourceRecord: extractSourceRecord(targetRaw),
-                      }
-                    : {
-                          targetPnu,
-                          sourceState: 'CURRENT',
-                          matchMethod: decision.buildingUnitRef
-                              ? 'BUILDING_UNIT_ID'
-                              : 'PNU_DONG_HO',
-                          matchedBuildingUnitId: decision.buildingUnitRef,
-                          sourceIdentity: record.identity.value,
-                          sourceAgbldgSn: record.agbldgSn,
-                          ratioRaw: ratio!.raw,
-                          ratioNumerator: ratio!.numeratorText,
-                          ratioDenominator: ratio!.denominatorText,
-                          retiredReason: null,
-                          sourceRecord: extractSourceRecord(targetRaw),
-                      };
-            pushComponent(byProperty, decision.propertyUnitId, component);
-            componentMatchDigest.push(
-                digestOf(decision.propertyUnitId, component, input.scopeLadfrlTotal)
+        for (const decision of matchedDecisions) {
+            matchedOfficialPropertyIds.add(
+                decision.propertyUnitId
             );
+            for (const targetPnu of expectedTargetPnus) {
+                const targetRaw = rowsByPnuAndKey
+                    .get(targetPnu)
+                    ?.get(canonicalKey)?.[0];
+                if (!targetRaw) {
+                    ratioParseFailed = true;
+                    issues.push({
+                        code: 'LDAREG_IDENTITY_CONFLICT',
+                        targetPnu,
+                    });
+                    continue;
+                }
+                const component: LandAreaSyncApplyLdaregComponent =
+                    record.state === 'CLOSED'
+                        ? {
+                              targetPnu,
+                              sourceState: 'CLOSED',
+                              matchMethod:
+                                  decision.buildingUnitRef
+                                      ? 'BUILDING_UNIT_ID'
+                                      : 'PNU_DONG_HO',
+                              matchedBuildingUnitId:
+                                  decision.buildingUnitRef,
+                              sourceIdentity:
+                                  record.identity.value,
+                              sourceAgbldgSn:
+                                  record.identity.kind ===
+                                  'PRIMARY'
+                                      ? record.agbldgSn
+                                      : null,
+                              ratioRaw:
+                                  str(record.ldaQotaRateRaw) ||
+                                  '0/1',
+                              ratioNumerator: '0',
+                              ratioDenominator: '1',
+                              retiredReason:
+                                  'CLS_SE_CODE_CLOSED',
+                              sourceRecord:
+                                  extractSourceRecord(targetRaw),
+                          }
+                        : {
+                              targetPnu,
+                              sourceState: 'CURRENT',
+                              matchMethod:
+                                  decision.buildingUnitRef
+                                      ? 'BUILDING_UNIT_ID'
+                                      : 'PNU_DONG_HO',
+                              matchedBuildingUnitId:
+                                  decision.buildingUnitRef,
+                              sourceIdentity:
+                                  record.identity.value,
+                              sourceAgbldgSn:
+                                  record.agbldgSn,
+                              ratioRaw: ratio!.raw,
+                              ratioNumerator:
+                                  ratio!.numeratorText,
+                              ratioDenominator:
+                                  ratio!.denominatorText,
+                              retiredReason: null,
+                              sourceRecord:
+                                  extractSourceRecord(targetRaw),
+                          };
+                pushComponent(
+                    byProperty,
+                    decision.propertyUnitId,
+                    component
+                );
+                componentMatchDigest.push(
+                    digestOf(
+                        decision.propertyUnitId,
+                        component,
+                        input.scopeLadfrlTotal
+                    )
+                );
+            }
+        }
+    }
+
+    let officialPropertyBijectionMismatch = false;
+    if (
+        officialPropertyMembershipLayout &&
+        replication.evidence.rowCount > 0
+    ) {
+        const matched = [...matchedOfficialPropertyIds].sort();
+        const expected =
+            officialPropertyMembershipLayout.activePropertyIds;
+        if (
+            matched.length !== expected.length ||
+            matched.some(
+                (propertyUnitId, index) =>
+                    propertyUnitId !== expected[index]
+            )
+        ) {
+            officialPropertyBijectionMismatch = true;
+            issues.push({ code: 'PROPERTY_UNIT_NOT_FOUND' });
         }
     }
 
@@ -1474,6 +1736,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             sourceStateAmbiguous ||
             componentReplicaMismatch ||
             ambiguousPropertyIdentity ||
+            officialPropertyBijectionMismatch ||
             nonzeroWithoutMatchedItem ||
             unitMatchIncomplete ||
             dedupConflict,
