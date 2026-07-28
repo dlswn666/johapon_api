@@ -1,10 +1,10 @@
-import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import {
     parseDevelopmentApiLdaregTarget,
     validateDevelopmentApiLdaregApprovalRequest,
     validateDevelopmentApiLdaregPrepareArtifact,
 } from '../operations/development-api-authoritative-ldareg-backfill';
+import { readPinnedPrivateJson } from './development-api-authoritative-ldareg-private-file';
 
 const PRIVATE_DIRECTORY =
     '.development-api-authoritative-ldareg-backfill';
@@ -68,42 +68,19 @@ function parseArguments(argv: string[]): Arguments {
     };
 }
 
-async function readPrivateJson(
+function resolvePrivateJsonPath(
     cwd: string,
     candidate: string
-): Promise<unknown> {
+): string {
     const root = path.resolve(cwd, PRIVATE_DIRECTORY);
     const target = path.resolve(cwd, candidate);
     if (
-        target === root ||
+        path.dirname(target) !== root ||
         !target.startsWith(`${root}${path.sep}`)
     ) {
         throw new Error('APPROVAL_VALIDATOR_PATH_INVALID');
     }
-    const [rootInfo, targetInfo] = await Promise.all([
-        lstat(root),
-        lstat(target),
-    ]);
-    if (
-        !rootInfo.isDirectory() ||
-        rootInfo.isSymbolicLink() ||
-        (rootInfo.mode & 0o077) !== 0 ||
-        !targetInfo.isFile() ||
-        targetInfo.isSymbolicLink() ||
-        (targetInfo.mode & 0o077) !== 0 ||
-        targetInfo.size < 2 ||
-        targetInfo.size > MAX_INPUT_BYTES
-    ) {
-        throw new Error('APPROVAL_VALIDATOR_FILE_INVALID');
-    }
-    const [rootReal, targetReal] = await Promise.all([
-        realpath(root),
-        realpath(target),
-    ]);
-    if (!targetReal.startsWith(`${rootReal}${path.sep}`)) {
-        throw new Error('APPROVAL_VALIDATOR_FILE_INVALID');
-    }
-    return JSON.parse(await readFile(targetReal, 'utf8')) as unknown;
+    return target;
 }
 
 export async function runDevelopmentApiLdaregApprovalValidatorCli(
@@ -126,9 +103,27 @@ export async function runDevelopmentApiLdaregApprovalValidatorCli(
         const args = parseArguments(argv);
         const [targetInput, artifactInput, requestInput] =
             await Promise.all([
-                readPrivateJson(cwd, args.targetPath),
-                readPrivateJson(cwd, args.artifactPath),
-                readPrivateJson(cwd, args.requestPath),
+                readPinnedPrivateJson({
+                    path: resolvePrivateJsonPath(
+                        cwd,
+                        args.targetPath
+                    ),
+                    maxBytes: MAX_INPUT_BYTES,
+                }),
+                readPinnedPrivateJson({
+                    path: resolvePrivateJsonPath(
+                        cwd,
+                        args.artifactPath
+                    ),
+                    maxBytes: MAX_INPUT_BYTES,
+                }),
+                readPinnedPrivateJson({
+                    path: resolvePrivateJsonPath(
+                        cwd,
+                        args.requestPath
+                    ),
+                    maxBytes: MAX_INPUT_BYTES,
+                }),
             ]);
         const target =
             parseDevelopmentApiLdaregTarget(targetInput);

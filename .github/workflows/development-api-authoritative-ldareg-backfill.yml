@@ -64,6 +64,7 @@ jobs:
           npm ci
           npm run build
           node --import tsx --test \
+            tests/development-api-authoritative-ldareg-private-file.test.ts \
             tests/development-api-authoritative-ldareg-backfill.test.ts \
             tests/development-api-authoritative-ldareg-backfill-workflow.test.ts \
             tests/property-building-link-writer-guard.test.ts
@@ -92,19 +93,58 @@ jobs:
             echo "::error::Protected private target bundle secret is missing."
             exit 1
           fi
-          private_target_root="${RUNNER_TEMP}/development-api-ldareg-private-target"
+          private_target_root="$(
+            mktemp -d /dev/shm/development-api-ldareg-private-target.XXXXXX
+          )"
           private_directory="${private_target_root}/.development-api-authoritative-ldareg-backfill"
           bundle_path="${private_directory}/bundle.json"
           target_path="${private_directory}/target.json"
-          cleanup_private_bundle() {
-            rm -f -- "${bundle_path}"
+          cleanup_private_target_root() {
+            rm -f -- "${bundle_path}" "${target_path}"
+            if [[ -d "${private_directory}" && ! -L "${private_directory}" ]]; then
+              rmdir -- "${private_directory}" 2>/dev/null || true
+            fi
+            if [[ -d "${private_target_root}" && ! -L "${private_target_root}" ]]; then
+              rmdir -- "${private_target_root}" 2>/dev/null || true
+            fi
           }
-          trap cleanup_private_bundle EXIT
-          install -d -m 700 "${private_target_root}"
+          trap cleanup_private_target_root EXIT
+          chmod 700 -- "${private_target_root}"
+          if [[
+            ! -d "${private_target_root}"
+            || -L "${private_target_root}"
+            || "$(stat -c '%u' "${private_target_root}")" != "$(id -u)"
+            || "$(stat -c '%a' "${private_target_root}")" != "700"
+            || "$(stat -f -c '%T' "${private_target_root}")" != "tmpfs"
+          ]]; then
+            echo "::error::Private target root must be owner-only tmpfs."
+            exit 1
+          fi
           install -d -m 700 "${private_directory}"
-          install -m 600 /dev/null "${bundle_path}"
-          printf '%s' "${TARGET_BUNDLE_B64}" | base64 --decode > "${bundle_path}"
-          chmod 600 "${bundle_path}"
+          if [[
+            ! -d "${private_directory}"
+            || -L "${private_directory}"
+            || "$(stat -c '%u' "${private_directory}")" != "$(id -u)"
+            || "$(stat -c '%a' "${private_directory}")" != "700"
+            || "$(stat -f -c '%T' "${private_directory}")" != "tmpfs"
+          ]]; then
+            echo "::error::Private target directory must be owner-only tmpfs."
+            exit 1
+          fi
+          materialize_output="$(
+            printf '%s' "${TARGET_BUNDLE_B64}" \
+              | (
+                  cd "${private_target_root}"
+                  node "${GITHUB_WORKSPACE}/dist/cli/development-api-authoritative-ldareg-private-file-materialize.js" \
+                    --out ".development-api-authoritative-ldareg-backfill/bundle.json" \
+                    --encoding base64 \
+                    --max-bytes 2097152
+                )
+          )"
+          if [[ "${materialize_output}" != "DEVELOPMENT_API_AUTHORITATIVE_LDAREG_PRIVATE_FILE_MATERIALIZED" ]]; then
+            echo "::error::Private target bundle materializer did not attest success."
+            exit 1
+          fi
           if [[ ! -f "${bundle_path}" || -L "${bundle_path}" ]]; then
             echo "::error::Target bundle must be a private regular file."
             exit 1
@@ -127,9 +167,18 @@ jobs:
           rm -f -- "${bundle_path}"
           test ! -e "${bundle_path}"
           test ! -L "${bundle_path}"
-          trap - EXIT
           if [[
-            ! -f "${target_path}"
+            ! -d "${private_target_root}"
+            || -L "${private_target_root}"
+            || "$(stat -c '%u' "${private_target_root}")" != "$(id -u)"
+            || "$(stat -c '%a' "${private_target_root}")" != "700"
+            || "$(stat -f -c '%T' "${private_target_root}")" != "tmpfs"
+            || ! -d "${private_directory}"
+            || -L "${private_directory}"
+            || "$(stat -c '%u' "${private_directory}")" != "$(id -u)"
+            || "$(stat -c '%a' "${private_directory}")" != "700"
+            || "$(stat -f -c '%T' "${private_directory}")" != "tmpfs"
+            || ! -f "${target_path}"
             || -L "${target_path}"
             || "$(stat -c '%a' "${target_path}")" != "600"
           ]]; then
@@ -137,6 +186,8 @@ jobs:
             exit 1
           fi
           echo "target_path=${target_path}" >> "${GITHUB_OUTPUT}"
+          echo "private_root=${private_target_root}" >> "${GITHUB_OUTPUT}"
+          trap - EXIT
 
       - name: Validate pinned owner encryption recipient
         shell: bash
@@ -224,6 +275,7 @@ jobs:
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          PRIVATE_TARGET_ROOT: ${{ steps.target.outputs.private_root }}
           TARGET_PATH: ${{ steps.target.outputs.target_path }}
           GUARDIAN_PATH: scripts/development-api-authoritative-ldareg-backfill-guardian.sh
           RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -336,6 +388,30 @@ jobs:
           }
           trap finish_step EXIT
 
+          private_target_directory="${PRIVATE_TARGET_ROOT}/.development-api-authoritative-ldareg-backfill"
+          if [[
+            ! "${PRIVATE_TARGET_ROOT}" =~ ^/dev/shm/development-api-ldareg-private-target\.[A-Za-z0-9]{6}$
+            || "${TARGET_PATH}" != "${private_target_directory}/target.json"
+            || ! -d "${PRIVATE_TARGET_ROOT}"
+            || -L "${PRIVATE_TARGET_ROOT}"
+            || "$(stat -c '%u' "${PRIVATE_TARGET_ROOT}")" != "$(id -u)"
+            || "$(stat -c '%a' "${PRIVATE_TARGET_ROOT}")" != "700"
+            || "$(stat -f -c '%T' "${PRIVATE_TARGET_ROOT}")" != "tmpfs"
+            || ! -d "${private_target_directory}"
+            || -L "${private_target_directory}"
+            || "$(stat -c '%u' "${private_target_directory}")" != "$(id -u)"
+            || "$(stat -c '%a' "${private_target_directory}")" != "700"
+            || "$(stat -f -c '%T' "${private_target_directory}")" != "tmpfs"
+            || ! -f "${TARGET_PATH}"
+            || -L "${TARGET_PATH}"
+            || "$(stat -c '%u' "${TARGET_PATH}")" != "$(id -u)"
+            || "$(stat -c '%a' "${TARGET_PATH}")" != "600"
+            || "$(stat -f -c '%T' "${TARGET_PATH}")" != "tmpfs"
+          ]]; then
+            echo "::error::Private target changed before remote transfer."
+            exit 1
+          fi
+
           ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
             "RUN_KEY='${RUN_KEY}' bash -s" <<'REMOTE_PREPARE'
           set -euo pipefail
@@ -428,6 +504,7 @@ jobs:
         if: always() && hashFiles('development-api-ldareg-output/artifact.json') != '' && hashFiles('development-api-ldareg-output/validated') != ''
         shell: bash
         env:
+          PRIVATE_TARGET_ROOT: ${{ steps.target.outputs.private_root }}
           TARGET_PATH: ${{ steps.target.outputs.target_path }}
           SOURCE_RELEASE_SHA: ${{ github.sha }}
         run: |
@@ -440,18 +517,49 @@ jobs:
             echo "::error::Remote artifact attestation mismatch."
             exit 1
           fi
-          validation_root="$(mktemp -d)"
-          private_root="${validation_root}/.development-api-authoritative-ldareg-backfill"
-          mkdir -m 700 -- "${private_root}"
+          if [[
+            ! "${PRIVATE_TARGET_ROOT}" =~ ^/dev/shm/development-api-ldareg-private-target\.[A-Za-z0-9]{6}$
+            || ! -d "${PRIVATE_TARGET_ROOT}"
+            || -L "${PRIVATE_TARGET_ROOT}"
+            || "$(stat -c '%u' "${PRIVATE_TARGET_ROOT}")" != "$(id -u)"
+            || "$(stat -c '%a' "${PRIVATE_TARGET_ROOT}")" != "700"
+            || "$(stat -f -c '%T' "${PRIVATE_TARGET_ROOT}")" != "tmpfs"
+          ]]; then
+            echo "::error::Private target root changed before validation."
+            exit 1
+          fi
+          private_root="${PRIVATE_TARGET_ROOT}/.development-api-authoritative-ldareg-backfill"
+          private_artifact="${private_root}/artifact.json"
+          if [[
+            "${TARGET_PATH}" != "${private_root}/target.json"
+            || ! -d "${private_root}"
+            || -L "${private_root}"
+            || "$(stat -c '%u' "${private_root}")" != "$(id -u)"
+            || "$(stat -c '%a' "${private_root}")" != "700"
+            || "$(stat -f -c '%T' "${private_root}")" != "tmpfs"
+            || -e "${private_artifact}"
+            || -L "${private_artifact}"
+          ]]; then
+            echo "::error::Private validation path is invalid."
+            exit 1
+          fi
           cleanup_validation() {
-            rm -f -- "${private_root}/target.json" "${private_root}/artifact.json"
-            rmdir -- "${private_root}" "${validation_root}"
+            rm -f -- "${private_artifact}"
           }
           trap cleanup_validation EXIT
-          install -m 600 "${TARGET_PATH}" "${private_root}/target.json"
-          install -m 600 "${artifact}" "${private_root}/artifact.json"
+          materialize_output="$(
+            node "${GITHUB_WORKSPACE}/dist/cli/development-api-authoritative-ldareg-private-file-materialize.js" \
+              --out "${private_artifact}" \
+              --encoding raw \
+              --max-bytes 3145728 \
+              < "${artifact}"
+          )"
+          if [[ "${materialize_output}" != "DEVELOPMENT_API_AUTHORITATIVE_LDAREG_PRIVATE_FILE_MATERIALIZED" ]]; then
+            echo "::error::Private artifact materializer did not attest success."
+            exit 1
+          fi
           validation_output="$(
-            cd "${validation_root}"
+            cd "${PRIVATE_TARGET_ROOT}"
             node "${GITHUB_WORKSPACE}/dist/cli/development-api-authoritative-ldareg-backfill-validate.js" \
               --target ".development-api-authoritative-ldareg-backfill/target.json" \
               --artifact ".development-api-authoritative-ldareg-backfill/artifact.json" \
@@ -591,25 +699,54 @@ jobs:
       - name: Remove private runner material
         if: always()
         shell: bash
+        env:
+          PRIVATE_TARGET_ROOT: ${{ steps.target.outputs.private_root }}
+          TARGET_PATH: ${{ steps.target.outputs.target_path }}
         run: |
           set -euo pipefail
-          private_target_root="${RUNNER_TEMP}/development-api-ldareg-private-target"
-          private_directory="${private_target_root}/.development-api-authoritative-ldareg-backfill"
-          bundle_path="${private_directory}/bundle.json"
-          target_path="${private_directory}/target.json"
           rm -f -- \
-            "${bundle_path}" \
-            "${target_path}" \
             development-api-ldareg-output/approval-request.age \
             development-api-ldareg-output/approval-ciphertext-validated \
             development-api-ldareg-output/approval-ciphertext-validated-runner
-          if [[ -d "${private_directory}" && ! -L "${private_directory}" ]]; then
+          if [[ -n "${PRIVATE_TARGET_ROOT:-}" || -n "${TARGET_PATH:-}" ]]; then
+            if [[
+              ! "${PRIVATE_TARGET_ROOT}" =~ ^/dev/shm/development-api-ldareg-private-target\.[A-Za-z0-9]{6}$
+              || ! -d "${PRIVATE_TARGET_ROOT}"
+              || -L "${PRIVATE_TARGET_ROOT}"
+              || "$(stat -c '%u' "${PRIVATE_TARGET_ROOT}")" != "$(id -u)"
+              || "$(stat -c '%a' "${PRIVATE_TARGET_ROOT}")" != "700"
+              || "$(stat -f -c '%T' "${PRIVATE_TARGET_ROOT}")" != "tmpfs"
+            ]]; then
+              echo "::error::Refusing to clean an unpinned private target root."
+              exit 1
+            fi
+            private_directory="${PRIVATE_TARGET_ROOT}/.development-api-authoritative-ldareg-backfill"
+            bundle_path="${private_directory}/bundle.json"
+            target_path="${private_directory}/target.json"
+            artifact_path="${private_directory}/artifact.json"
+            if [[
+              "${TARGET_PATH}" != "${target_path}"
+              || ! -d "${private_directory}"
+              || -L "${private_directory}"
+              || "$(stat -c '%u' "${private_directory}")" != "$(id -u)"
+              || "$(stat -c '%a' "${private_directory}")" != "700"
+              || "$(stat -f -c '%T' "${private_directory}")" != "tmpfs"
+            ]]; then
+              echo "::error::Refusing to clean an unpinned private target directory."
+              exit 1
+            fi
+            rm -f -- \
+              "${bundle_path}" \
+              "${target_path}" \
+              "${artifact_path}"
             rmdir -- "${private_directory}"
+            rmdir -- "${PRIVATE_TARGET_ROOT}"
+            test ! -e "${bundle_path}"
+            test ! -L "${bundle_path}"
+            test ! -e "${target_path}"
+            test ! -L "${target_path}"
+            test ! -e "${artifact_path}"
+            test ! -L "${artifact_path}"
+            test ! -e "${PRIVATE_TARGET_ROOT}"
+            test ! -L "${PRIVATE_TARGET_ROOT}"
           fi
-          if [[ -d "${private_target_root}" && ! -L "${private_target_root}" ]]; then
-            rmdir -- "${private_target_root}"
-          fi
-          test ! -e "${bundle_path}"
-          test ! -L "${bundle_path}"
-          test ! -e "${target_path}"
-          test ! -L "${target_path}"

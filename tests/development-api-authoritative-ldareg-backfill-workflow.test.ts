@@ -31,6 +31,15 @@ const validator = read(
 const approvalValidator = read(
     'src/cli/development-api-authoritative-ldareg-backfill-approval-request-validate.ts'
 );
+const privateFile = read(
+    'src/cli/development-api-authoritative-ldareg-private-file.ts'
+);
+const privateFileMaterializer = read(
+    'src/cli/development-api-authoritative-ldareg-private-file-materialize.ts'
+);
+const privateFileStager = read(
+    'src/cli/development-api-authoritative-ldareg-private-file-stage.ts'
+);
 const dockerfile = read('Dockerfile');
 
 test('workflow는 main에서 7 opaque key 중 한 private target만 protected environment로 전달한다', () => {
@@ -70,7 +79,11 @@ test('workflow는 main에서 7 opaque key 중 한 private target만 protected en
     );
     assert.match(
         workflow,
-        /install -m 600 \/dev\/null "\$\{bundle_path\}"/
+        /development-api-authoritative-ldareg-private-file-materialize\.js/
+    );
+    assert.match(
+        workflow,
+        /node --import tsx --test[\s\S]+tests\/development-api-authoritative-ldareg-private-file\.test\.ts/
     );
     assert.match(
         workflow,
@@ -86,13 +99,21 @@ test('workflow는 main에서 7 opaque key 중 한 private target만 protected en
     );
     assert.match(
         selection,
-        /cleanup_private_bundle\(\)[\s\S]+trap cleanup_private_bundle EXIT[\s\S]+base64 --decode > "\$\{bundle_path\}"/
+        /mktemp -d \/dev\/shm\/development-api-ldareg-private-target\.XXXXXX[\s\S]+stat -f -c '%T' "\$\{private_target_root\}"[\s\S]+tmpfs/
     );
     assert.match(
         selection,
-        /rm -f -- "\$\{bundle_path\}"[\s\S]+test ! -e "\$\{bundle_path\}"[\s\S]+trap - EXIT[\s\S]+echo "target_path=\$\{target_path\}"/
+        /cleanup_private_target_root\(\)[\s\S]+trap cleanup_private_target_root EXIT[\s\S]+--encoding base64[\s\S]+DEVELOPMENT_API_AUTHORITATIVE_LDAREG_PRIVATE_FILE_MATERIALIZED/
+    );
+    assert.match(
+        selection,
+        /rm -f -- "\$\{bundle_path\}"[\s\S]+test ! -e "\$\{bundle_path\}"[\s\S]+echo "target_path=\$\{target_path\}"[\s\S]+echo "private_root=\$\{private_target_root\}"[\s\S]+trap - EXIT/
     );
     assert.doesNotMatch(selection, /scp .*bundle|GITHUB_OUTPUT.*bundle/);
+    assert.doesNotMatch(
+        selection,
+        /RUNNER_TEMP|base64 --decode|> "\$\{bundle_path\}"/
+    );
     assert.doesNotMatch(
         workflow,
         /development-api-authoritative-ldareg-backfill-manifests\//
@@ -105,6 +126,107 @@ test('workflow는 main에서 7 opaque key 중 한 private target만 protected en
     assert.doesNotMatch(
         workflow,
         /replace_development_api_authoritative_ldareg_backfill_approval_v1/
+    );
+});
+
+test('GitHub 평문 target은 검증된 tmpfs 한 위치에서만 FD-safe 검증·정리한다', () => {
+    const validation = workflow.slice(
+        workflow.indexOf(
+            '- name: Revalidate private redacted artifact'
+        ),
+        workflow.indexOf(
+            '- name: Verify owner-encrypted approval ciphertext'
+        )
+    );
+    assert.match(
+        validation,
+        /PRIVATE_TARGET_ROOT: \$\{\{ steps\.target\.outputs\.private_root \}\}/
+    );
+    assert.match(
+        validation,
+        /stat -f -c '%T' "\$\{PRIVATE_TARGET_ROOT\}"[\s\S]+tmpfs/
+    );
+    assert.match(
+        validation,
+        /"\$\{TARGET_PATH\}" != "\$\{private_root\}\/target\.json"/
+    );
+    assert.match(
+        validation,
+        /--out "\$\{private_artifact\}"[\s\S]+--encoding raw/
+    );
+    assert.doesNotMatch(
+        validation,
+        /mktemp -d(?! \/dev\/shm)|install -m 600 "\$\{TARGET_PATH\}"/
+    );
+
+    const remote = workflow.slice(
+        workflow.indexOf(
+            '- name: Run exact deployed guarded backfill'
+        ),
+        workflow.indexOf(
+            '- name: Revalidate private redacted artifact'
+        )
+    );
+    assert.match(
+        remote,
+        /PRIVATE_TARGET_ROOT: \$\{\{ steps\.target\.outputs\.private_root \}\}/
+    );
+    assert.match(
+        remote,
+        /Private target changed before remote transfer\.[\s\S]+scp "\$\{ssh_options\[@\]\}" "\$\{TARGET_PATH\}"/
+    );
+    assert.match(
+        remote,
+        /stat -f -c '%T' "\$\{TARGET_PATH\}"[\s\S]+tmpfs/
+    );
+
+    const cleanup = workflow.slice(
+        workflow.indexOf('- name: Remove private runner material')
+    );
+    assert.match(
+        cleanup,
+        /PRIVATE_TARGET_ROOT: \$\{\{ steps\.target\.outputs\.private_root \}\}/
+    );
+    assert.match(
+        cleanup,
+        /\^\/dev\/shm\/development-api-ldareg-private-target\\\.\[A-Za-z0-9\]\{6\}\$/
+    );
+    assert.match(
+        cleanup,
+        /stat -f -c '%T' "\$\{PRIVATE_TARGET_ROOT\}"[\s\S]+tmpfs/
+    );
+    assert.doesNotMatch(
+        cleanup,
+        /RUNNER_TEMP.*development-api-ldareg-private-target/
+    );
+});
+
+test('owner installer의 /dev/fd pin은 Linux와 macOS에서 underlying file identity를 비교한다', () => {
+    assert.match(
+        ownerInstaller,
+        /stat -L -c '%d:%i:%s' -- "\$1"/
+    );
+    assert.match(
+        ownerInstaller,
+        /stat -L -f '%i:%z' "\$1"/
+    );
+    const statIdentityFunction = ownerInstaller.match(
+        /stat_identity\(\) \{[\s\S]*?\n\}/
+    )?.[0];
+    assert.ok(statIdentityFunction);
+    execFileSync(
+        'bash',
+        [
+            '-c',
+            `${statIdentityFunction}
+exec 7<package.json
+test "$(stat_identity package.json)" = "$(stat_identity /dev/fd/7)"
+exec 7<&-`,
+        ],
+        {
+            cwd: root,
+            stdio: 'pipe',
+        }
     );
 });
 
@@ -478,6 +600,38 @@ test('redacted artifact와 owner age ciphertext만 분리 검증·보관한다',
         /validateDevelopmentApiLdaregApprovalRequest/
     );
     assert.match(
+        validator,
+        /readPinnedPrivateJson[\s\S]+resolvePrivateJsonPath/
+    );
+    assert.match(
+        approvalValidator,
+        /readPinnedPrivateJson[\s\S]+resolvePrivateJsonPath/
+    );
+    assert.doesNotMatch(
+        `${validator}\n${approvalValidator}`,
+        /readFile\(|realpath\(|lstat\(/
+    );
+    assert.match(
+        privateFile,
+        /constants\.O_RDONLY \| constants\.O_NOFOLLOW[\s\S]+handle\.stat\(\)[\s\S]+realpath\(candidate\)[\s\S]+targetPathInfoAfter\.ino !== descriptorAfter\.ino/
+    );
+    assert.match(
+        privateFile,
+        /lstat\(candidate\)[\s\S]+candidatePathInfo\.isSymbolicLink\(\)[\s\S]+lstat\(candidate\)[\s\S]+candidatePathInfoAfter\.isSymbolicLink\(\)/
+    );
+    assert.match(
+        privateFile,
+        /constants\.O_WRONLY[\s\S]+constants\.O_CREAT[\s\S]+constants\.O_EXCL[\s\S]+constants\.O_NOFOLLOW[\s\S]+0o600[\s\S]+lstat\(candidate\)[\s\S]+candidatePathInfo\.isSymbolicLink\(\)/
+    );
+    assert.match(
+        privateFileMaterializer,
+        /DEVELOPMENT_API_AUTHORITATIVE_LDAREG_PRIVATE_FILE_MATERIALIZED/
+    );
+    assert.match(
+        privateFileStager,
+        /DEVELOPMENT_API_AUTHORITATIVE_LDAREG_PRIVATE_FILE_STAGED/
+    );
+    assert.match(
         guardian,
         /DEVELOPMENT_API_AUTHORITATIVE_LDAREG_APPROVAL_REQUEST_VALIDATED/
     );
@@ -499,11 +653,23 @@ test('redacted artifact와 owner age ciphertext만 분리 검증·보관한다',
     );
     assert.match(
         ownerInstaller,
-        /age --version\)" != "v1\.3\.1"[\s\S]+age-keygen -y[\s\S]+age --decrypt --identity/
+        /age --version\)" != "v1\.3\.1"[\s\S]+stage_private_input "\$\{ciphertext\}" "\$\{staged_ciphertext\}"[\s\S]+exec 7<"\$\{staged_identity\}"[\s\S]+stat_identity "\$\{staged_identity\}"[\s\S]+age-keygen -y \/dev\/fd\/7[\s\S]+age --decrypt[\s\S]+--identity \/dev\/fd\/8[\s\S]+\/dev\/fd\/9/
     );
     assert.match(
         ownerInstaller,
-        /development-api-authoritative-ldareg-backfill-approval-request-validate\.js[\s\S]+install -m 600 "\$\{plaintext_temporary\}" "\$\{private_output\}"/
+        /development-api-authoritative-ldareg-private-file-materialize\.js[\s\S]+--encoding raw/
+    );
+    assert.match(
+        ownerInstaller,
+        /development-api-authoritative-ldareg-backfill-approval-request-validate\.js[\s\S]+node "\$\{validator\}"[\s\S]+stage_private_input "\$\{plaintext_temporary\}" "\$\{private_output\}"/
+    );
+    assert.match(
+        ownerInstaller,
+        /stat_uid "\$\{private_input\}"[\s\S]+stat_mode "\$\{private_input\}"[\s\S]+stat_uid "\$\{private_input_parent\}"[\s\S]+stat_mode "\$\{private_input_parent\}"\)" != "700"/
+    );
+    assert.doesNotMatch(
+        ownerInstaller,
+        /--identity "\$\{identity\}"|age --decrypt[\s\S]+ "\$\{ciphertext\}"|install -m 600 "\$\{plaintext_temporary\}" "\$\{private_output\}"|> "\$\{plaintext_temporary\}"/
     );
     assert.doesNotMatch(
         approvalUpload,
