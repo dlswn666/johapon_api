@@ -178,7 +178,8 @@ function assertDevelopmentReadOnlyEnvironment(): void {
 }
 
 function failureAudit(
-    captureRunId: string
+    captureRunId: string,
+    failureCode: string = 'CAPTURE_SETUP_REJECTED'
 ): DevelopmentEvidenceCaptureAudit {
     return {
         version: 'land-area-development-evidence-capture-audit@1',
@@ -198,13 +199,19 @@ function failureAudit(
             interceptedFailureWrites: 0,
         },
         entries: [],
+        redactedAggregate: {
+            CAPTURED: 0,
+            NO_DATA: 0,
+            REVIEW: 0,
+            FAILED: 0,
+        },
         capturedEvidence: null,
         capturedEvidencePropertyUnitCount: 0,
         capturedEvidenceManifestSha256: null,
         evidenceManifestSha256: null,
         gate: {
             status: 'FAIL',
-            failureCodes: ['CAPTURE_SETUP_REJECTED'],
+            failureCodes: [failureCode],
         },
     };
 }
@@ -283,6 +290,29 @@ export async function runDevelopmentLandAreaEvidenceCaptureCli(
                             unionId,
                             ids
                         ),
+                    async readActivePropertyIdentity(unionId) {
+                        const { data, error } = await client
+                            .from('property_units')
+                            .select('id, pnu')
+                            .eq('union_id', unionId)
+                            .eq('is_deleted', false)
+                            .order('id', { ascending: true })
+                            .range(
+                                0,
+                                target.expectedUnionActivePropertyUnitCount
+                            );
+                        if (error || !Array.isArray(data)) {
+                            throw new Error(
+                                'CAPTURE_UNION_ACTIVE_IDENTITY_READ_FAILED'
+                            );
+                        }
+                        return data.map(
+                            (row: Record<string, unknown>) => ({
+                                id: String(row.id ?? ''),
+                                pnu: String(row.pnu ?? ''),
+                            })
+                        );
+                    },
                 },
                 onProgress(completed, total) {
                     if (
@@ -318,13 +348,21 @@ export async function runDevelopmentLandAreaEvidenceCaptureCli(
             `Development evidence capture PASS (targets=${target.targetCount}, propertyUnits=${target.expectedPropertyUnitCount})\n`
         );
         return 0;
-    } catch {
+    } catch (error) {
         if (parsed) {
             try {
+                const failureCode =
+                    error instanceof Error &&
+                    /^[A-Z0-9_]{1,100}$/.test(error.message)
+                        ? error.message
+                        : 'CAPTURE_SETUP_REJECTED';
                 await writePrivateJson(
                     cwd,
                     parsed.auditOut,
-                    failureAudit(parsed.captureRunId)
+                    failureAudit(
+                        parsed.captureRunId,
+                        failureCode
+                    )
                 );
             } catch {
                 // 아래의 고정 오류와 exit code만 외부에 노출한다.

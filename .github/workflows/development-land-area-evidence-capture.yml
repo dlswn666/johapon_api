@@ -7,8 +7,9 @@ on:
         description: Repository-approved development target
         required: true
         type: choice
-        default: mia-seven-auto-286-20260725
+        default: mia-seven-full-299-api-readonly-20260728
         options:
+          - mia-seven-full-299-api-readonly-20260728
           - mia-seven-auto-286-20260725
           - mia-seven-auto-76-20260725
           - mia-seven-parcel-singleton-202-20260725
@@ -63,6 +64,11 @@ jobs:
         run: |
           set -euo pipefail
           case "${MANIFEST_NAME}" in
+            mia-seven-full-299-api-readonly-20260728)
+              target_path="development-land-area-sync-manifests/mia-seven-full-299-api-readonly-target-20260728.json"
+              target_count="299"
+              property_unit_count="429"
+              ;;
             mia-seven-auto-286-20260725)
               target_path="development-land-area-sync-manifests/mia-seven-auto-286-target-20260725.json"
               target_count="286"
@@ -496,12 +502,133 @@ jobs:
             "${root}/audit.json" \
             > "${root}/sha256sums.txt"
 
-      - name: Upload read-only capture artifact
+      - name: Build sanitized read-only capture artifact
         if: always() && hashFiles('development-land-area-evidence-output/audit.json') != ''
+        shell: bash
+        env:
+          MANIFEST_LABEL: ${{ inputs.manifest }}
+        run: |
+          set -euo pipefail
+          private_root="development-land-area-evidence-output"
+          public_root="development-land-area-evidence-public"
+          install -d -m 700 "${public_root}"
+          node - \
+            "${private_root}/audit.json" \
+            "${private_root}/status" \
+            "${private_root}/evidence.json" \
+            "${public_root}/artifact.json" \
+            "${MANIFEST_LABEL}" <<'NODE'
+          const crypto = require("node:crypto");
+          const fs = require("node:fs");
+          const [auditPath, statusPath, evidencePath, outputPath, manifestLabel] =
+            process.argv.slice(2);
+          const auditText = fs.readFileSync(auditPath, "utf8");
+          const audit = JSON.parse(auditText);
+          const statusText = fs.existsSync(statusPath)
+            ? fs.readFileSync(statusPath, "utf8").trim()
+            : "";
+          const evidenceText = fs.existsSync(evidencePath)
+            ? fs.readFileSync(evidencePath, "utf8")
+            : null;
+          const hex64 = /^[0-9a-f]{64}$/;
+          const safeCode = /^[A-Z0-9_]{1,100}$/;
+          const aggregateKeys = ["CAPTURED", "NO_DATA", "REVIEW", "FAILED"];
+          const guardKeys = [
+            "durableSyncJobWrites",
+            "propertyUnitWriteRpcCalls",
+            "interceptedApplyRpcCalls",
+            "interceptedSnapshotWrites",
+            "interceptedTerminalWrites",
+            "interceptedFailureWrites",
+          ];
+          if (
+            audit?.version !== "land-area-development-evidence-capture-audit@1"
+            || audit?.databaseTarget !== "development"
+            || typeof manifestLabel !== "string"
+            || !/^[a-z0-9-]{1,100}$/.test(manifestLabel)
+            || !Number.isSafeInteger(audit.targetCount)
+            || audit.targetCount < 0
+            || !Number.isSafeInteger(audit.expectedPropertyUnitCount)
+            || audit.expectedPropertyUnitCount < 0
+            || typeof audit.manifestDigest !== "string"
+            || !hex64.test(audit.manifestDigest)
+            || !Array.isArray(audit.entries)
+            || !audit.redactedAggregate
+            || aggregateKeys.some(
+              (key) =>
+                !Number.isSafeInteger(audit.redactedAggregate[key])
+                || audit.redactedAggregate[key] < 0
+            )
+            || !audit.readOnlyGuards
+            || guardKeys.some(
+              (key) =>
+                !Number.isSafeInteger(audit.readOnlyGuards[key])
+                || audit.readOnlyGuards[key] < 0
+            )
+            || !audit.gate
+            || !["PASS", "FAIL"].includes(audit.gate.status)
+            || !Array.isArray(audit.gate.failureCodes)
+            || audit.gate.failureCodes.some(
+              (code) => typeof code !== "string" || !safeCode.test(code)
+            )
+            || !/^[0-9]+$/.test(statusText)
+          ) process.exit(1);
+          const sha256 = (value) =>
+            crypto.createHash("sha256").update(value).digest("hex");
+          const optionalHex = (value) =>
+            typeof value === "string" && hex64.test(value) ? value : null;
+          const artifact = {
+            version: "land-area-development-evidence-public-artifact@1",
+            databaseTarget: "development",
+            manifestLabel,
+            manifestDigest: audit.manifestDigest,
+            targetCount: audit.targetCount,
+            expectedPropertyUnitCount: audit.expectedPropertyUnitCount,
+            entryCount: audit.entries.length,
+            capturedEvidencePropertyUnitCount:
+              Number.isSafeInteger(audit.capturedEvidencePropertyUnitCount)
+                ? audit.capturedEvidencePropertyUnitCount
+                : 0,
+            redactedAggregate: Object.fromEntries(
+              aggregateKeys.map((key) => [key, audit.redactedAggregate[key]])
+            ),
+            readOnlyGuards: Object.fromEntries(
+              guardKeys.map((key) => [key, audit.readOnlyGuards[key]])
+            ),
+            gate: {
+              status: audit.gate.status,
+              failureCodes: [...audit.gate.failureCodes].sort(),
+            },
+            captureExitStatus: Number(statusText),
+            hashes: {
+              rawAuditSha256: sha256(auditText),
+              rawEvidenceFileSha256:
+                evidenceText === null ? null : sha256(evidenceText),
+              capturedEvidenceManifestSha256:
+                optionalHex(audit.capturedEvidenceManifestSha256),
+              evidenceManifestSha256:
+                optionalHex(audit.evidenceManifestSha256),
+            },
+            productionWrites: 0,
+          };
+          const serialized = `${JSON.stringify(artifact, null, 2)}\n`;
+          if (
+            /\b[0-9]{19}\b/.test(serialized)
+            || /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(serialized)
+            || /anchorPnu|propertyUnitId|allowedPrestates|proposedLandAreas|landArea/i.test(serialized)
+          ) process.exit(1);
+          fs.writeFileSync(outputPath, serialized, {
+            flag: "wx",
+            mode: 0o600,
+          });
+          NODE
+
+      - name: Upload sanitized read-only capture artifact
+        if: always() && hashFiles('development-land-area-evidence-public/artifact.json') != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: development-land-area-evidence-${{ inputs.manifest }}-${{ github.run_id }}
-          path: development-land-area-evidence-output/
+          name: development-land-area-evidence-summary-${{ inputs.manifest }}-${{ github.run_id }}
+          path: development-land-area-evidence-public/artifact.json
           if-no-files-found: error
           retention-days: 30
 
@@ -535,3 +662,33 @@ jobs:
             echo "::error::Development evidence audit gate did not pass."
             exit 1
           fi
+
+      - name: Remove private capture files
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="development-land-area-evidence-output"
+          if [[ -e "${root}" || -L "${root}" ]]; then
+            if [[ ! -d "${root}" || -L "${root}" ]]; then
+              echo "::error::Private capture output root is invalid."
+              exit 1
+            fi
+            for candidate in \
+              "${root}/status" \
+              "${root}/audit.json" \
+              "${root}/evidence.json" \
+              "${root}/sha256sums.txt"
+            do
+              if [[ -e "${candidate}" || -L "${candidate}" ]]; then
+                if [[ ! -f "${candidate}" || -L "${candidate}" ]]; then
+                  echo "::error::Private capture output file is invalid."
+                  exit 1
+                fi
+                rm -f -- "${candidate}"
+              fi
+            done
+            rmdir -- "${root}"
+          fi
+          test ! -e "${root}"
+          test ! -L "${root}"
