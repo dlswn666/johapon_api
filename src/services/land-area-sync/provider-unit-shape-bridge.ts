@@ -71,6 +71,37 @@ function exactAliasScalar(
         : null;
 }
 
+/**
+ * 791-2188 지하 provider bridge 전용 원문 scalar.
+ * 공백 제거·NFKC·대소문자 변환 없이 alias의 exact byte-level 문자열 표현만
+ * 허용한다. safe integer는 provider의 JSON scalar 표현 그대로 10진 문자열화한다.
+ */
+function strictAliasScalar(
+    row: Record<string, unknown>,
+    aliases: readonly string[]
+): string | null {
+    const present = aliases
+        .filter((alias) =>
+            Object.prototype.hasOwnProperty.call(row, alias)
+        )
+        .map((alias) => row[alias]);
+    if (
+        present.length === 0 ||
+        present.some(
+            (value) =>
+                typeof value !== 'string' &&
+                !(
+                    typeof value === 'number' &&
+                    Number.isSafeInteger(value)
+                )
+        )
+    ) {
+        return null;
+    }
+    const exact = [...new Set(present.map((value) => String(value)))];
+    return exact.length === 1 && exact[0] !== '' ? exact[0] : null;
+}
+
 function positiveFloor(value: string | null): string | null {
     return value !== null && /^[1-9]\d{0,2}$/u.test(value)
         ? value
@@ -81,6 +112,18 @@ function positiveUnitNumber(value: string | null): string | null {
     return value !== null && /^[1-9]\d{0,3}$/u.test(value)
         ? value
         : null;
+}
+
+/**
+ * provider가 지하 호 suffix를 고정폭 0-padding으로 보내는 실측 shape를
+ * positive canonical 숫자로 접는다. 최대 3자리 숫자 run만 허용하고 000은
+ * 거부하므로 일반 문자열·근사 매칭으로 넓어지지 않는다.
+ */
+function positiveBasementSuffix(value: string): string | null {
+    if (!/^\d{1,3}$/u.test(value) || /^0+$/u.test(value)) {
+        return null;
+    }
+    return value.replace(/^0+(?=\d)/u, '');
 }
 
 function exposWitness(
@@ -106,17 +149,32 @@ function exposWitness(
         };
     }
 
-    // 791-2188 실측: EXPOS 지하(10) floor=1 + ho=BN. floor는 B1/B2
-    // 모두 1이고, 대응 identity는 LDAREG 비N과의 suffix N equality다.
-    const latinBasement = rawHo === null
+    // 791-2188 실측: EXPOS 지하(10) floor=1 + ho=B0N. provider는
+    // B01/B02처럼 0-padding할 수 있고, 대응 identity는 LDAREG 비0N과의
+    // positive suffix equality다.
+    const strictFloorType = strictAliasScalar(row, ['flrGbCd']);
+    const strictRawFloor = strictAliasScalar(row, [
+        'flrNoNm',
+        'buldFloorNm',
+        'flrNo',
+    ]);
+    const strictRawHo = strictAliasScalar(row, [
+        'hoNm',
+        'buldHoNm',
+    ]);
+    const latinBasement = strictRawHo === null
         ? null
-        : /^B([1-9]\d{0,2})$/u.exec(rawHo);
+        : /^B(\d{1,3})$/u.exec(strictRawHo);
+    const latinBasementSuffix =
+        latinBasement === null
+            ? null
+            : positiveBasementSuffix(latinBasement[1]);
     if (
-        floorType === '10' &&
-        rawFloor === '1' &&
-        latinBasement !== null
+        strictFloorType === '10' &&
+        strictRawFloor === '1' &&
+        latinBasementSuffix !== null
     ) {
-        const suffix = latinBasement[1];
+        const suffix = latinBasementSuffix;
         return {
             kind: PROVIDER_UNIT_BRIDGE_BASEMENT_B_HO,
             token: `BASEMENT_B_HO:${suffix}`,
@@ -184,12 +242,28 @@ function ldaregWitness(
         };
     }
 
-    // 791-2188 실측: LDAREG exact floor=지하 + ho=비N.
-    const koreanBasement = rawHo === null
+    // 791-2188 실측: LDAREG exact floor=지하 + ho=비0N. EXPOS와 동일하게
+    // 최대 3자리 positive suffix의 leading zero만 canonicalize한다.
+    const strictRawFloor = strictAliasScalar(row, [
+        'buldFloorNm',
+        'flrNoNm',
+    ]);
+    const strictRawHo = strictAliasScalar(row, [
+        'buldHoNm',
+        'hoNm',
+    ]);
+    const koreanBasement = strictRawHo === null
         ? null
-        : /^비([1-9]\d{0,2})$/u.exec(rawHo);
-    if (rawFloor === '지하' && koreanBasement !== null) {
-        const suffix = koreanBasement[1];
+        : /^비(\d{1,3})$/u.exec(strictRawHo);
+    const koreanBasementSuffix =
+        koreanBasement === null
+            ? null
+            : positiveBasementSuffix(koreanBasement[1]);
+    if (
+        strictRawFloor === '지하' &&
+        koreanBasementSuffix !== null
+    ) {
+        const suffix = koreanBasementSuffix;
         return {
             kind: PROVIDER_UNIT_BRIDGE_BASEMENT_B_HO,
             token: `BASEMENT_B_HO:${suffix}`,

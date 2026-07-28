@@ -1277,13 +1277,13 @@ function mia72188ProviderShapeRows(): {
                 dongNm: 'A',
                 flrGbCd: '10',
                 flrNo: 1,
-                hoNm: 'B1',
+                hoNm: 'B01',
             },
             {
                 dongNm: 'A',
                 flrGbCd: '10',
                 flrNo: 1,
-                hoNm: 'B2',
+                hoNm: 'B02',
             },
         ],
         ldareg: [
@@ -1306,7 +1306,7 @@ function mia72188ProviderShapeRows(): {
                 clsSeCodeNm: '현재',
                 buldDongNm: 'A',
                 buldFloorNm: '지하',
-                buldHoNm: '비1',
+                buldHoNm: '비01',
             },
             {
                 agbldgSn: 'MIA7-2188',
@@ -1316,7 +1316,7 @@ function mia72188ProviderShapeRows(): {
                 clsSeCodeNm: '현재',
                 buldDongNm: 'A',
                 buldFloorNm: '지하',
-                buldHoNm: '비2',
+                buldHoNm: '비02',
             },
             {
                 agbldgSn: 'MIA7-2188',
@@ -1333,7 +1333,7 @@ function mia72188ProviderShapeRows(): {
     };
 }
 
-test('791-2188: EXPOS 지하 1/Bn과 LDAREG exact 지하/비n을 suffix equality로 결속한다', async () => {
+test('791-2188: EXPOS 지하 1/B0n과 LDAREG exact 지하/비0n을 positive suffix equality로 결속한다', async () => {
     const rows = mia72188ProviderShapeRows();
     const targetAdapter = singleParcelTargetAdapter({
         pnu: MIA7_2188_PNU,
@@ -1606,7 +1606,7 @@ test('provider bridge artifact validator는 witness·unique set·canonical order
 
 for (const invalidCase of [
     {
-        name: 'Bn과 비n suffix가 다름',
+        name: 'B0n과 비0n positive suffix가 다름',
         mutate: (rows: ReturnType<typeof mia72188ProviderShapeRows>) => {
             rows.ldareg[5] = {
                 ...rows.ldareg[5],

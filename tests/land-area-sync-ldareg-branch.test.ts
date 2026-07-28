@@ -6,6 +6,7 @@ import {
     validateLdaregReplication,
     type LdaregBranchInput,
 } from '../src/services/land-area-sync/ldareg-branch';
+import { providerUnitShapeWitness } from '../src/services/land-area-sync/provider-unit-shape-bridge';
 import type {
     BuildingUnitCandidate,
     PropertyUnitCandidate,
@@ -1016,7 +1017,7 @@ test('runtime provider bridge는 standard exact 소비 뒤 extra residual EXPOS 
     );
 });
 
-test('runtime 791-2188: 일반 4호는 기존 exact 경로, B1/B2만 exact 지하/비n bridge를 사용한다', () => {
+test('runtime 791-2188: 일반 4호는 기존 exact 경로, B01/B02↔비01/비02만 positive suffix bridge를 사용한다', () => {
     const units = [
         {
             floor: '1',
@@ -1050,14 +1051,14 @@ test('runtime 791-2188: 일반 4호는 기존 exact 경로, B1/B2만 exact 지�
             floor: '1',
             ho: 'B1',
             lFloor: '지하',
-            lHo: '비1',
+            lHo: '비01',
             numerator: '20.18',
         },
         {
             floor: '1',
             ho: 'B2',
             lFloor: '지하',
-            lHo: '비2',
+            lHo: '비02',
             numerator: '29.55',
         },
     ].map((unit, index) => ({
@@ -1100,7 +1101,9 @@ test('runtime 791-2188: 일반 4호는 기존 exact 경로, B1/B2만 exact 지�
                         ? '10'
                         : '20',
                     flrNo: Number(unit.floor),
-                    hoNm: unit.ho,
+                    hoNm: unit.ho.startsWith('B')
+                        ? `B0${unit.ho.slice(1)}`
+                        : unit.ho,
                 })),
             },
         ],
@@ -1136,6 +1139,80 @@ test('runtime 791-2188: 일반 4호는 기존 exact 경로, B1/B2만 exact 지�
     );
     assert.equal(numeratorByProperty.get('PU-2188-B1'), '20.18');
     assert.equal(numeratorByProperty.get('PU-2188-B2'), '29.55');
+});
+
+test('791-2188 provider bridge는 1~3자리 positive 지하 suffix의 0-padding만 제거한다', () => {
+    const expos = (hoNm: string) =>
+        providerUnitShapeWitness('EXPOS_UNIT', {
+            flrGbCd: '10',
+            flrNo: 1,
+            hoNm,
+        });
+    const ldareg = (buldHoNm: string) =>
+        providerUnitShapeWitness('LDAREG_UNIT', {
+            buldFloorNm: '지하',
+            buldHoNm,
+        });
+
+    const paddedExpos = expos('B01');
+    const paddedLdareg = ldareg('비01');
+    assert.deepEqual(paddedExpos, {
+        kind: 'PROVIDER_BASEMENT_B_HO',
+        token: 'BASEMENT_B_HO:1',
+        canonicalFloor: '1',
+        canonicalHo: 'B1',
+    });
+    assert.deepEqual(paddedLdareg, paddedExpos);
+    assert.deepEqual(expos('B1'), paddedExpos);
+    assert.deepEqual(ldareg('비1'), paddedLdareg);
+    assert.notEqual(expos('B01')?.token, ldareg('비02')?.token);
+
+    for (const invalidExpos of [
+        'B000',
+        'B0001',
+        'b01',
+        ' B01 ',
+        ' B1 ',
+        'Ｂ０１',
+        'B 01',
+        'B01층',
+    ]) {
+        assert.equal(expos(invalidExpos), null, invalidExpos);
+    }
+    for (const invalidLdareg of [
+        '비000',
+        '비0001',
+        ' 비01 ',
+        ' 비1 ',
+        '비０１',
+        '비 01',
+        '비01층',
+    ]) {
+        assert.equal(ldareg(invalidLdareg), null, invalidLdareg);
+    }
+    assert.equal(
+        providerUnitShapeWitness('EXPOS_UNIT', {
+            flrGbCd: ' 10',
+            flrNo: 1,
+            hoNm: 'B01',
+        }),
+        null
+    );
+    assert.equal(
+        providerUnitShapeWitness('EXPOS_UNIT', {
+            flrGbCd: '10',
+            flrNo: '１',
+            hoNm: 'B01',
+        }),
+        null
+    );
+    assert.equal(
+        providerUnitShapeWitness('LDAREG_UNIT', {
+            buldFloorNm: ' 지하 ',
+            buldHoNm: '비01',
+        }),
+        null
+    );
 });
 
 test('runtime 791-2191: LDAREG 숫자/0000 및 지/0000을 EXPOS N층·지층 exact tuple로 바꿔 기존 building link를 해소한다', () => {
@@ -1239,20 +1316,20 @@ for (const invalidCase of [
         dbHo: '201',
     },
     {
-        name: '2188 Bn과 비n suffix가 다름',
+        name: '2188 B0n과 비0n positive suffix가 다름',
         denominator: '221',
         ldareg: {
             agbldgSn: 'NEAR-MISS',
             buldNm: 'NEAR-MISS',
             buldFloorNm: '지하',
-            buldHoNm: '비2',
+            buldHoNm: '비02',
             ldaQotaRate: '20/221',
             clsSeCode: '0',
         },
         expos: {
             flrGbCd: '10',
             flrNo: 1,
-            hoNm: 'B1',
+            hoNm: 'B01',
         },
         dbHo: 'B1',
     },
@@ -1263,14 +1340,14 @@ for (const invalidCase of [
             agbldgSn: 'NEAR-MISS',
             buldNm: 'NEAR-MISS',
             buldFloorNm: '지하',
-            buldHoNm: '비2',
+            buldHoNm: '비02',
             ldaQotaRate: '20/221',
             clsSeCode: '0',
         },
         expos: {
             flrGbCd: '10',
             flrNo: 2,
-            hoNm: 'B2',
+            hoNm: 'B02',
         },
         dbHo: 'B2',
     },
