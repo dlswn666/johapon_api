@@ -410,6 +410,22 @@ export function resolveParcelScopeCompleteness(input: ParcelScopeInput): ParcelS
 export function resolveSameRunOfficialReadOnlyComponent(
     input: ParcelScopeInput & { anchorPnu: string }
 ): SameRunOfficialReadOnlyComponent | null {
+    return resolveStrictSameRunOfficialAttachedComponent(input, false);
+}
+
+/**
+ * 같은 실행의 title self PK + attached pair + bylot count만으로 positive component를
+ * 조립한다. 일반 READ_ONLY_CAPTURE는 기존대로 LDAREG 분류까지 요구하고, repo-pinned
+ * DEV 전체 갱신만 BUILDING_CLASSIFICATION_CONFLICT를 component 범위 판정과 분리한다.
+ *
+ * 분류 conflict 허용은 scope 조립까지만이다. 실제 LDAREG 전략 선택은 service 계층에서
+ * 활성 property 전체의 호 identity를 확인한 뒤, LDAREG branch의 component-wide strict
+ * scan/matcher/replica/ratio gate를 그대로 통과해야 한다.
+ */
+function resolveStrictSameRunOfficialAttachedComponent(
+    input: ParcelScopeInput & { anchorPnu: string },
+    allowClassificationConflict: boolean
+): SameRunOfficialReadOnlyComponent | null {
     const { anchorPnu, dbScope, baseScans } = input;
     if (
         dbScope.dbState !== 'NO_EVIDENCE' ||
@@ -427,12 +443,30 @@ export function resolveSameRunOfficialReadOnlyComponent(
     }
 
     const normalGate = resolveParcelScopeCompleteness(input);
+    const expectedIssues =
+        allowClassificationConflict &&
+        normalGate.classification.kind === 'REVIEW_REQUIRED' &&
+        normalGate.classification.issue ===
+            'BUILDING_CLASSIFICATION_CONFLICT'
+            ? [
+                  'BUILDING_CLASSIFICATION_CONFLICT',
+                  'SCOPE_CACHE_SCAN_CONFLICT',
+              ]
+            : ['SCOPE_CACHE_SCAN_CONFLICT'];
     if (
         normalGate.state !== 'REVIEW_REQUIRED' ||
-        normalGate.issues.length !== 1 ||
-        normalGate.issues[0] !== 'SCOPE_CACHE_SCAN_CONFLICT' ||
-        normalGate.classification.kind !== 'CLASSIFIED' ||
-        normalGate.classification.family !== 'LDAREG' ||
+        normalGate.issues.length !== expectedIssues.length ||
+        expectedIssues.some(
+            (issue) =>
+                !normalGate.issues.includes(
+                    issue as LandAreaSyncIssueCode
+                )
+        ) ||
+        (normalGate.classification.kind === 'CLASSIFIED'
+            ? normalGate.classification.family !== 'LDAREG'
+            : !allowClassificationConflict ||
+              normalGate.classification.issue !==
+                  'BUILDING_CLASSIFICATION_CONFLICT') ||
         normalGate.bylot.status !== 'RESOLVED'
     ) {
         return null;
@@ -464,6 +498,24 @@ export function resolveSameRunOfficialReadOnlyComponent(
         ),
     ].sort();
     if (titleSelfPks.length !== 1) return null;
+    const titleRootPks = [
+        ...new Set(
+            baseScans[0].title.rows
+                .map(
+                    (row) =>
+                        normalizeRegistryManagementPk(
+                            row.mgmUpBldrgstPk
+                        ) ??
+                        normalizeRegistryManagementPk(
+                            row.mgmBldrgstPk
+                        )
+                )
+                .filter(
+                    (value): value is string => value !== null
+                )
+        ),
+    ].sort();
+    if (titleRootPks.length !== 1) return null;
     const managementPk = titleSelfPks[0];
     if (
         attached.pairs.some(
@@ -546,9 +598,18 @@ export function resolveSameRunOfficialDevelopmentFullRefreshComponent(
         ...input,
         dbScope: officialOnlyDbScope,
     });
-    if (component) {
+    const strictAttachedComponent =
+        component ??
+        resolveStrictSameRunOfficialAttachedComponent(
+            {
+                ...input,
+                dbScope: officialOnlyDbScope,
+            },
+            true
+        );
+    if (strictAttachedComponent) {
         return {
-            ...component,
+            ...strictAttachedComponent,
             source:
                 SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE,
         };
