@@ -115,9 +115,9 @@ test('미아7 전체 299 anchor API 재조회 legacy route는 read-only capture�
     );
 });
 
-test('미아7 279 official component·429 물건지 전체 재조회는 299 active PNU와 301 scanned PNU를 분리해 검증한다', () => {
+test('미아7 278 official component·429 물건지 전체 재조회는 299 active PNU와 301 scanned PNU를 분리해 검증한다', () => {
     const label =
-        'mia-seven-full-279-official-components-api-readonly-20260728';
+        'mia-seven-full-278-official-components-api-readonly-20260729';
     const selection = captureWorkflow.slice(
         captureWorkflow.indexOf(`${label})`),
         captureWorkflow.indexOf(
@@ -132,9 +132,9 @@ test('미아7 279 official component·429 물건지 전체 재조회는 299 acti
     assert.match(captureWorkflow, new RegExp(`- ${label}`));
     assert.match(
         selection,
-        /mia-seven-full-279-official-components-api-readonly-target-20260728\.json/
+        /mia-seven-full-278-official-components-api-readonly-target-20260729\.json/
     );
-    assert.match(selection, /target_count="279"/);
+    assert.match(selection, /target_count="278"/);
     assert.match(selection, /property_unit_count="429"/);
     assert.match(
         captureWorkflow,
@@ -150,7 +150,7 @@ test('미아7 279 official component·429 물건지 전체 재조회는 299 acti
     );
     assert.match(
         captureWorkflow,
-        /audit\?\.sameRunOfficialComponentCount === target\.targetCount[\s\S]+audit\?\.verifiedNoDataCount === 0[\s\S]+audit\?\.sameRunOfficialComponentCount === target\.targetCount - 1[\s\S]+audit\?\.verifiedNoDataCount === 1/
+        /audit\?\.verifiedNoDataCount[\s\S]+audit\?\.sameRunOfficialComponentCount[\s\S]+audit\?\.sameRunOfficialParcelCount[\s\S]+target\.targetCount/
     );
     assert.match(
         captureWorkflow,
@@ -163,7 +163,7 @@ test('미아7 279 official component·429 물건지 전체 재조회는 299 acti
     assert.match(workflow, new RegExp(label));
     assert.match(
         workflow,
-        /mia-seven-full-279-official-components-api-readonly-target-20260728\.json/
+        /mia-seven-full-278-official-components-api-readonly-target-20260729\.json/
     );
     assert.match(
         workflow,
@@ -183,7 +183,7 @@ test('미아7 279 official component·429 물건지 전체 재조회는 299 acti
     );
     assert.match(
         guardian,
-        /audit\?\.sameRunOfficialComponentCount === target\.targetCount[\s\S]+audit\?\.verifiedNoDataCount === 0[\s\S]+audit\?\.sameRunOfficialComponentCount === target\.targetCount - 1[\s\S]+audit\?\.verifiedNoDataCount === 1/
+        /audit\?\.verifiedNoDataCount[\s\S]+audit\?\.sameRunOfficialComponentCount[\s\S]+audit\?\.sameRunOfficialParcelCount[\s\S]+target\.targetCount/
     );
     assert.match(
         guardian,
@@ -258,6 +258,7 @@ test('read-only capture는 raw evidence를 업로드하지 않고 비식별 순�
     assert.match(publicArtifactBlock, /resolvedComponentCount/);
     assert.match(publicArtifactBlock, /scannedPnuCount/);
     assert.match(publicArtifactBlock, /sameRunOfficialComponentCount/);
+    assert.match(publicArtifactBlock, /sameRunOfficialParcelCount/);
     assert.match(publicArtifactBlock, /verifiedNoDataCount/);
     assert.match(
         publicArtifactBlock,

@@ -279,7 +279,6 @@
     "1130510100107913564",
     "1130510100107913565",
     "1130510100107913566",
-    "1130510100107913568",
     "1130510100107914740",
     "1130510100107914750"
   ],
@@ -888,9 +887,9 @@
     "1130510100107914750"
   ],
   "expectedUnionActivePnuDigest": "db754ce378896d45bb09b66ffe1174577a805fa74d264ed59ed17c9d97a78cbc",
-  "targetCount": 279,
+  "targetCount": 278,
   "scopeDigest": "c661e864d20342519cf7d453454ead53d9279a21c37cdfaa87b8e68f5e2a7eb9",
-  "manifestDigest": "4235381c31245833b944c09664499f69aedd71282560f42807cb5c379bffa3b3",
+  "manifestDigest": "b00f52f97ef20df9f0e7658c84e238044c5eddabce6f1083fa3789776ecf1c24",
   "expectedPropertyUnitCount": 429,
   "expectedUnionActivePropertyUnitCount": 429,
   "expectedUnionActivePnuCount": 299,

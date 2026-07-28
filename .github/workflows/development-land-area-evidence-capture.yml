@@ -7,9 +7,9 @@ on:
         description: Repository-approved development target
         required: true
         type: choice
-        default: mia-seven-full-279-official-components-api-readonly-20260728
+        default: mia-seven-full-278-official-components-api-readonly-20260729
         options:
-          - mia-seven-full-279-official-components-api-readonly-20260728
+          - mia-seven-full-278-official-components-api-readonly-20260729
           - mia-seven-full-299-api-readonly-20260728
           - mia-seven-auto-286-20260725
           - mia-seven-auto-76-20260725
@@ -65,9 +65,9 @@ jobs:
         run: |
           set -euo pipefail
           case "${MANIFEST_NAME}" in
-            mia-seven-full-279-official-components-api-readonly-20260728)
-              target_path="development-land-area-sync-manifests/mia-seven-full-279-official-components-api-readonly-target-20260728.json"
-              target_count="279"
+            mia-seven-full-278-official-components-api-readonly-20260729)
+              target_path="development-land-area-sync-manifests/mia-seven-full-278-official-components-api-readonly-target-20260729.json"
+              target_count="278"
               property_unit_count="429"
               ;;
             mia-seven-full-299-api-readonly-20260728)
@@ -479,16 +479,12 @@ jobs:
           const evidenceSha = crypto.createHash("sha256").update(evidenceText).digest("hex");
           const expectedSameRunOfficial =
             process.env.MANIFEST_LABEL ===
-              "mia-seven-full-279-official-components-api-readonly-20260728";
+              "mia-seven-full-278-official-components-api-readonly-20260729";
           const exactFullRefreshComponentCoverage =
-            (
-              audit?.sameRunOfficialComponentCount === target.targetCount
-              && audit?.verifiedNoDataCount === 0
-            )
-            || (
-              audit?.sameRunOfficialComponentCount === target.targetCount - 1
-              && audit?.verifiedNoDataCount === 1
-            );
+            audit?.verifiedNoDataCount === 0
+            && audit?.sameRunOfficialComponentCount
+              + audit?.sameRunOfficialParcelCount
+            === target.targetCount;
           if (
             evidence.unionId !== target.unionId
             || evidence.manifestDigest !== target.manifestDigest
@@ -536,6 +532,7 @@ jobs:
           } else {
             if (
               audit?.sameRunOfficialComponentCount !== 0
+              || audit?.sameRunOfficialParcelCount !== 0
               || audit?.verifiedNoDataCount !== 0
               || audit?.promotionGate?.status !== "PASS"
               || audit?.promotionGate?.writeEligible !== true
@@ -598,6 +595,7 @@ jobs:
             "DB_RESOLVER",
             "SAME_RUN_OFFICIAL_READ_ONLY",
             "SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH",
+            "SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON",
             "VERIFIED_NO_DATA",
           ]);
           const optionalSafeCode = (value) =>
@@ -678,6 +676,8 @@ jobs:
             || audit.scannedPnuCount < 0
             || !Number.isSafeInteger(audit.sameRunOfficialComponentCount)
             || audit.sameRunOfficialComponentCount < 0
+            || !Number.isSafeInteger(audit.sameRunOfficialParcelCount)
+            || audit.sameRunOfficialParcelCount < 0
             || !Number.isSafeInteger(audit.verifiedNoDataCount)
             || audit.verifiedNoDataCount < 0
             || typeof audit.manifestDigest !== "string"
@@ -769,6 +769,8 @@ jobs:
             scannedPnuCount: audit.scannedPnuCount,
             sameRunOfficialComponentCount:
               audit.sameRunOfficialComponentCount,
+            sameRunOfficialParcelCount:
+              audit.sameRunOfficialParcelCount,
             verifiedNoDataCount: audit.verifiedNoDataCount,
             entryCount: audit.entries.length,
             capturedEvidencePropertyUnitCount:

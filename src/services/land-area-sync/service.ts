@@ -13,15 +13,17 @@
 import {
     createDevelopmentFullRefreshOfficialOnlyDbScope,
     createSameRunOfficialDevelopmentFullRefreshEffectiveScope,
+    createSameRunOfficialDevelopmentParcelSingletonEffectiveScope,
     createSameRunOfficialReadOnlyEffectiveScope,
     parseDbScopeResolution,
     resolveParcelScopeCompleteness,
     resolveSameRunOfficialDevelopmentFullRefreshComponent,
-    resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent,
+    resolveSameRunOfficialDevelopmentParcelSingleton,
     resolveSameRunOfficialReadOnlyComponent,
     type DbScopeResolution,
     type BasePnuScan,
     type SameRunOfficialDevelopmentFullRefreshComponent,
+    type SameRunOfficialDevelopmentParcelSingletonResolution,
     type SameRunOfficialReadOnlyComponent,
 } from './scope';
 import { BYLOT_SOURCE_POLICY, bylotBasisFallbackPlan } from './bylot';
@@ -85,11 +87,7 @@ import type { DatabaseTarget } from '../../types/database.types';
 import {
     assertDevelopmentLandAreaFullRefreshAllowed,
     parseDevelopmentLandAreaFullRefreshMarker,
-    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
 } from '../../security/development-land-area-full-refresh-policy';
-import {
-    resolveDevelopmentFullRefreshVerifiedNoData,
-} from './verified-no-data';
 
 // ── 주입 계약 ─────────────────────────────────────────────────────
 
@@ -289,201 +287,6 @@ function requiredScanState(scan: StrictScan<unknown>): 'OK' | 'FAILED' | 'INCOMP
     return 'OK'; // COMPLETE / COMPLETE_ZERO
 }
 
-/**
- * 미아7 repo-pinned anchor 하나의 공식 무데이터 no-op.
- *
- * 일반 component 합성보다 먼저 별도 실행한다. 모든 건축물/LDAREG endpoint의 명시적
- * COMPLETE_ZERO, fresh LADFRL 양수 1행, 활성 property 7건 exact membership이 동시에
- * 성립할 때만 snapshot+NO_DATA를 기록하고 apply/confirmation RPC는 0회다.
- */
-async function tryFinalizeDevelopmentFullRefreshVerifiedNoData(input: {
-    jobId: string;
-    unionId: string;
-    anchorPnu: string;
-    deps: LandAreaSyncDeps;
-    signal?: AbortSignal;
-    marker: LandAreaSyncDevelopmentFullRefresh;
-    dbScope: DbScopeResolution;
-    baseScans: BasePnuScan[];
-    rootPks: string[];
-}): Promise<boolean> {
-    const {
-        jobId,
-        unionId,
-        anchorPnu,
-        deps,
-        signal,
-        marker,
-        dbScope,
-        baseScans,
-        rootPks,
-    } = input;
-    if (
-        anchorPnu !==
-            MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR ||
-        baseScans.length !== 1
-    ) {
-        return false;
-    }
-
-    const base = baseScans[0];
-    const basis =
-        base.basis ??
-        (await deps.scans.scanBasis(anchorPnu, signal));
-    if (aborted(signal)) return true;
-    // standard gate로 돌아가는 negative path도 이번 실행의 fresh BASIS 상태를 보존한다.
-    base.basis = basis;
-    const expos = await deps.scans.scanExpos(
-        anchorPnu,
-        signal
-    );
-    if (aborted(signal)) return true;
-    const ladfrl = await deps.scans.scanLadfrl(
-        anchorPnu,
-        signal
-    );
-    if (aborted(signal)) return true;
-    const ldareg = await deps.scans.scanLdareg(
-        anchorPnu,
-        signal
-    );
-    if (aborted(signal)) return true;
-
-    deps.assertCanaryScopeAllowed(unionId, [anchorPnu]);
-    const propertyUnits = await deps.db.readPropertyUnits(
-        unionId,
-        [anchorPnu]
-    );
-    if (aborted(signal)) return true;
-    const resolution =
-        resolveDevelopmentFullRefreshVerifiedNoData({
-            databaseTarget: deps.databaseTarget,
-            unionId,
-            anchorPnu,
-            marker,
-            dbScope,
-            title: base.title,
-            basis,
-            attached: base.attached,
-            expos,
-            ladfrl,
-            ldareg,
-            propertyUnits,
-        });
-    if (!resolution) return false;
-
-    const currentLandTuples = [
-        ...(await deps.db.readCurrentLandTuples(
-            unionId,
-            resolution.propertyUnitIds
-        )),
-    ].sort((left, right) =>
-        left.propertyUnitId.localeCompare(
-            right.propertyUnitId
-        )
-    );
-    if (aborted(signal)) return true;
-    if (
-        currentLandTuples.length !==
-            resolution.propertyUnitIds.length ||
-        currentLandTuples.some(
-            (tuple, index) =>
-                tuple.propertyUnitId.toLowerCase() !==
-                resolution.propertyUnitIds[index]
-        )
-    ) {
-        // tuple은 계산에 쓰지 않지만 pre/post 동시성 근거가 완전하지 않으면 no-op도
-        // 성공으로 기록하지 않는다. 기존 gate가 REVIEW로 닫는다.
-        return false;
-    }
-
-    const gate = resolveParcelScopeCompleteness({
-        dbScope,
-        baseScans,
-        policy: BYLOT_SOURCE_POLICY.policy,
-    });
-    const scopeEvidence = buildScopeEvidence(dbScope, {
-        attachedRows: 0,
-        distinctAttachedPnuCount: 0,
-    });
-    const baseSnapshot = buildScopeSnapshot({
-        strategy: 'LDAREG',
-        frozenAt: deps.now().toISOString(),
-        scannedPnus: [anchorPnu],
-        resolverRootPks: rootPks,
-        bylot: gate.bylot,
-        dbScopeHash: dbScope.dbScopeHash,
-        externalScopeDigest:
-            resolution.evidence.endpointEvidenceDigest,
-        propertyMembership:
-            resolution.propertyMembership,
-        candidatePropertyUnitIds:
-            resolution.propertyUnitIds,
-        currentLandTuples,
-        proposedLandAreas: [],
-        ladfrlAreaEvidence:
-            resolution.ladfrlAreaEvidence,
-        replicationEvidence: null,
-        componentMatchDigest: [
-            {
-                kind: resolution.evidence.kind,
-                evidenceDigest:
-                    resolution.evidence.evidenceDigest,
-            },
-        ],
-        projectionItems: [],
-    });
-    if (
-        baseSnapshot.propertyMembershipHash !==
-        resolution.evidence.propertyMembershipHash
-    ) {
-        return false;
-    }
-    const snapshot: LandAreaSyncScopeSnapshot = {
-        ...baseSnapshot,
-        verifiedNoDataEvidence: resolution.evidence,
-    };
-    const counts: LandAreaSyncCounts = {
-        ...gateCounts(baseScans),
-        landRegistryRows: 1,
-        matchedPropertyUnits:
-            resolution.propertyUnitIds.length,
-        unchangedPropertyUnits:
-            resolution.propertyUnitIds.length,
-    };
-    const frozen = await deps.db.freezeScopeSnapshot(
-        jobId,
-        unionId,
-        {
-            scopeState: 'LINKED_SCOPE_RESOLVED',
-            scopeEvidence,
-            scopeSnapshot: snapshot,
-            branch: 'LDAREG',
-        }
-    );
-    if (!frozen) {
-        await deps.db.markScopedFailed(
-            jobId,
-            unionId,
-            '공식 무데이터 snapshot CAS 고정에 실패했습니다.'
-        );
-        return true;
-    }
-    await finalizeDiscoveryTerminal(
-        deps,
-        jobId,
-        unionId,
-        {
-            status: 'COMPLETED',
-            scopeState: 'LINKED_SCOPE_RESOLVED',
-            outcome: 'NO_DATA',
-            issues: [],
-            counts,
-        }
-    );
-    return true;
-}
-
 // ── 메인 오케스트레이션 ────────────────────────────────────────────
 
 export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<void> {
@@ -560,23 +363,8 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         if (entry) entry.basis = basis;
     }
 
-    if (
-        developmentFullRefresh &&
-        !isApplyJob &&
-        (await tryFinalizeDevelopmentFullRefreshVerifiedNoData({
-            jobId,
-            unionId,
-            anchorPnu,
-            deps,
-            signal,
-            marker: developmentFullRefresh,
-            dbScope,
-            baseScans,
-            rootPks,
-        }))
-    ) {
-        return;
-    }
+    // 과거 791-3568을 고정 no-data로 간주했던 예외는 live LDAREG 행으로 반증됐다.
+    // 같은 실행의 일반 공식 분기에서 다시 판정하며, 고정 PNU 기반 no-op은 실행하지 않는다.
 
     // ── Phase 4: 공통 gate ──
     let effectiveDbScope =
@@ -592,6 +380,9 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         | null = null;
     let developmentFullRefreshScopeResolution:
         | SameRunOfficialDevelopmentFullRefreshComponent
+        | null = null;
+    let developmentFullRefreshParcelResolution:
+        | SameRunOfficialDevelopmentParcelSingletonResolution
         | null = null;
     let developmentFullRefreshLdaregPropertyMembershipMode:
         | DevelopmentFullRefreshLdaregPropertyMembershipMode
@@ -850,6 +641,7 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
     }
     let parcelSingletonBasis:
         | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+        | 'CLASSIFIED_DB_PARCEL_SINGLETON'
         | 'OFFICIAL_COMPONENT_DB_PARCEL_SINGLETONS'
         | null =
         developmentFullRefreshLadfrlPropertyTargets !== null
@@ -865,9 +657,21 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
               gate.issues[0] ===
                   'BUILDING_CLASSIFICATION_CONFLICT' &&
               gate.issues[1] === 'SCOPE_NOT_LINKED';
+    const parcelSingletonClassifiedCandidate =
+        developmentFullRefresh !== null &&
+        developmentFullRefreshScopeResolution === null &&
+        ((gate.state ===
+            'SINGLE_SCOPE_CONFIRMATION_REQUIRED' &&
+            gate.issues.length === 0 &&
+            gate.classification.kind === 'CLASSIFIED') ||
+            (gate.state === 'REVIEW_REQUIRED' &&
+                gate.issues.length === 1 &&
+                gate.issues[0] === 'SCOPE_NOT_LINKED' &&
+                gate.classification.kind === 'CLASSIFIED'));
     if (
-        gate.state === 'REVIEW_REQUIRED' &&
-        parcelSingletonReviewIssues &&
+        ((gate.state === 'REVIEW_REQUIRED' &&
+            parcelSingletonReviewIssues) ||
+            parcelSingletonClassifiedCandidate) &&
         gate.scannedPnus.length === 1
     ) {
         const [propertyUnits, buildingUnits] = await Promise.all([
@@ -884,29 +688,35 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
             buildingUnits,
         });
         if (decision.kind === 'ELIGIBLE') {
-            parcelSingletonBasis = decision.basis;
+            const resolvedParcelSingletonBasis =
+                parcelSingletonClassifiedCandidate
+                    ? ('CLASSIFIED_DB_PARCEL_SINGLETON' as const)
+                    : decision.basis;
+            parcelSingletonBasis =
+                resolvedParcelSingletonBasis;
             if (
                 developmentFullRefresh !== null &&
-                developmentFullRefreshScopeResolution === null
+                developmentFullRefreshScopeResolution === null &&
+                developmentFullRefreshParcelResolution === null
             ) {
-                const component =
-                    resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+                const parcelResolution =
+                    resolveSameRunOfficialDevelopmentParcelSingleton(
                         {
                             anchorPnu,
                             dbScope,
                             baseScans,
                             policy,
                             parcelSingletonBasis:
-                                decision.basis,
+                                resolvedParcelSingletonBasis,
                         }
                     );
-                if (component) {
+                if (parcelResolution) {
                     deps.assertCanaryScopeAllowed(
                         unionId,
-                        component.memberPnus
+                        parcelResolution.memberPnus
                     );
                     const memberSet = new Set(
-                        component.memberPnus
+                        parcelResolution.memberPnus
                     );
                     const activePropertyUnits =
                         propertyUnits.filter(
@@ -944,10 +754,10 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
                     preloadedPropertyUnits =
                         propertyUnits;
                     effectiveDbScope =
-                        createSameRunOfficialDevelopmentFullRefreshEffectiveScope(
+                        createSameRunOfficialDevelopmentParcelSingletonEffectiveScope(
                             {
                                 dbScope,
-                                component,
+                                parcelResolution,
                                 propertyMembership,
                             }
                         );
@@ -956,8 +766,8 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
                         baseScans,
                         policy,
                     });
-                    developmentFullRefreshScopeResolution =
-                        component;
+                    developmentFullRefreshParcelResolution =
+                        parcelResolution;
                 }
             }
         }
@@ -978,7 +788,8 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
     }
     if (
         developmentFullRefresh !== null &&
-        developmentFullRefreshScopeResolution === null
+        developmentFullRefreshScopeResolution === null &&
+        developmentFullRefreshParcelResolution === null
     ) {
         await finalizeDiscoveryTerminal(deps, jobId, unionId, {
             status: 'COMPLETED',
@@ -1032,7 +843,8 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         gateState:
             gate.state === 'LINKED_SCOPE_RESOLVED' ||
             developmentFullRefreshLdaregClassificationOverride ||
-            developmentFullRefreshLadfrlPropertyTargets !== null
+            developmentFullRefreshLadfrlPropertyTargets !== null ||
+            developmentFullRefreshParcelResolution !== null
                 ? 'LINKED_SCOPE_RESOLVED'
                 : 'SINGLE_SCOPE_CONFIRMATION_REQUIRED',
         scannedPnus: gate.scannedPnus,
@@ -1047,6 +859,7 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         readOnlyScopeResolution,
         developmentFullRefresh,
         developmentFullRefreshScopeResolution,
+        developmentFullRefreshParcelResolution,
         developmentFullRefreshLdaregPropertyMembershipMode,
         developmentFullRefreshLadfrlPropertyTargets,
     };
@@ -1084,6 +897,7 @@ interface BranchContext {
     /** 분류 불확정이어도 unit identity가 전혀 없는 DB parcel singleton임을 입증한 좁은 경로. */
     parcelSingletonBasis:
         | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
+        | 'CLASSIFIED_DB_PARCEL_SINGLETON'
         | 'OFFICIAL_COMPONENT_DB_PARCEL_SINGLETONS'
         | null;
     /** same-run official component에서 이미 읽은 matcher 후보(중복 DB read 방지). */
@@ -1099,6 +913,10 @@ interface BranchContext {
     /** relation과 독립적으로 같은 실행에서 확정한 공식 component. */
     developmentFullRefreshScopeResolution:
         | SameRunOfficialDevelopmentFullRefreshComponent
+        | null;
+    /** 건축물 관리번호 component와 분리된 same-run 공식 필지 singleton 근거. */
+    developmentFullRefreshParcelResolution:
+        | SameRunOfficialDevelopmentParcelSingletonResolution
         | null;
     /** positive component의 활성 property 배치 형태. LDAREG matcher opt-in에만 사용한다. */
     developmentFullRefreshLdaregPropertyMembershipMode:
@@ -1391,6 +1209,31 @@ async function runLadfrlBranch(ctx: BranchContext): Promise<void> {
                       officialComponentDigest:
                           ctx.developmentFullRefreshScopeResolution
                               .officialComponentDigest,
+                      manifestDigest:
+                          ctx.developmentFullRefresh
+                              .manifestDigest,
+                      scopeDigest:
+                          ctx.developmentFullRefresh.scopeDigest,
+                  },
+              }
+            : {}),
+        ...(ctx.developmentFullRefresh &&
+        ctx.developmentFullRefreshParcelResolution
+            ? {
+                  developmentFullRefreshParcelResolution: {
+                      source:
+                          ctx.developmentFullRefreshParcelResolution
+                              .source,
+                      canonicalPnu:
+                          ctx.developmentFullRefreshParcelResolution
+                              .canonicalPnu,
+                      memberPnus: [
+                          ...ctx.developmentFullRefreshParcelResolution
+                              .memberPnus,
+                      ],
+                      officialParcelDigest:
+                          ctx.developmentFullRefreshParcelResolution
+                              .officialParcelDigest,
                       manifestDigest:
                           ctx.developmentFullRefresh
                               .manifestDigest,

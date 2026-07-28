@@ -27,10 +27,6 @@ import type {
     LandAreaSyncScopeSnapshot,
     LandAreaSyncStrategy,
 } from '../types/land-area-sync-job.types';
-import {
-    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
-    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_PROPERTY_UNIT_COUNT,
-} from '../security/development-land-area-full-refresh-policy';
 
 export const DEVELOPMENT_EVIDENCE_CAPTURE_AUDIT_VERSION =
     'land-area-development-evidence-capture-audit@2' as const;
@@ -38,6 +34,7 @@ export const DEVELOPMENT_EVIDENCE_CAPTURE_AUDIT_VERSION =
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PNU_RE = /^[0-9]{19}$/;
+const HEX64_RE = /^[0-9a-f]{64}$/;
 const POSITIVE_INTEGER_RE = /^[1-9][0-9]*$/;
 const POSITIVE_DECIMAL_RE = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
 const ALLOWED_LAND_AREA_SOURCES = new Set([
@@ -77,6 +74,7 @@ export interface DevelopmentEvidenceCaptureAuditEntry {
         | 'DB_RESOLVER'
         | 'SAME_RUN_OFFICIAL_READ_ONLY'
         | 'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH'
+        | 'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON'
         | 'VERIFIED_NO_DATA';
 }
 
@@ -106,6 +104,7 @@ export interface DevelopmentEvidenceCaptureAudit {
     resolvedComponentCount: number;
     scannedPnuCount: number;
     sameRunOfficialComponentCount: number;
+    sameRunOfficialParcelCount: number;
     verifiedNoDataCount: number;
     manifestDigest: string;
     captureRunId: string;
@@ -413,6 +412,39 @@ export function developmentEvidenceEntryFromSnapshot(input: {
     const officialScopeResolution =
         snapshot.developmentFullRefreshScopeResolution ??
         snapshot.readOnlyScopeResolution;
+    const officialParcelResolution =
+        snapshot.developmentFullRefreshParcelResolution ?? null;
+    if (snapshot.verifiedNoDataEvidence !== undefined) {
+        throw new Error(
+            'CAPTURE_VERIFIED_NO_DATA_FORBIDDEN'
+        );
+    }
+    const exclusiveResolutionCount = [
+        snapshot.developmentFullRefreshScopeResolution,
+        snapshot.developmentFullRefreshParcelResolution,
+        snapshot.readOnlyScopeResolution,
+    ].filter((value) => value !== undefined).length;
+    if (
+        exclusiveResolutionCount > 1 ||
+        (officialParcelResolution !== null &&
+            (target.version !==
+                DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 ||
+                officialParcelResolution.source !==
+                    'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON' ||
+                officialParcelResolution.canonicalPnu !==
+                    anchorPnu ||
+                !HEX64_RE.test(
+                    officialParcelResolution.officialParcelDigest
+                ) ||
+                officialParcelResolution.manifestDigest !==
+                    target.manifestDigest ||
+                officialParcelResolution.scopeDigest !==
+                    target.scopeDigest))
+    ) {
+        throw new Error(
+            'CAPTURE_OFFICIAL_PARCEL_RESOLUTION_INVALID'
+        );
+    }
     const targetPnus = new Set(
         developmentTargetAllowedScopePnus(target)
     );
@@ -424,12 +456,35 @@ export function developmentEvidenceEntryFromSnapshot(input: {
     ) {
         throw new Error('CAPTURE_SCOPE_OUTSIDE_TARGET');
     }
+    if (
+        officialParcelResolution !== null &&
+        (officialParcelResolution.memberPnus.length !== 1 ||
+            officialParcelResolution.memberPnus[0] !==
+                officialParcelResolution.canonicalPnu ||
+            officialParcelResolution.memberPnus.length !==
+            expectedScannedPnus.length ||
+            officialParcelResolution.memberPnus.some(
+                (pnu, index) =>
+                    pnu !== expectedScannedPnus[index]
+            ))
+    ) {
+        throw new Error(
+            'CAPTURE_OFFICIAL_PARCEL_RESOLUTION_INVALID'
+        );
+    }
 
     const expectedPropertyUnitIds = sortedUnique(
         snapshot.candidatePropertyUnitIds
     );
-    const verifiedNoData =
-        snapshot.verifiedNoDataEvidence ?? null;
+    if (
+        officialParcelResolution !== null &&
+        (snapshot.strategy !== 'LADFRL' ||
+            expectedPropertyUnitIds.length !== 1)
+    ) {
+        throw new Error(
+            'CAPTURE_OFFICIAL_PARCEL_RESOLUTION_INVALID'
+        );
+    }
     const expectedProposedLandAreas = [...snapshot.proposedLandAreas]
         .map((row) => ({
             propertyUnitId: row.propertyUnitId,
@@ -439,10 +494,8 @@ export function developmentEvidenceEntryFromSnapshot(input: {
     if (
         expectedPropertyUnitIds.length === 0 ||
         expectedPropertyUnitIds.some((id) => !UUID_RE.test(id)) ||
-        (verifiedNoData === null
-            ? expectedProposedLandAreas.length !==
-              expectedPropertyUnitIds.length
-            : expectedProposedLandAreas.length !== 0) ||
+        expectedProposedLandAreas.length !==
+            expectedPropertyUnitIds.length ||
         expectedProposedLandAreas.some(
             (row, index) =>
                 row.propertyUnitId !== expectedPropertyUnitIds[index] ||
@@ -450,50 +503,6 @@ export function developmentEvidenceEntryFromSnapshot(input: {
         )
     ) {
         throw new Error('CAPTURE_PROPERTY_PROJECTION_INVALID');
-    }
-    if (verifiedNoData !== null) {
-        const {
-            evidenceDigest: _evidenceDigest,
-            ...verifiedCore
-        } = verifiedNoData;
-        const propertyUnitIdsDigest = sha256(
-            canonicalJson({
-                version:
-                    'land-area-sync.verified-no-data-property-ids.v1',
-                propertyUnitIds: expectedPropertyUnitIds,
-            })
-        );
-        if (
-            anchorPnu !==
-                MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR ||
-            expectedScannedPnus.length !== 1 ||
-            expectedScannedPnus[0] !== anchorPnu ||
-            expectedPropertyUnitIds.length !==
-                MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_PROPERTY_UNIT_COUNT ||
-            verifiedNoData.kind !== 'VERIFIED_NO_DATA' ||
-            verifiedNoData.anchorPnu !== anchorPnu ||
-            verifiedNoData.propertyUnitCount !==
-                expectedPropertyUnitIds.length ||
-            verifiedNoData.propertyUnitIdsDigest !==
-                propertyUnitIdsDigest ||
-            verifiedNoData.propertyMembershipHash !==
-                snapshot.propertyMembershipHash ||
-            verifiedNoData.manifestDigest !==
-                target.manifestDigest ||
-            (target.version !==
-                DEVELOPMENT_TARGET_MANIFEST_VERSION &&
-                verifiedNoData.scopeDigest !==
-                    target.scopeDigest) ||
-            verifiedNoData.evidenceDigest !==
-                sha256(canonicalJson(verifiedCore)) ||
-            snapshot.developmentFullRefreshScopeResolution !==
-                undefined ||
-            snapshot.readOnlyScopeResolution !== undefined
-        ) {
-            throw new Error(
-                'CAPTURE_VERIFIED_NO_DATA_EVIDENCE_INVALID'
-            );
-        }
     }
 
     const expectedLadfrlAreaEvidence =
@@ -531,10 +540,7 @@ export function developmentEvidenceEntryFromSnapshot(input: {
     for (const propertyUnitId of expectedPropertyUnitIds) {
         const current = currentById.get(propertyUnitId);
         const proposed = proposedById.get(propertyUnitId);
-        if (
-            !current ||
-            (verifiedNoData === null && !proposed)
-        ) {
+        if (!current || !proposed) {
             throw new Error('CAPTURE_PRESTATE_MISSING');
         }
         const currentSource = asAllowedSource(current.source);
@@ -548,10 +554,8 @@ export function developmentEvidenceEntryFromSnapshot(input: {
             landAreaSource: currentSource,
         });
         if (
-            verifiedNoData === null &&
-            proposed !== undefined &&
-            (current.landArea !== proposed ||
-                currentSource !== snapshot.strategy)
+            current.landArea !== proposed ||
+            currentSource !== snapshot.strategy
         ) {
             allowedPrestates.push({
                 propertyUnitId,
@@ -576,8 +580,9 @@ export function developmentEvidenceEntryFromSnapshot(input: {
             officialComponentDigest:
                 officialScopeResolution?.officialComponentDigest ??
                 null,
-            verifiedNoDataEvidenceDigest:
-                verifiedNoData?.evidenceDigest ?? null,
+            officialParcelDigest:
+                officialParcelResolution?.officialParcelDigest ??
+                null,
         })
     );
     const confirmationRef =
@@ -600,14 +605,14 @@ export function developmentEvidenceEntryFromSnapshot(input: {
                   developmentObservationReferenceSha256:
                       snapshotReferenceSha256,
               }
-            : verifiedNoData
+            : officialParcelResolution
               ? {
                     kind:
-                        'DEVELOPMENT_READ_ONLY_VERIFIED_NO_DATA_CAPTURE',
+                        'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_PARCEL_CAPTURE',
                     captureRunId,
                     snapshotReferenceSha256,
-                    verifiedNoDataEvidenceDigest:
-                        verifiedNoData.evidenceDigest,
+                    officialParcelDigest:
+                        officialParcelResolution.officialParcelDigest,
                 }
               : officialScopeResolution
               ? {
@@ -839,6 +844,9 @@ async function captureOne(input: {
                 state.snapshot?.verifiedNoDataEvidence
                     ? 'VERIFIED_NO_DATA'
                     : state.snapshot
+                    ?.developmentFullRefreshParcelResolution
+                    ?.source ??
+                state.snapshot
                     ?.developmentFullRefreshScopeResolution
                     ?.source ??
                 state.snapshot?.readOnlyScopeResolution?.source ??
@@ -954,6 +962,11 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 'SAME_RUN_OFFICIAL_READ_ONLY' ||
             result.audit.scopeResolutionSource ===
                 'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH'
+    ).length;
+    const sameRunOfficialParcelCount = results.filter(
+        (result) =>
+            result.audit.scopeResolutionSource ===
+            'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON'
     ).length;
     const verifiedNoDataCount = results.filter(
         (result) =>
@@ -1090,15 +1103,13 @@ export async function captureDevelopmentLandAreaEvidence(input: {
     const fullRefreshWriteEligible =
         developmentFullRefresh !== null;
     const sameRunOfficialWriteEligible =
-        fullRefreshWriteEligible
-            ? (verifiedNoDataCount === 0 &&
-                  sameRunOfficialComponentCount ===
-                      input.target.targetCount) ||
-              (verifiedNoDataCount === 1 &&
-                  sameRunOfficialComponentCount ===
-                      input.target.targetCount - 1)
-            : sameRunOfficialComponentCount === 0 &&
-              verifiedNoDataCount === 0;
+        isDevelopmentEvidenceCapturePromotionEligible({
+            fullRefreshWriteEligible,
+            targetCount: input.target.targetCount,
+            sameRunOfficialComponentCount,
+            sameRunOfficialParcelCount,
+            verifiedNoDataCount,
+        });
 
     return {
         evidence,
@@ -1122,6 +1133,7 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 input.target.targetCount,
             scannedPnuCount: uniqueScannedPnus.size,
             sameRunOfficialComponentCount,
+            sameRunOfficialParcelCount,
             verifiedNoDataCount,
             manifestDigest: input.target.manifestDigest,
             captureRunId: input.captureRunId,
@@ -1179,9 +1191,10 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                         ? []
                         : fullRefreshWriteEligible
                           ? [
-                                'SAME_RUN_OFFICIAL_COMPONENT_COVERAGE_MISMATCH',
+                                'SAME_RUN_OFFICIAL_COVERAGE_MISMATCH',
                             ]
                           : sameRunOfficialComponentCount > 0 ||
+                              sameRunOfficialParcelCount > 0 ||
                               verifiedNoDataCount > 0
                             ? [
                                   'SAME_RUN_OFFICIAL_SCOPE_NOT_DB_REVALIDATABLE',
@@ -1190,4 +1203,36 @@ export async function captureDevelopmentLandAreaEvidence(input: {
             },
         },
     };
+}
+
+export function isDevelopmentEvidenceCapturePromotionEligible(input: {
+    fullRefreshWriteEligible: boolean;
+    targetCount: number;
+    sameRunOfficialComponentCount: number;
+    sameRunOfficialParcelCount: number;
+    verifiedNoDataCount: number;
+}): boolean {
+    const counts = [
+        input.targetCount,
+        input.sameRunOfficialComponentCount,
+        input.sameRunOfficialParcelCount,
+        input.verifiedNoDataCount,
+    ];
+    if (
+        counts.some(
+            (value) =>
+                !Number.isSafeInteger(value) || value < 0
+        ) ||
+        input.targetCount < 1
+    ) {
+        return false;
+    }
+    return input.fullRefreshWriteEligible
+        ? input.verifiedNoDataCount === 0 &&
+              input.sameRunOfficialComponentCount +
+                  input.sameRunOfficialParcelCount ===
+                  input.targetCount
+        : input.sameRunOfficialComponentCount === 0 &&
+              input.sameRunOfficialParcelCount === 0 &&
+              input.verifiedNoDataCount === 0;
 }

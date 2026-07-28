@@ -108,10 +108,24 @@ export interface LandAreaSyncScopeSnapshot {
         scopeDigest: string;
     };
     /**
-     * repo-pinned DEV 전체 재조회에서만 인정하는 공식 무데이터 no-op 근거.
-     * TITLE/BASIS/ATTACHED/EXPOS/LDAREG는 same-run COMPLETE_ZERO이고 LADFRL만
-     * exact 양수 1행이어야 한다. 이 필드가 있으면 proposedLandAreas는 반드시 빈 배열이며
-     * apply/confirmation RPC를 호출하지 않는다.
+     * 건축물 component를 위조하지 않고 같은 실행의 공식 API parcel 근거로 확정한
+     * repo-pinned DEV 전체 갱신 singleton. capture/apply 재조회가 exact 비교한다.
+     *
+     * developmentFullRefreshScopeResolution/readOnlyScopeResolution/
+     * verifiedNoDataEvidence와 동시에 존재할 수 없다.
+     */
+    developmentFullRefreshParcelResolution?: {
+        source:
+            'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON';
+        canonicalPnu: string;
+        memberPnus: string[];
+        officialParcelDigest: string;
+        manifestDigest: string;
+        scopeDigest: string;
+    };
+    /**
+     * 과거 artifact 역직렬화 시 명시적으로 거부하기 위해서만 남긴 legacy shape.
+     * 현재 capture·runner·service는 이 값을 생성하거나 PASS로 인정하지 않는다.
      */
     verifiedNoDataEvidence?: {
         version: 'land-area-sync.verified-no-data.v1';
