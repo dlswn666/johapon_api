@@ -359,6 +359,136 @@ jobs:
 
           verify_target_health
 
+          # TEMPORARY_READ_ONLY_SHAPE_DIAGNOSTIC:
+          # 숫자를 모두 #으로 가린 층/호 패턴만 출력한다. 원문 식별자와 인증값은
+          # 출력하지 않으며, 표본 확인 직후 제거한다.
+          docker exec -i -w /app "${target_container}" node <<'NODE_DIAGNOSTIC'
+          const { LandAreaSyncAdapter } = require("./dist/services/land-area-sync/adapter.js");
+
+          const targets = [
+            ["791-2172", "1130510100107912172"],
+            ["791-2188", "1130510100107912188"],
+            ["791-2191", "1130510100107912191"],
+          ];
+          const required = (name) => {
+            const value = String(process.env[name] ?? "").trim();
+            if (!value) throw new Error("missing private runtime configuration");
+            return value;
+          };
+          const buildingHubAuth = {
+            serviceKey: required("DATA_PORTAL_API_KEY"),
+          };
+          const vworldAuth = {
+            key: required("VWORLD_API_KEY"),
+            domain: String(
+              process.env.VWORLD_API_DOMAIN
+              ?? process.env.VWORLD_DOMAIN
+              ?? "www.tonghari.kr"
+            ).trim(),
+          };
+          const adapter = new LandAreaSyncAdapter();
+          const rows = (scan) =>
+            scan.state === "COMPLETE" || scan.state === "COMPLETE_ZERO"
+              ? scan.rows
+              : [];
+          const exactTokenShapes = new Map([
+            ["B", "LATIN_B_TOKEN"],
+            ["b", "LATIN_B_TOKEN"],
+            ["비", "KOREAN_B_TOKEN"],
+            ["지", "JI_TOKEN"],
+            ["지층", "JI_FLOOR_TOKEN"],
+            ["지하", "BASEMENT_TOKEN"],
+            ["반지하", "SEMI_BASEMENT_TOKEN"],
+            ["옥탑", "ROOFTOP_TOKEN"],
+            ["옥탑층", "ROOFTOP_FLOOR_TOKEN"],
+          ]);
+          const structuredShapes = [
+            [/^\d+$/u, "DIGITS"],
+            [/^\d+층$/u, "DIGITS_FLOOR_SUFFIX"],
+            [/^\d+호$/u, "DIGITS_HO_SUFFIX"],
+            [/^지상\d+$/u, "ABOVE_PREFIX_DIGITS"],
+            [/^지상\d+층$/u, "ABOVE_PREFIX_DIGITS_FLOOR_SUFFIX"],
+            [/^지하\d+$/u, "BASEMENT_PREFIX_DIGITS"],
+            [/^지하\d+층$/u, "BASEMENT_PREFIX_DIGITS_FLOOR_SUFFIX"],
+            [/^지\d+$/u, "JI_PREFIX_DIGITS"],
+            [/^지\d+층$/u, "JI_PREFIX_DIGITS_FLOOR_SUFFIX"],
+            [/^[Bb]\d+$/u, "LATIN_B_DIGITS"],
+            [/^[Bb]\d+층$/u, "LATIN_B_DIGITS_FLOOR_SUFFIX"],
+            [/^[Bb]\d+호$/u, "LATIN_B_DIGITS_HO_SUFFIX"],
+            [/^비\d+$/u, "KOREAN_B_DIGITS"],
+            [/^비\d+층$/u, "KOREAN_B_DIGITS_FLOOR_SUFFIX"],
+            [/^비\d+호$/u, "KOREAN_B_DIGITS_HO_SUFFIX"],
+            [/^-\d+$/u, "NEGATIVE_DIGITS"],
+            [/^-\d+층$/u, "NEGATIVE_DIGITS_FLOOR_SUFFIX"],
+          ];
+          const shape = (value) => {
+            if (
+              typeof value !== "string"
+              && !(typeof value === "number" && Number.isSafeInteger(value))
+            ) return "ABSENT_OR_NON_SCALAR";
+            const compact = String(value)
+              .normalize("NFKC")
+              .replace(/\s+/gu, "");
+            if (!compact) return "EMPTY";
+            if (compact.length > 32) return "OTHER";
+            if (/^0+$/u.test(compact)) return `ZERO_${compact.length}`;
+            const exact = exactTokenShapes.get(compact);
+            if (exact) return exact;
+            return (
+              structuredShapes.find(([pattern]) => pattern.test(compact))
+              ?? [null, "OTHER"]
+            )[1];
+          };
+          const ratio = (value) => {
+            const compact = typeof value === "string" ? value.trim() : "";
+            return /^(?:0|[1-9]\d{0,7})(?:\.\d{1,6})?\/(?:0|[1-9]\d{0,7})(?:\.\d{1,6})?$/u.test(compact)
+              ? compact
+              : compact === ""
+                ? "MISSING"
+                : "INVALID";
+          };
+          const code = (value) => {
+            const compact = typeof value === "string" ? value.trim() : "";
+            return /^[0-9]{1,4}$/u.test(compact) ? compact : "OTHER";
+          };
+
+          (async () => {
+            const output = [];
+            for (const [alias, pnu] of targets) {
+              const [exposScan, ldaregScan] = await Promise.all([
+                adapter.scanExpos(pnu, buildingHubAuth),
+                adapter.scanLdareg(pnu, vworldAuth),
+              ]);
+              output.push({
+                alias,
+                exposState: exposScan.state,
+                expos: rows(exposScan).map((row) => ({
+                  floorType: code(row.flrGbCd),
+                  floor: shape(row.flrNoNm ?? row.buldFloorNm ?? row.flrNo),
+                  ho: shape(row.hoNm ?? row.buldHoNm),
+                })).sort((left, right) =>
+                  JSON.stringify(left).localeCompare(JSON.stringify(right))
+                ),
+                ldaregState: ldaregScan.state,
+                ldareg: rows(ldaregScan).map((row) => ({
+                  ratio: ratio(row.ldaQotaRate),
+                  floor: shape(row.buldFloorNm),
+                  ho: shape(row.buldHoNm),
+                  classification: code(row.clsSeCode),
+                })).sort((left, right) =>
+                  JSON.stringify(left).localeCompare(JSON.stringify(right))
+                ),
+              });
+            }
+            process.stdout.write(
+              `PHASE0_REDACTED_UNIT_SHAPES=${JSON.stringify(output)}\n`
+            );
+          })().catch(() => {
+            process.stderr.write("Redacted unit-shape diagnostic failed.\n");
+            process.exitCode = 1;
+          });
+          NODE_DIAGNOSTIC
+
           docker exec -i \
             -e "PHASE0_MANIFEST_PATH=${container_manifest}" \
             "${target_container}" \
