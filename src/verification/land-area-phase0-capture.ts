@@ -1267,7 +1267,7 @@ function buildScopeExposEvidence(
  * 서로 다른 query PNU의 exact replica는 1건으로, 같은 PNU 안의 중복은 최대
  * multiplicity만큼 남겨 ambiguity를 숨기지 않는다.
  */
-function resolvedScopeExposEvidenceRecords(
+export function resolveLandAreaPhase0ScopeExposRecords(
     evidence: ScopeExposEvidence
 ): ScopeExposEvidence['records'] | null {
     if (
@@ -2314,7 +2314,9 @@ function buildSampleArtifact(
         allowPhase0V2LdaregEvidence
     );
     const resolvedScopeExposRecords =
-        resolvedScopeExposEvidenceRecords(scopeExposEvidence);
+        resolveLandAreaPhase0ScopeExposRecords(
+            scopeExposEvidence
+        );
     // 대표 PNU 단일 EXPOS가 아니라 대표·부속 PNU 전체 scope의 EXPOS가
     // title/basis 관리번호 closure 안에 있어야 한다. 일부 호실이 부속지번
     // 응답에만 나타나는 경우를 허용하되, 다른 건물 row의 혼입은 fail-close한다.
