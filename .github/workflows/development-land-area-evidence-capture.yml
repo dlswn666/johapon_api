@@ -541,6 +541,75 @@ jobs:
             "interceptedTerminalWrites",
             "interceptedFailureWrites",
           ];
+          const diagnosticKeys = [
+            "anchorIndex",
+            "category",
+            "strategy",
+            "terminalScopeState",
+            "terminalOutcome",
+            "issueCodes",
+            "failureCode",
+          ];
+          const scopeStates = new Set([
+            "FAILED",
+            "REVIEW_REQUIRED",
+            "SINGLE_SCOPE_CONFIRMATION_REQUIRED",
+            "SINGLE_PNU_CONFIRMED",
+            "LINKED_SCOPE_RESOLVED",
+          ]);
+          const outcomes = new Set([
+            "FAILED",
+            "REVIEW_REQUIRED",
+            "NO_DATA",
+            "APPLIED",
+            "PARTIAL",
+          ]);
+          const diagnosticsValid =
+            Array.isArray(audit?.redactedDiagnostics)
+            && audit.redactedDiagnostics.length ===
+              (audit?.redactedAggregate?.NO_DATA ?? -1)
+                + (audit?.redactedAggregate?.REVIEW ?? -1)
+                + (audit?.redactedAggregate?.FAILED ?? -1)
+            && new Set(
+              audit.redactedDiagnostics.map((row) => row?.anchorIndex)
+            ).size === audit.redactedDiagnostics.length
+            && audit.redactedDiagnostics.every(
+              (row) =>
+                row
+                && typeof row === "object"
+                && !Array.isArray(row)
+                && JSON.stringify(Object.keys(row).sort()) ===
+                  JSON.stringify([...diagnosticKeys].sort())
+                && Number.isSafeInteger(row.anchorIndex)
+                && row.anchorIndex >= 0
+                && row.anchorIndex < audit.targetCount
+                && ["NO_DATA", "REVIEW", "FAILED"].includes(row.category)
+                && (
+                  row.strategy === null
+                  || ["LADFRL", "LDAREG"].includes(row.strategy)
+                )
+                && (
+                  row.terminalScopeState === null
+                  || scopeStates.has(row.terminalScopeState)
+                )
+                && (
+                  row.terminalOutcome === null
+                  || outcomes.has(row.terminalOutcome)
+                )
+                && Array.isArray(row.issueCodes)
+                && row.issueCodes.every(
+                  (code) =>
+                    typeof code === "string" && safeCode.test(code)
+                )
+                && new Set(row.issueCodes).size === row.issueCodes.length
+                && (
+                  row.failureCode === null
+                  || (
+                    typeof row.failureCode === "string"
+                    && safeCode.test(row.failureCode)
+                  )
+                )
+            );
           if (
             audit?.version !== "land-area-development-evidence-capture-audit@1"
             || audit?.databaseTarget !== "development"
@@ -554,6 +623,7 @@ jobs:
             || !hex64.test(audit.manifestDigest)
             || !Array.isArray(audit.entries)
             || !audit.redactedAggregate
+            || !diagnosticsValid
             || aggregateKeys.some(
               (key) =>
                 !Number.isSafeInteger(audit.redactedAggregate[key])
@@ -578,7 +648,7 @@ jobs:
           const optionalHex = (value) =>
             typeof value === "string" && hex64.test(value) ? value : null;
           const artifact = {
-            version: "land-area-development-evidence-public-artifact@1",
+            version: "land-area-development-evidence-public-artifact@2",
             databaseTarget: "development",
             manifestLabel,
             manifestDigest: audit.manifestDigest,
@@ -592,6 +662,15 @@ jobs:
             redactedAggregate: Object.fromEntries(
               aggregateKeys.map((key) => [key, audit.redactedAggregate[key]])
             ),
+            redactedDiagnostics: audit.redactedDiagnostics.map((row) => ({
+              anchorIndex: row.anchorIndex,
+              category: row.category,
+              strategy: row.strategy,
+              terminalScopeState: row.terminalScopeState,
+              terminalOutcome: row.terminalOutcome,
+              issueCodes: [...row.issueCodes].sort(),
+              failureCode: row.failureCode,
+            })),
             readOnlyGuards: Object.fromEntries(
               guardKeys.map((key) => [key, audit.readOnlyGuards[key]])
             ),

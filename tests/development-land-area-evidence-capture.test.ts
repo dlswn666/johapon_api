@@ -17,6 +17,7 @@ import {
     aggregateDevelopmentEvidenceCaptureEntries,
     assertDevelopmentEvidenceCaptureActiveIdentity,
     developmentEvidenceEntryFromSnapshot,
+    redactDevelopmentEvidenceCaptureDiagnostics,
 } from '../src/operations/development-land-area-evidence-capture';
 import type { LandAreaSyncScopeSnapshot } from '../src/types/land-area-sync-job.types';
 
@@ -341,6 +342,74 @@ test('read-only audit 집계는 식별자 없이 CAPTURED/NO_DATA/REVIEW/FAILED�
         JSON.stringify(aggregate).includes(PROPERTY_UNIT_ID),
         false
     );
+});
+
+test('read-only 공개 진단은 PNU 대신 manifest 순번과 안정된 enum/code만 남긴다', () => {
+    const base = {
+        anchorPnu: PNU,
+        strategy: null,
+        scannedPnuCount: 0,
+        propertyUnitCount: 0,
+        snapshotReferenceSha256: null,
+        applyRpcBlocked: false,
+        failureCode: null,
+        terminalScopeState: null,
+        terminalOutcome: null,
+        terminalIssueCodes: [],
+        terminalIssuesTotal: 0,
+        terminalIssuesTruncated: false,
+    } as const;
+    const diagnostics =
+        redactDevelopmentEvidenceCaptureDiagnostics([
+            { ...base, status: 'CAPTURED' },
+            {
+                ...base,
+                status: 'FAILED',
+                terminalScopeState: 'REVIEW_REQUIRED',
+                terminalOutcome: 'REVIEW_REQUIRED',
+                terminalIssueCodes: [
+                    'RATIO_PARSE_FAILED',
+                    'PROPERTY_UNIT_NOT_FOUND',
+                    'RATIO_PARSE_FAILED',
+                ],
+                failureCode: 'CAPTURE_REVIEW_REQUIRED',
+            },
+            {
+                ...base,
+                status: 'FAILED',
+                terminalScopeState: 'FAILED',
+                terminalOutcome: 'FAILED',
+                failureCode: 'CAPTURE_DISCOVERY_FAILED',
+            },
+        ]);
+
+    assert.deepEqual(diagnostics, [
+        {
+            anchorIndex: 1,
+            category: 'REVIEW',
+            strategy: null,
+            terminalScopeState: 'REVIEW_REQUIRED',
+            terminalOutcome: 'REVIEW_REQUIRED',
+            issueCodes: [
+                'PROPERTY_UNIT_NOT_FOUND',
+                'RATIO_PARSE_FAILED',
+            ],
+            failureCode: 'CAPTURE_REVIEW_REQUIRED',
+        },
+        {
+            anchorIndex: 2,
+            category: 'FAILED',
+            strategy: null,
+            terminalScopeState: 'FAILED',
+            terminalOutcome: 'FAILED',
+            issueCodes: [],
+            failureCode: 'CAPTURE_DISCOVERY_FAILED',
+        },
+    ]);
+    const serialized = JSON.stringify(diagnostics);
+    assert.equal(serialized.includes(PNU), false);
+    assert.equal(serialized.includes(PROPERTY_UNIT_ID), false);
+    assert.doesNotMatch(serialized, /\b[0-9]{19}\b/);
 });
 
 test('read-only live snapshot은 runner가 재검증하는 strict evidence로 변환된다', () => {

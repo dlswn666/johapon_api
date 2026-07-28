@@ -121,6 +121,11 @@ export interface LandAreaSyncDeps {
     now(): Date;
     /** apply 직전 resolved scope의 모든 PNU를 DB target-qualified allowlist로 재검증한다. */
     assertCanaryScopeAllowed(unionId: string, scannedPnus: readonly string[]): void;
+    /**
+     * 읽기 전용 증거 캡처는 LINKED LDAREG discovery도 snapshot 고정까지만 수행한다.
+     * 실제 API 런타임은 값을 주입하지 않아 기존 자동 apply 계약을 유지한다.
+     */
+    executionMode?: 'READ_ONLY_CAPTURE';
 }
 
 export interface RunLandAreaSyncArgs {
@@ -745,6 +750,19 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
     // LINKED_SCOPE_RESOLVED — apply job 이든 discovery LINKED 든 적용 시도.
     if (ctx.isApplyJob) {
         await callApplyAndRecord(ctx, 'LDAREG', snapshot, items, counts, assembled.issues);
+        return;
+    }
+
+    // 읽기 전용 capture는 LINKED scope도 snapshot/terminal까지만 남기고 apply를 시도하지 않는다.
+    if (deps.executionMode === 'READ_ONLY_CAPTURE') {
+        await freezeAndOfferConfirmation(
+            ctx,
+            'LDAREG',
+            'LINKED_SCOPE_RESOLVED',
+            snapshot,
+            counts,
+            assembled.issues
+        );
         return;
     }
 

@@ -399,6 +399,35 @@ test('LDAREG LINKED discovery 는 snapshot 을 1회 고정하고 apply RPC 를 �
     assert.equal(spy.failedCalls.length, 0);
 });
 
+test('읽기 전용 LDAREG LINKED discovery는 snapshot과 terminal만 남기고 apply RPC를 호출하지 않는다', async () => {
+    const spy = emptySpy();
+    const deps = makeDeps({
+        resolver: linked(MEMBER),
+        scans: {
+            scanTitle: async () => titleComplete(MULTIPLEX),
+        },
+        spy,
+    });
+    deps.executionMode = 'READ_ONLY_CAPTURE';
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps,
+    });
+
+    assert.equal(spy.freezeCalls, 1);
+    assert.equal(spy.applyCalls, 0);
+    assert.equal(spy.failedCalls.length, 0);
+    assert.deepEqual(spy.terminalCalls, [
+        {
+            status: 'COMPLETED',
+            scopeState: 'LINKED_SCOPE_RESOLVED',
+            outcome: 'REVIEW_REQUIRED',
+        },
+    ]);
+});
+
 test('LDAREG base+attached는 branch basis를 PNU별 정확히 1회 scan하고 합산 count에 반영한다', async () => {
     const attachedPnu = '1168010100107360025';
     const spy = emptySpy();
