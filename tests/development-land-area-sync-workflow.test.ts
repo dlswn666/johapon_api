@@ -214,7 +214,7 @@ test('미아7 295 component·429 물건지 전체 재조회는 299 active PNU와
     assert.match(cli, /readPropertyUnitLandRights/);
 });
 
-test('read-only capture는 raw evidence를 업로드하지 않고 비식별 집계만 게시한 뒤 private 파일을 제거한다', () => {
+test('read-only capture는 raw evidence를 업로드하지 않고 비식별 순번 진단·집계만 게시한 뒤 private 파일을 제거한다', () => {
     const uploadBlock = captureWorkflow.slice(
         captureWorkflow.indexOf(
             '- name: Upload sanitized read-only capture artifact'
@@ -242,10 +242,18 @@ test('read-only capture는 raw evidence를 업로드하지 않고 비식별 집�
     );
     assert.match(
         publicArtifactBlock,
-        /land-area-development-evidence-public-artifact@2/
+        /land-area-development-evidence-public-artifact@3/
     );
     assert.match(publicArtifactBlock, /redactedAggregate/);
     assert.match(publicArtifactBlock, /redactedIssueCounts/);
+    assert.match(publicArtifactBlock, /redactedFailureDetails/);
+    assert.match(publicArtifactBlock, /targetOrdinal: index \+ 1/);
+    assert.match(publicArtifactBlock, /failureDetailsValid/);
+    assert.match(publicArtifactBlock, /classifyFailure/);
+    assert.match(
+        publicArtifactBlock,
+        /redactedFailureDetails\.filter/
+    );
     assert.match(publicArtifactBlock, /activePnuCount/);
     assert.match(publicArtifactBlock, /resolvedComponentCount/);
     assert.match(publicArtifactBlock, /scannedPnuCount/);
@@ -253,10 +261,22 @@ test('read-only capture는 raw evidence를 업로드하지 않고 비식별 집�
     assert.match(publicArtifactBlock, /promotionGate/);
     assert.doesNotMatch(publicArtifactBlock, /anchorIndex/);
     assert.doesNotMatch(publicArtifactBlock, /redactedDiagnostics/);
+    assert.doesNotMatch(publicArtifactBlock, /targetPnu/);
     assert.match(publicArtifactBlock, /productionWrites: 0/);
     assert.match(
         publicArtifactBlock,
         /anchorPnu\|propertyUnitId\|allowedPrestates\|proposedLandAreas\|landArea/
+    );
+    assert.match(
+        publicArtifactBlock,
+        /\^\(\?!\.\*\[0-9\]\{19\}\)\[A-Z0-9_\]\{1,100\}/
+    );
+    assert.match(publicArtifactBlock, /\\b\[0-9\]\{19\}\\b/);
+    assert.equal(
+        /^(?!.*[0-9]{19})[A-Z0-9_]{1,100}$/.test(
+            'ERR_1130510100107912280'
+        ),
+        false
     );
     assert.match(cleanupBlock, /rm -f -- "\$\{candidate\}"/);
     assert.match(cleanupBlock, /rmdir -- "\$\{root\}"/);
