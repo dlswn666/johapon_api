@@ -17,6 +17,7 @@ import {
     parseDbScopeResolution,
     resolveParcelScopeCompleteness,
     resolveSameRunOfficialDevelopmentFullRefreshComponent,
+    resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent,
     resolveSameRunOfficialReadOnlyComponent,
     type DbScopeResolution,
     type BasePnuScan,
@@ -442,10 +443,19 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
     let parcelSingletonBasis:
         | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
         | null = null;
+    const parcelSingletonReviewIssues =
+        gate.issues.length === 1 &&
+        gate.issues[0] ===
+            'BUILDING_CLASSIFICATION_CONFLICT'
+            ? true
+            : developmentFullRefresh !== null &&
+              gate.issues.length === 2 &&
+              gate.issues[0] ===
+                  'BUILDING_CLASSIFICATION_CONFLICT' &&
+              gate.issues[1] === 'SCOPE_NOT_LINKED';
     if (
         gate.state === 'REVIEW_REQUIRED' &&
-        gate.issues.length === 1 &&
-        gate.issues[0] === 'BUILDING_CLASSIFICATION_CONFLICT' &&
+        parcelSingletonReviewIssues &&
         gate.scannedPnus.length === 1
     ) {
         const [propertyUnits, buildingUnits] = await Promise.all([
@@ -463,6 +473,81 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         });
         if (decision.kind === 'ELIGIBLE') {
             parcelSingletonBasis = decision.basis;
+            if (
+                developmentFullRefresh !== null &&
+                developmentFullRefreshScopeResolution === null
+            ) {
+                const component =
+                    resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+                        {
+                            anchorPnu,
+                            dbScope,
+                            baseScans,
+                            policy,
+                            parcelSingletonBasis:
+                                decision.basis,
+                        }
+                    );
+                if (component) {
+                    deps.assertCanaryScopeAllowed(
+                        unionId,
+                        component.memberPnus
+                    );
+                    const memberSet = new Set(
+                        component.memberPnus
+                    );
+                    const activePropertyUnits =
+                        propertyUnits.filter(
+                            (row) => !row.isDeleted
+                        );
+                    if (
+                        activePropertyUnits.some(
+                            (row) =>
+                                row.unionId !== unionId ||
+                                typeof row.pnu !== 'string' ||
+                                !memberSet.has(row.pnu)
+                        ) ||
+                        new Set(
+                            activePropertyUnits.map(
+                                (row) => row.id
+                            )
+                        ).size !==
+                            activePropertyUnits.length
+                    ) {
+                        throw new Error(
+                            'DEVELOPMENT_FULL_REFRESH_SCOPE_MEMBERSHIP_INVALID'
+                        );
+                    }
+                    const propertyMembership =
+                        activePropertyUnits
+                            .map((row) => ({
+                                propertyUnitId: row.id,
+                                pnu: row.pnu,
+                            }))
+                            .sort((left, right) =>
+                                left.propertyUnitId.localeCompare(
+                                    right.propertyUnitId
+                                )
+                            );
+                    preloadedPropertyUnits =
+                        propertyUnits;
+                    effectiveDbScope =
+                        createSameRunOfficialDevelopmentFullRefreshEffectiveScope(
+                            {
+                                dbScope,
+                                component,
+                                propertyMembership,
+                            }
+                        );
+                    gate = resolveParcelScopeCompleteness({
+                        dbScope: effectiveDbScope,
+                        baseScans,
+                        policy,
+                    });
+                    developmentFullRefreshScopeResolution =
+                        component;
+                }
+            }
         }
     }
     if (
@@ -474,6 +559,23 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
             scopeState: 'REVIEW_REQUIRED',
             outcome: 'REVIEW_REQUIRED',
             issues: gate.issues.map((code) => ({ code })),
+            counts: gateCounts(baseScans),
+        });
+        return;
+    }
+    if (
+        developmentFullRefresh !== null &&
+        developmentFullRefreshScopeResolution === null
+    ) {
+        await finalizeDiscoveryTerminal(deps, jobId, unionId, {
+            status: 'COMPLETED',
+            scopeState: 'REVIEW_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
+            issues: (
+                gate.issues.length > 0
+                    ? gate.issues
+                    : ['SCOPE_NOT_LINKED' as const]
+            ).map((code) => ({ code })),
             counts: gateCounts(baseScans),
         });
         return;

@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
     resolveParcelScopeCompleteness,
     resolveSameRunOfficialDevelopmentFullRefreshComponent,
+    resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent,
     resolveSameRunOfficialReadOnlyComponent,
     createSameRunOfficialReadOnlyEffectiveScope,
     computeScopeHash,
@@ -299,6 +300,174 @@ test('DEV 전체 갱신은 LADFRL과 LDAREG singleton을 모두 pairCount=0 공�
     assert.match(
         ldaregComponent.officialComponentDigest,
         /^[0-9a-f]{64}$/
+    );
+});
+
+test('DEV 전체 갱신 parcel singleton은 분류 conflict와 title zero를 공식 pairCount=0으로 고정한다', () => {
+    const classificationConflict =
+        resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+            {
+                ...gate({
+                    dbScope: db({
+                        dbState: 'LINKED',
+                        componentPnus: [ANCHOR],
+                        linkedBasePnus: [ANCHOR],
+                        linkedPnus: [ANCHOR],
+                        linkedEvidenceKeys: [
+                            'relation-evidence',
+                        ],
+                    }),
+                    baseScans: [
+                        base({
+                            title: titleComplete([
+                                {
+                                    mgmBldrgstPk: PK,
+                                    bylotCnt: '0',
+                                    regstrGbCd: '1',
+                                    mainPurpsCd: '03000',
+                                    mainPurpsCdNm:
+                                        '제1종근린생활시설',
+                                },
+                            ]),
+                        }),
+                    ],
+                }),
+                anchorPnu: ANCHOR,
+                parcelSingletonBasis:
+                    'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON',
+            }
+        );
+    assert.ok(classificationConflict);
+    assert.deepEqual(classificationConflict, {
+        source:
+            'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
+        canonicalBasePnu: ANCHOR,
+        memberPnus: [ANCHOR],
+        managementPk: PK,
+        pairCount: 0,
+        officialComponentDigest:
+            classificationConflict.officialComponentDigest,
+    });
+
+    const titleZero =
+        resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+            {
+                ...gate({
+                    baseScans: [
+                        base({
+                            title: zero<BrTitleRow>(),
+                        }),
+                    ],
+                }),
+                anchorPnu: ANCHOR,
+                parcelSingletonBasis:
+                    'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON',
+            }
+        );
+    assert.ok(titleZero);
+    assert.equal(titleZero.pairCount, 0);
+    assert.deepEqual(titleZero.memberPnus, [ANCHOR]);
+    assert.match(
+        titleZero.managementPk,
+        /^full-refresh-singleton:[0-9a-f]{64}$/
+    );
+    assert.match(
+        titleZero.officialComponentDigest,
+        /^[0-9a-f]{64}$/
+    );
+});
+
+test('DEV 전체 갱신 parcel singleton은 provider 미완료·bylot 상충·attached 행·DB blocker를 공식 근거로 승격하지 않는다', () => {
+    const resolve = (
+        over: Partial<ParcelScopeInput>
+    ) =>
+        resolveSameRunOfficialDevelopmentFullRefreshParcelSingletonComponent(
+            {
+                ...gate(over),
+                anchorPnu: ANCHOR,
+                parcelSingletonBasis:
+                    'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON',
+            }
+        );
+
+    assert.equal(
+        resolve({
+            baseScans: [
+                base({ title: failed<BrTitleRow>() }),
+            ],
+        }),
+        null
+    );
+    assert.equal(
+        resolve({
+            baseScans: [
+                base({
+                    attached:
+                        incomplete<BrAtchJibunRow>(),
+                }),
+            ],
+        }),
+        null
+    );
+    assert.equal(
+        resolve({
+            baseScans: [
+                base({
+                    title: titleComplete([
+                        {
+                            mgmBldrgstPk: PK,
+                            bylotCnt: '1',
+                            regstrGbCd: '1',
+                            mainPurpsCd: '03000',
+                            mainPurpsCdNm:
+                                '제1종근린생활시설',
+                        },
+                    ]),
+                }),
+            ],
+        }),
+        null
+    );
+    assert.equal(
+        resolve({
+            baseScans: [
+                base({
+                    title: titleComplete([
+                        {
+                            mgmBldrgstPk: PK,
+                            bylotCnt: '0',
+                            regstrGbCd: '1',
+                            mainPurpsCd: '03000',
+                            mainPurpsCdNm:
+                                '제1종근린생활시설',
+                        },
+                    ]),
+                    attached: attachedComplete([
+                        attachedRow(
+                            ANCHOR,
+                            OTHER_PNU,
+                            PK
+                        ),
+                    ]),
+                }),
+            ],
+        }),
+        null
+    );
+    assert.equal(
+        resolve({
+            dbScope: db({
+                dbState: 'BLOCKING_EVIDENCE',
+                blockingEvidence: [
+                    {
+                        sourceKind: 'API_RELATION',
+                        sourceId: 'blocked',
+                        state: 'CONFLICT',
+                    },
+                ],
+            }),
+        }),
+        null
     );
 });
 

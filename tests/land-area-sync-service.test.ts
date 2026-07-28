@@ -393,6 +393,217 @@ test('분류 conflict라도 DB parcel singleton이고 unit identity가 없으면
     ]);
 });
 
+test('DEV 전체 갱신 분류 conflict parcel singleton은 DB_RESOLVER가 아닌 same-run official pairCount=0 snapshot을 만든다', async () => {
+    const spy = emptySpy();
+    const marker = developmentFullRefreshMarker();
+    const resolver = linked(MEMBER) as Record<
+        string,
+        unknown
+    >;
+    const deps = makeDeps({
+        databaseTarget: 'development',
+        resolver,
+        scans: {
+            scanTitle: async () => ({
+                state: 'COMPLETE',
+                rows: [
+                    {
+                        mgmBldrgstPk: PK,
+                        bylotCnt: '0',
+                        regstrGbCd: '1',
+                        mainPurpsCd: '03000',
+                        mainPurpsCdNm:
+                            '제1종근린생활시설',
+                    },
+                ],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+        },
+        propertyUnits: [
+            {
+                id: PROP_ID,
+                unionId:
+                    MIA_SEVEN_DEVELOPMENT_UNION_ID,
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: null,
+                ho: null,
+            },
+        ],
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps,
+    });
+
+    assert.equal(spy.freezeCalls, 1);
+    assert.equal(spy.applyCalls, 0);
+    const prepared =
+        spy.frozenSnapshots[0].scopeSnapshot;
+    assert.deepEqual(
+        prepared.developmentFullRefreshScopeResolution,
+        {
+            source:
+                'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
+            canonicalBasePnu: ANCHOR,
+            memberPnus: [ANCHOR],
+            managementPk: PK,
+            pairCount: 0,
+            officialComponentDigest:
+                prepared
+                    .developmentFullRefreshScopeResolution
+                    ?.officialComponentDigest,
+            manifestDigest: marker.manifestDigest,
+            scopeDigest: marker.scopeDigest,
+        }
+    );
+    assert.notEqual(
+        prepared.dbScopeHash,
+        resolver.dbScopeHash
+    );
+    assert.deepEqual(prepared.scannedPnus, [ANCHOR]);
+});
+
+test('DEV 전체 갱신 title/attached COMPLETE_ZERO parcel singleton도 synthetic official pairCount=0으로 고정한다', async () => {
+    const spy = emptySpy();
+    const marker = developmentFullRefreshMarker();
+    const deps = makeDeps({
+        databaseTarget: 'development',
+        resolver: noEvidence(MEMBER),
+        scans: {
+            scanTitle: async () => zero<BrTitleRow>(),
+        },
+        propertyUnits: [
+            {
+                id: PROP_ID,
+                unionId:
+                    MIA_SEVEN_DEVELOPMENT_UNION_ID,
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: null,
+                ho: null,
+            },
+        ],
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps,
+    });
+
+    assert.equal(spy.freezeCalls, 1);
+    assert.equal(spy.applyCalls, 0);
+    const resolution =
+        spy.frozenSnapshots[0].scopeSnapshot
+            .developmentFullRefreshScopeResolution;
+    assert.ok(resolution);
+    assert.equal(
+        resolution.source,
+        'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH'
+    );
+    assert.deepEqual(resolution.memberPnus, [ANCHOR]);
+    assert.equal(resolution.pairCount, 0);
+    assert.match(
+        resolution.managementPk,
+        /^full-refresh-singleton:[0-9a-f]{64}$/
+    );
+    assert.deepEqual(
+        spy.resolverParams[0].p_root_mgm_bldrgst_pks,
+        []
+    );
+});
+
+test('DEV 전체 갱신 분류 conflict에 호 identity가 있으면 DB_RESOLVER snapshot 없이 REVIEW로 차단한다', async () => {
+    const spy = emptySpy();
+    const deps = makeDeps({
+        databaseTarget: 'development',
+        resolver: linked(MEMBER),
+        scans: {
+            scanTitle: async () => ({
+                state: 'COMPLETE',
+                rows: [
+                    {
+                        mgmBldrgstPk: PK,
+                        bylotCnt: '0',
+                        regstrGbCd: '1',
+                        mainPurpsCd: '03000',
+                        mainPurpsCdNm:
+                            '제1종근린생활시설',
+                    },
+                ],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+        },
+        propertyUnits: [
+            {
+                id: PROP_ID,
+                unionId:
+                    MIA_SEVEN_DEVELOPMENT_UNION_ID,
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: null,
+                ho: '201',
+            },
+        ],
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh:
+                    developmentFullRefreshMarker(),
+            },
+        },
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps,
+    });
+
+    assert.equal(spy.freezeCalls, 0);
+    assert.equal(spy.applyCalls, 0);
+    assert.deepEqual(spy.terminalCalls, [
+        {
+            status: 'COMPLETED',
+            scopeState: 'REVIEW_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
+        },
+    ]);
+    assert.deepEqual(
+        spy.terminalIssues[0].map((issue) => issue.code),
+        ['BUILDING_CLASSIFICATION_CONFLICT']
+    );
+});
+
 test('분류 conflict property_unit에 호 identity가 있으면 기존 REVIEW_REQUIRED를 유지한다', async () => {
     const spy = emptySpy();
     let ladfrlCalls = 0;
