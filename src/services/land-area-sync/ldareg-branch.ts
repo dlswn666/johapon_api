@@ -63,6 +63,19 @@ export interface LdaregPnuScan {
     basisRows?: BrBasisOulnRow[];
 }
 
+/**
+ * repo-pinned DEV 전체 재조회가 service 정책 검증을 끝낸 뒤에만 넘기는 명시적 opt-in.
+ *
+ * 일반 discovery/운영에서는 절대 설정하지 않는다. 이 모드도 공식 CURRENT 행 자체를
+ * 무시하는 것이 아니라, EXPOS exact correlation과 비율 검증을 통과했지만 활성 DB
+ * 물건지가 없는 공식 추가 호실만 active-property 전수 CURRENT coverage 이후 제외한다.
+ */
+export const LDAREG_OFFICIAL_CURRENT_SUPERSET_MODE =
+    'DEVELOPMENT_FULL_REFRESH_ACTIVE_CURRENT_COVERAGE' as const;
+
+export type LdaregOfficialCurrentSupersetMode =
+    typeof LDAREG_OFFICIAL_CURRENT_SUPERSET_MODE;
+
 export interface LdaregBranchInput {
     unionId: string;
     /** scope 내 정렬 대상 PNU 전체(각 property 의 expected coverage 이자 apply scanned scope). */
@@ -85,6 +98,11 @@ export interface LdaregBranchInput {
      * 전체 query-PNU provenance를 붙인다.
      */
     officialPropertyMembershipMode?: LdaregPropertyMembershipMode;
+    /**
+     * repo-pinned DEV 전체 재조회 전용 공식 superset 정책. service가 개발환경·manifest
+     * 정책을 검증한 경우에만 membership mode와 함께 명시적으로 설정한다.
+     */
+    officialCurrentSupersetMode?: LdaregOfficialCurrentSupersetMode;
 }
 
 const LDAREG_REPEAT_FIELDS = [
@@ -1215,6 +1233,10 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         'PER_ACTIVE_PNU_REPLICA'
             ? officialPropertyMembershipLayout
             : null;
+    const officialCurrentSupersetEnabled =
+        input.officialCurrentSupersetMode ===
+            LDAREG_OFFICIAL_CURRENT_SUPERSET_MODE &&
+        officialPropertyMembershipLayout !== null;
     const scopeLadfrlAreas = [...input.scopeLadfrlAreas].sort((a, b) => a.pnu.localeCompare(b.pnu));
     const scopeLadfrlTotal = Number(input.scopeLadfrlTotal);
     const buildingUnits = input.buildingUnits.map(normalizeBuildingUnitFloor);
@@ -1238,7 +1260,9 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         scopeExpos.units.length === 0 ||
         (input.officialPropertyMembershipMode !== undefined &&
             officialPropertyMembershipLayout?.mode !==
-                input.officialPropertyMembershipMode)
+                input.officialPropertyMembershipMode) ||
+        (input.officialCurrentSupersetMode !== undefined &&
+            !officialCurrentSupersetEnabled)
     ) {
         return {
             items: [],
@@ -1267,6 +1291,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
     let ratioParseFailed = false;
     let unitMatchIncomplete = false;
     let sourceStateAmbiguous = false;
+    let officialSourceMultiplicityAmbiguous = false;
 
     // property_unit_id → component 목록.
     const byProperty = new Map<string, LandAreaSyncApplyLdaregComponent[]>();
@@ -1379,7 +1404,9 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         rowsByPnuAndKey.set(scan.pnu, byKey);
     }
 
-    const matchedOfficialPropertyIds = new Set<string>();
+    const matchedOfficialCurrentPropertyIds = new Set<string>();
+    const ignoredOfficialCurrentSourceIdentities =
+        new Set<string>();
     for (const record of dedup.records) {
         const canonicalRaw =
             record.sourceRowIndex >= 0
@@ -1412,11 +1439,17 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             buildingUnitRef: string | null;
             matchTargetPnu: string;
         }> = [];
+        const noChangeDecisions: Array<{
+            matchTargetPnu: string;
+            decision: Extract<
+                ReturnType<typeof matchLdaregUnit>,
+                { kind: 'NO_CHANGE' }
+            >;
+        }> = [];
         const matchTargetPnus =
             propertyReplicaCohort?.propertyBearingPnus ?? [
                 canonicalScan.pnu,
             ];
-        let recordMatchFailed = false;
         for (const matchTargetPnu of matchTargetPnus) {
             const scopedPropertyUnits = propertyReplicaCohort
                 ? propertyUnits.filter(
@@ -1459,11 +1492,9 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
                     providerShapeBridge.allowed,
             });
             if (decision.kind === 'NO_CHANGE') {
-                unitMatchIncomplete = true;
-                recordMatchFailed = true;
-                issues.push({
-                    code: decision.issue,
-                    targetPnu: matchTargetPnu,
+                noChangeDecisions.push({
+                    matchTargetPnu,
+                    decision,
                 });
                 continue;
             }
@@ -1473,8 +1504,69 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
                 matchTargetPnu,
             });
         }
+
+        const exactSafeUnmatchedOfficialCurrent =
+            officialCurrentSupersetEnabled &&
+            matchedDecisions.length === 0 &&
+            noChangeDecisions.length ===
+                matchTargetPnus.length &&
+            noChangeDecisions.every(
+                ({ decision }) =>
+                    decision.issue ===
+                        'PROPERTY_UNIT_NOT_FOUND' &&
+                    decision.reason === 'NONE' &&
+                    decision.stage !== 'EXPOS_EXACT'
+            ) &&
+            record.state === 'CURRENT' &&
+            !record.sourceStateAmbiguous &&
+            record.sourceRowIndexes.length === 1;
+        let ignoredOfficialCurrent = false;
+        if (exactSafeUnmatchedOfficialCurrent) {
+            const parsed = parseLdaQotaRate(
+                record.ldaQotaRateRaw
+            );
+            if (!parsed.ok) {
+                ratioParseFailed = true;
+                issues.push({
+                    code: parsed.issue,
+                    targetPnu: canonicalScan.pnu,
+                });
+            } else {
+                const denomCheck =
+                    checkDenominatorAgainstArea(
+                        parsed.denominator,
+                        scopeLadfrlTotal
+                    );
+                if (!denomCheck.ok) {
+                    denominatorMismatch = true;
+                    issues.push({
+                        code: denomCheck.issue,
+                        targetPnu: canonicalScan.pnu,
+                    });
+                } else {
+                    ignoredOfficialCurrentSourceIdentities.add(
+                        record.identity.value
+                    );
+                    ignoredOfficialCurrent = true;
+                }
+            }
+        }
+        if (ignoredOfficialCurrent) {
+            continue;
+        }
+
         if (
-            recordMatchFailed ||
+            officialCurrentSupersetEnabled &&
+            record.sourceRowIndexes.length !== 1
+        ) {
+            officialSourceMultiplicityAmbiguous = true;
+            issues.push({
+                code: 'LDAREG_IDENTITY_CONFLICT',
+                targetPnu: canonicalScan.pnu,
+            });
+        }
+        if (
+            noChangeDecisions.length > 0 ||
             matchedDecisions.length !== matchTargetPnus.length ||
             new Set(
                 matchedDecisions.map(
@@ -1483,6 +1575,25 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             ).size !== matchedDecisions.length
         ) {
             unitMatchIncomplete = true;
+            for (const {
+                matchTargetPnu,
+                decision,
+            } of noChangeDecisions) {
+                issues.push({
+                    code: decision.issue,
+                    targetPnu: matchTargetPnu,
+                });
+            }
+            if (
+                officialCurrentSupersetEnabled &&
+                record.sourceStateAmbiguous
+            ) {
+                sourceStateAmbiguous = true;
+                issues.push({
+                    code: 'LDAREG_IDENTITY_CONFLICT',
+                    targetPnu: canonicalScan.pnu,
+                });
+            }
             continue;
         }
 
@@ -1532,9 +1643,11 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         }
 
         for (const decision of matchedDecisions) {
-            matchedOfficialPropertyIds.add(
-                decision.propertyUnitId
-            );
+            if (record.state === 'CURRENT') {
+                matchedOfficialCurrentPropertyIds.add(
+                    decision.propertyUnitId
+                );
+            }
             for (const targetPnu of expectedTargetPnus) {
                 const targetRaw = rowsByPnuAndKey
                     .get(targetPnu)
@@ -1613,12 +1726,32 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         }
     }
 
+    if (input.officialCurrentSupersetMode !== undefined) {
+        componentMatchDigest.push({
+            kind: 'OFFICIAL_CURRENT_SUPERSET_GATE',
+            mode: input.officialCurrentSupersetMode,
+            activePropertyCount:
+                officialPropertyMembershipLayout
+                    ?.activePropertyIds.length ?? 0,
+            matchedCurrentPropertyCount:
+                matchedOfficialCurrentPropertyIds.size,
+            ignoredCurrentRowCount:
+                ignoredOfficialCurrentSourceIdentities.size,
+            ignoredCurrentSourceIdentities: [
+                ...ignoredOfficialCurrentSourceIdentities,
+            ].sort(),
+        });
+    }
+
     let officialPropertyBijectionMismatch = false;
     if (
         officialPropertyMembershipLayout &&
-        replication.evidence.rowCount > 0
+        (replication.evidence.rowCount > 0 ||
+            officialCurrentSupersetEnabled)
     ) {
-        const matched = [...matchedOfficialPropertyIds].sort();
+        const matched = [
+            ...matchedOfficialCurrentPropertyIds,
+        ].sort();
         const expected =
             officialPropertyMembershipLayout.activePropertyIds;
         if (
@@ -1737,6 +1870,7 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
             componentReplicaMismatch ||
             ambiguousPropertyIdentity ||
             officialPropertyBijectionMismatch ||
+            officialSourceMultiplicityAmbiguous ||
             nonzeroWithoutMatchedItem ||
             unitMatchIncomplete ||
             dedupConflict,

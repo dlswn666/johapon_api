@@ -108,6 +108,42 @@ export interface LandAreaSyncScopeSnapshot {
         scopeDigest: string;
     };
     /**
+     * repo-pinned DEV 전체 재조회에서만 인정하는 공식 무데이터 no-op 근거.
+     * TITLE/BASIS/ATTACHED/EXPOS/LDAREG는 same-run COMPLETE_ZERO이고 LADFRL만
+     * exact 양수 1행이어야 한다. 이 필드가 있으면 proposedLandAreas는 반드시 빈 배열이며
+     * apply/confirmation RPC를 호출하지 않는다.
+     */
+    verifiedNoDataEvidence?: {
+        version: 'land-area-sync.verified-no-data.v1';
+        kind: 'VERIFIED_NO_DATA';
+        reason:
+            'OFFICIAL_BUILDING_AND_LDAREG_ENDPOINTS_COMPLETE_ZERO';
+        anchorPnu: string;
+        endpointEvidence: Array<{
+            endpoint:
+                | 'TITLE'
+                | 'BASIS'
+                | 'ATTACHED'
+                | 'EXPOS'
+                | 'LADFRL'
+                | 'LDAREG';
+            state: 'COMPLETE' | 'COMPLETE_ZERO';
+            totalCount: number;
+            pagesFetched: number;
+            rowCount: number;
+            rowDigest: string;
+        }>;
+        endpointEvidenceDigest: string;
+        ladfrlArea: string;
+        propertyUnitCount: number;
+        propertyUnitIdsDigest: string;
+        propertyMembershipHash: string;
+        dbScopeHash: string;
+        manifestDigest: string;
+        scopeDigest: string;
+        evidenceDigest: string;
+    };
+    /**
      * DB resolver(`resolve_land_area_sync_scope_v1`) 호출에 실제 사용한 root 관리번호 식별자
      * 배열(정렬·dedup). up-PK 우선(`mgmUpBldrgstPk` 있으면 그 값, 없으면 `mgmBldrgstPk`)으로
      * anchor PNU 표제부에서 유도한 `p_root_mgm_bldrgst_pks` 그대로다.
@@ -270,7 +306,12 @@ export interface LandAreaSyncJobInfo {
 
 // ── apply RPC p_items 계약(migration [5.3] 원천) ────────────────────
 
-/** LADFRL p_items(정확히 1건). ladfrlArea=null → LADFRL_COMPLETE_ZERO. */
+/**
+ * LADFRL p_items.
+ * 일반 경로는 정확히 1건이며, repo-pinned DEV 공식 multi-PNU parcel component만
+ * property-bearing PNU별 exact item을 여러 건 보낼 수 있다.
+ * ladfrlArea=null → LADFRL_COMPLETE_ZERO.
+ */
 export interface LandAreaSyncApplyLadfrlItem {
     propertyUnitId: string;
     targetPnu: string;

@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { parseDevelopmentTargetManifest } from '../src/operations/development-land-area-sync-runner';
-import { resolveParcelSingletonLadfrlCandidate } from '../src/services/land-area-sync/parcel-singleton';
+import {
+    resolveParcelComponentLadfrlCandidates,
+    resolveParcelSingletonLadfrlCandidate,
+} from '../src/services/land-area-sync/parcel-singleton';
 
 const UNION_ID = '00f48b95-e9bc-4c92-a0e5-6b9a57adcfb9';
 const PNU = '1130510100107912150';
@@ -105,6 +108,123 @@ test('building_unit 링크가 없는데 scope에 unit 후보가 있으면 거부
         kind: 'REJECTED',
         reason: 'UNLINKED_BUILDING_UNITS_PRESENT',
     });
+});
+
+test('DEV 공식 multi component는 PNU별 no-room singleton만 LADFRL 대상으로 만들고 query-only PNU는 제외한다', () => {
+    const attachedPnu = '1130510100107912339';
+    const queryOnlyPnu = '1130510100107030130';
+    const attachedPropertyId =
+        '44444444-4444-4444-8444-444444444444';
+    assert.deepEqual(
+        resolveParcelComponentLadfrlCandidates({
+            unionId: UNION_ID,
+            canonicalBasePnu: PNU,
+            memberPnus: [queryOnlyPnu, attachedPnu, PNU].sort(),
+            propertyUnits: [
+                {
+                    id: PROPERTY_UNIT_ID,
+                    unionId: UNION_ID,
+                    buildingUnitId: null,
+                    pnu: PNU,
+                    isDeleted: false,
+                    dong: null,
+                    ho: null,
+                },
+                {
+                    id: attachedPropertyId,
+                    unionId: UNION_ID,
+                    buildingUnitId: null,
+                    pnu: attachedPnu,
+                    isDeleted: false,
+                    dong: null,
+                    ho: null,
+                },
+            ],
+            buildingUnits: [],
+        }),
+        {
+            kind: 'ELIGIBLE',
+            basis:
+                'OFFICIAL_COMPONENT_DB_PARCEL_SINGLETONS',
+            targets: [
+                {
+                    propertyUnitId: PROPERTY_UNIT_ID,
+                    targetPnu: PNU,
+                },
+                {
+                    propertyUnitId: attachedPropertyId,
+                    targetPnu: attachedPnu,
+                },
+            ],
+            queryOnlyPnus: [queryOnlyPnu],
+        }
+    );
+});
+
+test('DEV 공식 multi component는 canonical 누락·PNU 중복 물건·호실 identity를 fail-closed한다', () => {
+    const attachedPnu = '1130510100107912339';
+    const property = {
+        id: PROPERTY_UNIT_ID,
+        unionId: UNION_ID,
+        buildingUnitId: null,
+        pnu: PNU,
+        isDeleted: false,
+        dong: null,
+        ho: null,
+    };
+    const common = {
+        unionId: UNION_ID,
+        canonicalBasePnu: PNU,
+        memberPnus: [PNU, attachedPnu],
+        buildingUnits: [],
+    };
+
+    assert.deepEqual(
+        resolveParcelComponentLadfrlCandidates({
+            ...common,
+            propertyUnits: [
+                {
+                    ...property,
+                    pnu: attachedPnu,
+                },
+            ],
+        }),
+        {
+            kind: 'REJECTED',
+            reason: 'CANONICAL_PROPERTY_MISSING',
+        }
+    );
+    assert.deepEqual(
+        resolveParcelComponentLadfrlCandidates({
+            ...common,
+            propertyUnits: [
+                property,
+                {
+                    ...property,
+                    id: '55555555-5555-4555-8555-555555555555',
+                },
+            ],
+        }),
+        {
+            kind: 'REJECTED',
+            reason: 'PROPERTY_UNIT_NOT_SINGLE_PER_PNU',
+        }
+    );
+    assert.deepEqual(
+        resolveParcelComponentLadfrlCandidates({
+            ...common,
+            propertyUnits: [
+                {
+                    ...property,
+                    ho: '101',
+                },
+            ],
+        }),
+        {
+            kind: 'REJECTED',
+            reason: 'PROPERTY_UNIT_HAS_UNIT_IDENTITY',
+        }
+    );
 });
 
 test('미아7 parcel singleton target은 review 210에서 다물건 PNU 8개만 제외한 202건이다', () => {

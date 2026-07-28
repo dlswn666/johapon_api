@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    LDAREG_OFFICIAL_CURRENT_SUPERSET_MODE,
     assembleLdaregApply,
     selectCanonicalExposSourcePnu,
     validateLdaregReplication,
@@ -2062,6 +2063,381 @@ test('DEV query-only attached + SINGLE cohort도 unmatched active property를 wh
             (issue) => issue.code === 'PROPERTY_UNIT_NOT_FOUND'
         )
     );
+});
+
+function buildOfficialCurrentSupersetInput(options?: {
+    enableSupersetMode?: boolean;
+    additionalPropertyHos?: string[];
+    mutateScan?: (
+        scan: LdaregBranchInput['perPnu'][number]
+    ) => void;
+}): LdaregBranchInput {
+    const officialRooms = Array.from(
+        { length: 11 },
+        (_, index) => {
+            const floor = String(
+                Math.floor(index / 3) + 1
+            );
+            return {
+                floor,
+                ho: `${floor}${String(
+                    (index % 3) + 1
+                ).padStart(2, '0')}`,
+            };
+        }
+    );
+    const scan: LdaregBranchInput['perPnu'][number] = {
+        pnu: ANCHOR,
+        ldaregRows: officialRooms.map((room, index) => ({
+            pnu: ANCHOR,
+            agbldgSn: String(index + 1),
+            buldNm: '공식호실11개',
+            buldDongNm: '0000',
+            buldFloorNm: room.floor,
+            buldHoNm: room.ho,
+            buldRoomNm: room.ho,
+            ldaQotaRate: `${index + 1}/73`,
+            clsSeCode: '0',
+            clsSeCodeNm: '현재',
+        })),
+        exposRows: officialRooms.map((room) => ({
+            pnu: ANCHOR,
+            mgmBldrgstPk: PK,
+            dongNm: '',
+            flrNoNm: room.floor,
+            hoNm: room.ho,
+        })),
+    };
+    options?.mutateScan?.(scan);
+    const activePropertyHos = [
+        ...officialRooms
+            .slice(0, 9)
+            .map((room) => room.ho),
+        ...(options?.additionalPropertyHos ?? []),
+    ];
+    return {
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [scan],
+        scopeLadfrlAreas: [
+            { pnu: ANCHOR, area: '73' },
+        ],
+        scopeLadfrlTotal: '73',
+        canonicalSourcePnu: ANCHOR,
+        buildingUnits: [],
+        propertyUnits: activePropertyHos.map(
+            (ho, index) => ({
+                id: `superset-property-${index}`,
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: null,
+                ho,
+            })
+        ),
+        officialPropertyMembershipMode:
+            'SINGLE_LOGICAL_SET',
+        ...(options?.enableSupersetMode
+            ? {
+                  officialCurrentSupersetMode:
+                      LDAREG_OFFICIAL_CURRENT_SUPERSET_MODE,
+              }
+            : {}),
+    };
+}
+
+test('DEV explicit opt-in만 공식 CURRENT 11개/활성 DB 9개 superset을 전수 exact coverage 후 2개 제외한다', () => {
+    const withoutOptIn = assembleLdaregApply(
+        buildOfficialCurrentSupersetInput()
+    );
+    assert.equal(
+        withoutOptIn.blocking,
+        true,
+        '일반/운영 경로는 같은 공식 superset을 계속 fail-closed한다'
+    );
+    assert.ok(
+        withoutOptIn.issues.some(
+            (issue) =>
+                issue.code === 'PROPERTY_UNIT_NOT_FOUND'
+        )
+    );
+
+    const result = assembleLdaregApply(
+        buildOfficialCurrentSupersetInput({
+            enableSupersetMode: true,
+        })
+    );
+    assert.equal(result.blocking, false);
+    assert.equal(result.items.length, 9);
+    assert.equal(result.counts.landRegistryRows, 11);
+    assert.equal(
+        result.counts.parsedRows,
+        9,
+        '적용 component로 확정된 CURRENT만 parsedRows에 센다'
+    );
+    assert.deepEqual(result.issues, []);
+    assert.deepEqual(
+        result.matchedPropertyUnitIds.slice().sort(),
+        Array.from(
+            { length: 9 },
+            (_, index) => `superset-property-${index}`
+        ).sort()
+    );
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'OFFICIAL_CURRENT_SUPERSET_GATE'
+    ) as {
+        mode: string;
+        activePropertyCount: number;
+        matchedCurrentPropertyCount: number;
+        ignoredCurrentRowCount: number;
+        ignoredCurrentSourceIdentities: string[];
+    };
+    assert.equal(
+        gate.mode,
+        LDAREG_OFFICIAL_CURRENT_SUPERSET_MODE
+    );
+    assert.equal(gate.activePropertyCount, 9);
+    assert.equal(gate.matchedCurrentPropertyCount, 9);
+    assert.equal(gate.ignoredCurrentRowCount, 2);
+    assert.equal(
+        gate.ignoredCurrentSourceIdentities.length,
+        2
+    );
+    assert.ok(
+        gate.ignoredCurrentSourceIdentities.every(
+            (identity) =>
+                /^(?:primary|fallback):v2:[0-9a-f]{64}$/.test(
+                    identity
+                )
+        )
+    );
+});
+
+const unsafeOfficialSupersetVariants: Array<{
+    name: string;
+    expectedIssue:
+        | 'RATIO_PARSE_FAILED'
+        | 'PROPERTY_UNIT_NOT_FOUND'
+        | 'PROPERTY_UNIT_AMBIGUOUS'
+        | 'LDAREG_IDENTITY_CONFLICT';
+    mutateScan: NonNullable<
+        Parameters<
+            typeof buildOfficialCurrentSupersetInput
+        >[0]
+    >['mutateScan'];
+}> = [
+    {
+        name: '추가 행 ratio invalid',
+        expectedIssue: 'RATIO_PARSE_FAILED',
+        mutateScan: (scan) => {
+            scan.ldaregRows[10] = {
+                ...scan.ldaregRows[10],
+                ldaQotaRate: 'invalid',
+            };
+        },
+    },
+    {
+        name: '추가 행 CLOSED',
+        expectedIssue: 'PROPERTY_UNIT_NOT_FOUND',
+        mutateScan: (scan) => {
+            scan.ldaregRows[10] = {
+                ...scan.ldaregRows[10],
+                clsSeCode: '2',
+                clsSeCodeNm: '말소',
+            };
+        },
+    },
+    {
+        name: '추가 행 EXPOS 미상관',
+        expectedIssue: 'PROPERTY_UNIT_NOT_FOUND',
+        mutateScan: (scan) => {
+            scan.exposRows = scan.exposRows.slice(0, -1);
+        },
+    },
+    {
+        name: '추가 행 EXPOS ambiguity',
+        expectedIssue: 'PROPERTY_UNIT_AMBIGUOUS',
+        mutateScan: (scan) => {
+            scan.exposRows.push({
+                ...scan.exposRows[10],
+            });
+        },
+    },
+    {
+        name: '추가 CURRENT logical row 중복',
+        expectedIssue: 'LDAREG_IDENTITY_CONFLICT',
+        mutateScan: (scan) => {
+            scan.ldaregRows.push({
+                ...scan.ldaregRows[10],
+            });
+        },
+    },
+];
+
+for (const variant of unsafeOfficialSupersetVariants) {
+    test(`DEV 공식 superset도 ${variant.name}이면 whole-component blocking한다`, () => {
+        const result = assembleLdaregApply(
+            buildOfficialCurrentSupersetInput({
+                enableSupersetMode: true,
+                mutateScan: variant.mutateScan,
+            })
+        );
+        assert.equal(result.blocking, true);
+        assert.ok(
+            result.issues.some(
+                (issue) =>
+                    issue.code === variant.expectedIssue
+            )
+        );
+    });
+}
+
+test('DEV 공식 superset도 활성 DB 물건지 CURRENT coverage가 하나라도 빠지면 blocking한다', () => {
+    const result = assembleLdaregApply(
+        buildOfficialCurrentSupersetInput({
+            enableSupersetMode: true,
+            additionalPropertyHos: ['999'],
+        })
+    );
+    assert.equal(result.blocking, true);
+    assert.ok(
+        result.issues.some(
+            (issue) =>
+                issue.code === 'PROPERTY_UNIT_NOT_FOUND'
+        )
+    );
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'OFFICIAL_CURRENT_SUPERSET_GATE'
+    ) as {
+        activePropertyCount: number;
+        matchedCurrentPropertyCount: number;
+        ignoredCurrentRowCount: number;
+    };
+    assert.deepEqual(gate, {
+        ...gate,
+        activePropertyCount: 10,
+        matchedCurrentPropertyCount: 9,
+        ignoredCurrentRowCount: 2,
+    });
+});
+
+test('DEV 공식 superset opt-in은 LDAREG COMPLETE_ZERO를 활성 DB CURRENT coverage로 인정하지 않는다', () => {
+    const result = assembleLdaregApply(
+        buildOfficialCurrentSupersetInput({
+            enableSupersetMode: true,
+            mutateScan: (scan) => {
+                scan.ldaregRows = [];
+            },
+        })
+    );
+    assert.equal(result.blocking, true);
+    assert.ok(
+        result.issues.some(
+            (issue) =>
+                issue.code === 'PROPERTY_UNIT_NOT_FOUND'
+        )
+    );
+});
+
+test('DEV active-PNU replica도 각 PNU의 활성 DB cohort 전수를 exact match한 뒤 공식 CURRENT extra만 1개 제외한다', () => {
+    const attachedPnu = '1168010100107360025';
+    const targetPnus = [ANCHOR, attachedPnu];
+    const officialRooms = [
+        { floor: '1', ho: '101', numerator: '10' },
+        { floor: '2', ho: '201', numerator: '20' },
+        { floor: '3', ho: '301', numerator: '30' },
+    ];
+    const propertyUnits = targetPnus.flatMap(
+        (pnu, pnuIndex) =>
+            officialRooms.slice(0, 2).map((room) => ({
+                id: `replica-superset-${pnuIndex}-${room.ho}`,
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu,
+                isDeleted: false,
+                dong: null,
+                ho: room.ho,
+            }))
+    );
+    const result = assembleLdaregApply({
+        unionId: 'union-1',
+        scannedPnus: targetPnus,
+        rootIdentity: PK,
+        perPnu: targetPnus.map((pnu) => ({
+            pnu,
+            ldaregRows: officialRooms.map(
+                (room, index) => ({
+                    pnu,
+                    agbldgSn: String(index + 1),
+                    buldNm: '대표부지번반복',
+                    buldFloorNm: room.floor,
+                    buldHoNm: room.ho,
+                    buldRoomNm: room.ho,
+                    ldaQotaRate: `${room.numerator}/100`,
+                    clsSeCode: '0',
+                    clsSeCodeNm: '현재',
+                })
+            ),
+            exposRows: officialRooms.map((room) => ({
+                pnu,
+                mgmBldrgstPk: PK,
+                flrNoNm: room.floor,
+                hoNm: room.ho,
+            })),
+        })),
+        scopeLadfrlAreas: targetPnus.map((pnu) => ({
+            pnu,
+            area: '50',
+        })),
+        scopeLadfrlTotal: '100',
+        canonicalSourcePnu: ANCHOR,
+        buildingUnits: [],
+        propertyUnits,
+        officialPropertyMembershipMode:
+            'PER_ACTIVE_PNU_REPLICA',
+        officialCurrentSupersetMode:
+            LDAREG_OFFICIAL_CURRENT_SUPERSET_MODE,
+    });
+    assert.equal(result.blocking, false);
+    assert.equal(result.items.length, 4);
+    assert.deepEqual(
+        result.matchedPropertyUnitIds.slice().sort(),
+        propertyUnits
+            .map((propertyUnit) => propertyUnit.id)
+            .sort()
+    );
+    assert.ok(
+        result.items.every(
+            (item) =>
+                item.components.length === 2 &&
+                item.components.every(
+                    (component, index) =>
+                        component.targetPnu ===
+                        targetPnus[index]
+                )
+        )
+    );
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'OFFICIAL_CURRENT_SUPERSET_GATE'
+    ) as {
+        activePropertyCount: number;
+        matchedCurrentPropertyCount: number;
+        ignoredCurrentRowCount: number;
+    };
+    assert.deepEqual(gate, {
+        ...gate,
+        activePropertyCount: 4,
+        matchedCurrentPropertyCount: 4,
+        ignoredCurrentRowCount: 1,
+    });
 });
 
 test('비적용 placeholder가 아닌 CURRENT 비율 파싱 실패는 전체 blocking한다', () => {

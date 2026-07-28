@@ -22,6 +22,7 @@ import {
     MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_MANIFEST_DIGEST,
     MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_SCOPE_DIGEST,
     MIA_SEVEN_DEVELOPMENT_UNION_ID,
+    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
 } from '../src/security/development-land-area-full-refresh-policy';
 
 const ANCHOR = '1168010100107360024';
@@ -143,6 +144,10 @@ interface Spy {
     freezeCalls: number;
     applyCalls: number;
     terminalCalls: Array<{ status: string; scopeState: string; outcome: string }>;
+    terminalCounts: Array<{
+        updatedPropertyUnits: number;
+        unchangedPropertyUnits: number;
+    }>;
     /** writeDiscoveryTerminal 로 넘어간 issues(terminalCalls 와 index 대응). */
     terminalIssues: LandAreaSyncIssue[][];
     failedCalls: string[];
@@ -225,6 +230,12 @@ function makeDeps(opts: {
             },
             writeDiscoveryTerminal: async (_j, _u, input) => {
                 spy.terminalCalls.push({ status: input.status, scopeState: input.scopeState, outcome: input.outcome });
+                spy.terminalCounts.push({
+                    updatedPropertyUnits:
+                        input.counts.updatedPropertyUnits,
+                    unchangedPropertyUnits:
+                        input.counts.unchangedPropertyUnits,
+                });
                 spy.terminalIssues.push(input.issues);
                 return opts.writeDiscoveryTerminalResult ?? true;
             },
@@ -246,6 +257,7 @@ function emptySpy(): Spy {
         freezeCalls: 0,
         applyCalls: 0,
         terminalCalls: [],
+        terminalCounts: [],
         terminalIssues: [],
         failedCalls: [],
         lastApplyParams: null,
@@ -344,6 +356,23 @@ test('DEV official 1→3 membership은 query-only attached와 all-active PNU rep
             ),
         }),
         'PER_ACTIVE_PNU_REPLICA'
+    );
+
+    assert.equal(
+        resolveDevelopmentFullRefreshLdaregPropertyMembershipMode({
+            unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+            component: {
+                ...component,
+                memberPnus: [ANCHOR],
+                pairCount: 0,
+            },
+            propertyUnits: [
+                property('anchor-101', ANCHOR, '101'),
+                property('anchor-201', ANCHOR, '201'),
+            ],
+        }),
+        'SINGLE_LOGICAL_SET',
+        '공식 pairCount=0 component도 exact room cohort면 LDAREG 대상이다'
     );
 });
 
@@ -527,7 +556,7 @@ test('DEV 전체 갱신 분류 conflict parcel singleton은 DB_RESOLVER가 아�
     assert.deepEqual(prepared.scannedPnus, [ANCHOR]);
 });
 
-test('DEV 전체 갱신 title/attached COMPLETE_ZERO parcel singleton도 synthetic official pairCount=0으로 고정한다', async () => {
+test('DEV 전체 갱신 title COMPLETE_ZERO는 DB singleton만으로 synthetic component를 만들지 않는다', async () => {
     const spy = emptySpy();
     const marker = developmentFullRefreshMarker();
     const deps = makeDeps({
@@ -565,29 +594,134 @@ test('DEV 전체 갱신 title/attached COMPLETE_ZERO parcel singleton도 synthet
         deps,
     });
 
-    assert.equal(spy.freezeCalls, 1);
+    assert.equal(spy.freezeCalls, 0);
     assert.equal(spy.applyCalls, 0);
-    const resolution =
-        spy.frozenSnapshots[0].scopeSnapshot
-            .developmentFullRefreshScopeResolution;
-    assert.ok(resolution);
-    assert.equal(
-        resolution.source,
-        'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH'
-    );
-    assert.deepEqual(resolution.memberPnus, [ANCHOR]);
-    assert.equal(resolution.pairCount, 0);
-    assert.match(
-        resolution.managementPk,
-        /^full-refresh-singleton:[0-9a-f]{64}$/
-    );
+    assert.deepEqual(spy.terminalCalls, [
+        {
+            status: 'COMPLETED',
+            scopeState: 'REVIEW_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
+        },
+    ]);
     assert.deepEqual(
         spy.resolverParams[0].p_root_mgm_bldrgst_pks,
         []
     );
 });
 
-test('DEV 전체 갱신 분류 conflict에 호 identity가 있으면 DB_RESOLVER snapshot 없이 REVIEW로 차단한다', async () => {
+test('DEV repo-pinned 3568의 exact fresh zero는 MANUAL 값을 계산에 쓰지 않고 7호 VERIFIED_NO_DATA no-op으로 종결한다', async () => {
+    const spy = emptySpy();
+    const marker = developmentFullRefreshMarker();
+    const propertyUnitIds = Array.from(
+        { length: 7 },
+        (_, index) =>
+            `00000000-0000-4000-8000-${String(
+                index + 1
+            ).padStart(12, '0')}`
+    );
+    const currentLandTuples = propertyUnitIds.map(
+        (propertyUnitId, index) => ({
+            propertyUnitId,
+            landArea: String(index + 1),
+            source: 'MANUAL',
+        })
+    );
+    const deps = makeDeps({
+        databaseTarget: 'development',
+        resolver: {
+            dbState: 'NO_EVIDENCE',
+            rootBuildingIdentities: [],
+            componentPnus: [
+                MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
+            ],
+            linkedBasePnus: [],
+            linkedPnus: [],
+            linkedEvidenceKeys: [],
+            pendingEvidenceKeys: [],
+            blockingEvidence: [],
+            openUnresolvedEvidenceKeys: [],
+            componentTruncated: false,
+            propertyMembership: [],
+            dbScopeHash: 'db-hash-verified-no-data',
+        },
+        scans: {
+            scanTitle: async () => zero<BrTitleRow>(),
+            scanAttached: async () => zero(),
+            scanBasis: async () => zero(),
+            scanExpos: async () => zero<BrExposRow>(),
+            scanLadfrl: async (pnu) => ({
+                state: 'COMPLETE',
+                rows: [{ pnu, lndpclAr: '73' }],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+            scanLdareg: async () => zero<LdaregRow>(),
+        },
+        propertyUnits: propertyUnitIds.map((id) => ({
+            id,
+            unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+            buildingUnitId: null,
+            pnu: MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
+            isDeleted: false,
+            dong: null,
+            ho: null,
+        })),
+        currentLandTuples,
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu:
+                    MIA_SEVEN_DEVELOPMENT_VERIFIED_NO_DATA_ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps,
+    });
+
+    assert.equal(spy.freezeCalls, 1);
+    assert.equal(spy.applyCalls, 0);
+    assert.deepEqual(spy.terminalCalls, [
+        {
+            status: 'COMPLETED',
+            scopeState: 'LINKED_SCOPE_RESOLVED',
+            outcome: 'NO_DATA',
+        },
+    ]);
+    assert.deepEqual(spy.terminalCounts, [
+        {
+            updatedPropertyUnits: 0,
+            unchangedPropertyUnits: 7,
+        },
+    ]);
+    const snapshot =
+        spy.frozenSnapshots[0].scopeSnapshot;
+    assert.equal(
+        snapshot.verifiedNoDataEvidence?.kind,
+        'VERIFIED_NO_DATA'
+    );
+    assert.deepEqual(snapshot.proposedLandAreas, []);
+    assert.deepEqual(
+        snapshot.currentLandTuples,
+        currentLandTuples
+    );
+    assert.equal(
+        snapshot.verifiedNoDataEvidence?.manifestDigest,
+        MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_MANIFEST_DIGEST
+    );
+    assert.equal(
+        snapshot.verifiedNoDataEvidence?.scopeDigest,
+        MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_SCOPE_DIGEST
+    );
+});
+
+test('DEV 전체 갱신 분류 conflict room cohort도 공식 호가 불일치하면 PROPERTY_UNIT_NOT_FOUND로 차단한다', async () => {
     const spy = emptySpy();
     const deps = makeDeps({
         databaseTarget: 'development',
@@ -650,7 +784,7 @@ test('DEV 전체 갱신 분류 conflict에 호 identity가 있으면 DB_RESOLVER
     ]);
     assert.deepEqual(
         spy.terminalIssues[0].map((issue) => issue.code),
-        ['BUILDING_CLASSIFICATION_CONFLICT']
+        ['PROPERTY_UNIT_NOT_FOUND']
     );
 });
 
@@ -1077,7 +1211,215 @@ test('DEV 전체 갱신 LADFRL singleton은 pairCount=0 공식 snapshot으로 pr
     assert.deepEqual(applyParams.p_scanned_pnus, [ANCHOR]);
 });
 
-test('DEV 전체 갱신 LDAREG singleton도 pairCount=0 공식 snapshot으로 prepare/apply를 fresh 재조회한다', async () => {
+test('DEV 공식 multi-PNU parcel component는 query-only를 scope에 보존하고 property마다 자기 PNU LADFRL만 적용한다', async () => {
+    const attachedPnu = '1168010100107360025';
+    const queryOnlyPnu = '1168010100107360026';
+    const attachedPropertyId =
+        '22222222-2222-4222-8222-222222222222';
+    const marker = developmentFullRefreshMarker();
+    const propertyUnits = [
+        {
+            id: PROP_ID,
+            unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+            buildingUnitId: null,
+            pnu: ANCHOR,
+            isDeleted: false,
+            dong: null,
+            ho: null,
+        },
+        {
+            id: attachedPropertyId,
+            unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+            buildingUnitId: null,
+            pnu: attachedPnu,
+            isDeleted: false,
+            dong: null,
+            ho: null,
+        },
+    ];
+    const currentLandTuples = [
+        {
+            propertyUnitId: PROP_ID,
+            landArea: '89',
+            source: 'LADFRL',
+        },
+        {
+            propertyUnitId: attachedPropertyId,
+            landArea: '76',
+            source: 'LADFRL',
+        },
+    ];
+    const scans: Partial<LandAreaSyncDeps['scans']> = {
+        scanTitle: async () => ({
+            ...titleComplete(DETACHED),
+            rows: [
+                {
+                    ...titleComplete(DETACHED).rows[0],
+                    bylotCnt: '2',
+                },
+            ],
+        }),
+        scanAttached: async () => ({
+            state: 'COMPLETE',
+            rows: [attachedPnu, queryOnlyPnu].map(
+                (pnu) => ({
+                    mgmBldrgstPk: PK,
+                    sigunguCd: '11680',
+                    bjdongCd: '10100',
+                    platGbCd: '0',
+                    bun: '0736',
+                    ji: '0024',
+                    atchSigunguCd: '11680',
+                    atchBjdongCd: '10100',
+                    atchPlatGbCd: '0',
+                    atchBun: '0736',
+                    atchJi: pnu.slice(15, 19),
+                })
+            ),
+            totalCount: 2,
+            pagesFetched: 1,
+        }),
+        scanLadfrl: async (pnu) => ({
+            state: 'COMPLETE',
+            rows: [
+                {
+                    pnu,
+                    lndpclAr:
+                        pnu === ANCHOR
+                            ? '89'
+                            : pnu === attachedPnu
+                              ? '76'
+                              : '66',
+                },
+            ],
+            totalCount: 1,
+            pagesFetched: 1,
+        }),
+    };
+    const resolver = noEvidence(MEMBER);
+    const discoverySpy = emptySpy();
+    const discoveryDeps = makeDeps({
+        databaseTarget: 'development',
+        resolver,
+        scans,
+        propertyUnits,
+        currentLandTuples,
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy: discoverySpy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: discoveryDeps,
+    });
+
+    assert.equal(discoverySpy.applyCalls, 0);
+    assert.equal(discoverySpy.freezeCalls, 1);
+    const prepared =
+        discoverySpy.frozenSnapshots[0].scopeSnapshot;
+    assert.equal(prepared.strategy, 'LADFRL');
+    assert.deepEqual(prepared.scannedPnus, [
+        ANCHOR,
+        attachedPnu,
+        queryOnlyPnu,
+    ]);
+    assert.deepEqual(prepared.candidatePropertyUnitIds, [
+        PROP_ID,
+        attachedPropertyId,
+    ].sort());
+    assert.deepEqual(prepared.proposedLandAreas, [
+        {
+            propertyUnitId: PROP_ID,
+            landArea: '89',
+        },
+        {
+            propertyUnitId: attachedPropertyId,
+            landArea: '76',
+        },
+    ]);
+    assert.deepEqual(prepared.ladfrlAreaEvidence, {
+        version: 'land-area-sync.ladfrl-scope.v1',
+        parcels: [
+            { pnu: ANCHOR, area: '89' },
+            { pnu: attachedPnu, area: '76' },
+            { pnu: queryOnlyPnu, area: '66' },
+        ],
+        totalArea: '231',
+    });
+
+    const applySpy = emptySpy();
+    const applyPreview = applyJobPreview({
+        confirmedDiscoveryScopeHash: prepared.scopeHash,
+        confirmedPropertyMembershipHash:
+            prepared.propertyMembershipHash,
+    });
+    const applyDeps = makeDeps({
+        databaseTarget: 'development',
+        resolver,
+        scans,
+        propertyUnits,
+        currentLandTuples,
+        jobPreviewData: {
+            ...applyPreview,
+            landAreaSync: {
+                ...(applyPreview.landAreaSync as Record<
+                    string,
+                    unknown
+                >),
+                developmentFullRefresh: marker,
+            },
+        },
+        applyResult: {
+            data: { outcome: 'APPLIED', issues: [] },
+            error: null,
+        },
+        spy: applySpy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: applyDeps,
+    });
+
+    assert.equal(applySpy.freezeCalls, 0);
+    assert.equal(applySpy.applyCalls, 1);
+    const applyParams = applySpy.lastApplyParams as {
+        p_scanned_pnus: string[];
+        p_items: Array<{
+            propertyUnitId: string;
+            targetPnu: string;
+            ladfrlArea: string;
+        }>;
+    };
+    assert.deepEqual(applyParams.p_scanned_pnus, [
+        ANCHOR,
+        attachedPnu,
+        queryOnlyPnu,
+    ]);
+    assert.deepEqual(applyParams.p_items, [
+        {
+            propertyUnitId: PROP_ID,
+            targetPnu: ANCHOR,
+            ladfrlArea: '89',
+        },
+        {
+            propertyUnitId: attachedPropertyId,
+            targetPnu: attachedPnu,
+            ladfrlArea: '76',
+        },
+    ]);
+});
+
+test('DEV 전체 갱신 pairCount=0 room cohort는 classifier가 LADFRL이어도 LDAREG snapshot으로 prepare/apply한다', async () => {
     const unrelatedRelationPnu = '1168010100107360026';
     const marker = developmentFullRefreshMarker();
     const resolver = {
@@ -1111,7 +1453,9 @@ test('DEV 전체 갱신 LDAREG singleton도 pairCount=0 공식 snapshot으로 pr
     > = {
         scanTitle: async (pnu) => {
             scannedTitles.push(pnu);
-            return titleComplete(MULTIPLEX);
+            // 791-2282 실측 형태: 공식 component는 singleton이지만 일반
+            // classifier는 LADFRL이고 DB에는 exact room cohort가 있다.
+            return titleComplete(DETACHED);
         },
         scanBasis: async (pnu) => ({
             state: 'COMPLETE',
@@ -1219,6 +1563,133 @@ test('DEV 전체 갱신 LDAREG singleton도 pairCount=0 공식 snapshot으로 pr
         prepared.dbScopeHash
     );
     assert.deepEqual(applyParams.p_scanned_pnus, [ANCHOR]);
+});
+
+test('DEV 전체 갱신 2155형 pairCount=0 classification conflict도 title positive + exact 5-room cohort면 LDAREG로 진행한다', async () => {
+    const marker = developmentFullRefreshMarker();
+    const propertyIds = [
+        PROP_ID,
+        '22222222-2222-4222-8222-222222222222',
+        '33333333-3333-4333-8333-333333333333',
+        '44444444-4444-4444-8444-444444444444',
+        '55555555-5555-4555-8555-555555555555',
+    ];
+    const rooms = ['101', '102', '103', '104', '105'];
+    const propertyUnits = propertyIds.map(
+        (id, index) => ({
+            id,
+            unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+            buildingUnitId: null,
+            pnu: ANCHOR,
+            isDeleted: false,
+            dong: '101',
+            ho: rooms[index],
+        })
+    );
+    const spy = emptySpy();
+    const deps = makeDeps({
+        databaseTarget: 'development',
+        resolver: noEvidence(MEMBER),
+        propertyUnits,
+        currentLandTuples: propertyIds.map(
+            (propertyUnitId) => ({
+                propertyUnitId,
+                landArea: '10',
+                source: 'LADFRL',
+            })
+        ),
+        scans: {
+            scanTitle: async () => ({
+                state: 'COMPLETE',
+                rows: [
+                    {
+                        ...titleComplete(MULTIPLEX).rows[0],
+                        bylotCnt: '0',
+                    },
+                    {
+                        ...titleComplete(DETACHED).rows[0],
+                        bylotCnt: '0',
+                    },
+                ],
+                totalCount: 2,
+                pagesFetched: 1,
+            }),
+            scanBasis: async (pnu) => ({
+                state: 'COMPLETE',
+                rows: [
+                    {
+                        pnu,
+                        mgmBldrgstPk: PK,
+                    },
+                ],
+                totalCount: 1,
+                pagesFetched: 1,
+            }),
+            scanExpos: async (pnu) => ({
+                state: 'COMPLETE',
+                rows: rooms.map((ho) => ({
+                    pnu,
+                    mgmBldrgstPk: PK,
+                    dongNm: '101',
+                    flrNoNm: '1',
+                    hoNm: ho,
+                })),
+                totalCount: rooms.length,
+                pagesFetched: 1,
+            }),
+            scanLdareg: async (pnu) => ({
+                state: 'COMPLETE',
+                rows: rooms.map((ho, index) => ({
+                    pnu,
+                    agbldgSn: String(index + 1),
+                    ldaQotaRate: '10/100.5',
+                    clsSeCode: '1',
+                    buldDongNm: '101',
+                    buldFloorNm: '1',
+                    buldHoNm: ho,
+                })),
+                totalCount: rooms.length,
+                pagesFetched: 1,
+            }),
+        },
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps,
+    });
+
+    assert.equal(spy.applyCalls, 0);
+    assert.equal(spy.freezeCalls, 1);
+    const prepared =
+        spy.frozenSnapshots[0].scopeSnapshot;
+    assert.equal(prepared.strategy, 'LDAREG');
+    assert.deepEqual(
+        prepared.candidatePropertyUnitIds,
+        [...propertyIds].sort()
+    );
+    assert.equal(
+        prepared
+            .developmentFullRefreshScopeResolution
+            ?.pairCount,
+        0
+    );
+    assert.deepEqual(
+        prepared
+            .developmentFullRefreshScopeResolution
+            ?.memberPnus,
+        [ANCHOR]
+    );
 });
 
 test('DEV 전체 갱신은 relation 범위를 사용하지 않고 공식 API를 prepare/apply마다 새로 조회한다', async () => {

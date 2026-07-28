@@ -195,6 +195,7 @@ function failureAudit(
         resolvedComponentCount: 0,
         scannedPnuCount: 0,
         sameRunOfficialComponentCount: 0,
+        verifiedNoDataCount: 0,
         manifestDigest: '0'.repeat(64),
         captureRunId,
         capturedAt: new Date().toISOString(),
