@@ -325,7 +325,6 @@ jobs:
               "${run_root}/target.json.tmp-${RUN_KEY}" \
               "${run_root}/guardian.sh" \
               "${run_root}/guardian.log" \
-              "${run_root}/guardian.pid" \
               "${run_root}/guardian-started.tmp-${RUN_KEY}" \
               "${run_root}/janitor-started" \
               "${run_root}/janitor-started.tmp-${RUN_KEY}" \
@@ -430,13 +429,20 @@ jobs:
           scp "${ssh_options[@]}" "${GUARDIAN_PATH}" \
             "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/guardian.sh"
 
-          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
-            "RUN_KEY='${RUN_KEY}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' EXPECTED_IMAGE_TAG='${EXPECTED_IMAGE_TAG}' MODE='${MODE}' OWNER_AGE_RECIPIENT='${OWNER_AGE_RECIPIENT}' OWNER_AGE_RECIPIENT_SHA256='${OWNER_AGE_RECIPIENT_SHA256}' bash -s" <<'REMOTE_START'
+          if ! startup_state="$(
+            ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+              "RUN_KEY='${RUN_KEY}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' EXPECTED_IMAGE_TAG='${EXPECTED_IMAGE_TAG}' MODE='${MODE}' OWNER_AGE_RECIPIENT='${OWNER_AGE_RECIPIENT}' OWNER_AGE_RECIPIENT_SHA256='${OWNER_AGE_RECIPIENT_SHA256}' bash -s" <<'REMOTE_START'
           set -euo pipefail
           run_root="/dev/shm/.development-api-authoritative-ldareg-backfill-${RUN_KEY}"
+          guardian_log="${run_root}/guardian.log"
+          guardian_started="${run_root}/guardian-started"
+          guardian_status="${run_root}/status"
           chmod 600 \
             "${run_root}/target.json" \
             "${run_root}/guardian.sh"
+          # guardian이 즉시 종료하며 run_root를 정리해도 부모가 삭제된 파일을
+          # chmod하지 않도록 로그 inode와 mode를 launch 전에 고정한다.
+          install -m 600 /dev/null "${guardian_log}"
           nohup setsid env \
             RUN_KEY="${RUN_KEY}" \
             EXPECTED_GIT_SHA="${EXPECTED_GIT_SHA}" \
@@ -445,23 +451,96 @@ jobs:
             OWNER_AGE_RECIPIENT="${OWNER_AGE_RECIPIENT}" \
             OWNER_AGE_RECIPIENT_SHA256="${OWNER_AGE_RECIPIENT_SHA256}" \
             bash "${run_root}/guardian.sh" \
-            > "${run_root}/guardian.log" 2>&1 < /dev/null &
+            >> "${guardian_log}" 2>&1 < /dev/null &
           guardian_pid="$!"
-          printf '%s\n' "${guardian_pid}" > "${run_root}/guardian.pid"
-          chmod 600 "${run_root}/guardian.pid" "${run_root}/guardian.log"
-          REMOTE_START
+          if [[ ! "${guardian_pid}" =~ ^[1-9][0-9]*$ ]]; then
+            printf '%s\n' "STARTUP_FAILED"
+            exit 0
+          fi
 
-          completed=0
-          for _attempt in $(seq 1 390); do
-            if ssh "${ssh_options[@]}" \
-              "${EC2_USERNAME}@${EC2_HOST}" \
-              "test -f '${remote_root}/status'"
-            then
-              completed=1
+          # 이 지점부터 guardian 소유 경로에는 쓰지 않는다. terminal status를
+          # 먼저 확인해 빠른 정상 기동 후 종료와 기동 자체 실패를 구분한다.
+          startup_state="PENDING"
+          for _attempt in $(seq 1 30); do
+            if [[ ! -e "${run_root}" && ! -L "${run_root}" ]]; then
+              startup_state="STARTUP_FAILED"
               break
             fi
-            sleep 10
+            if [[ -e "${guardian_status}" || -L "${guardian_status}" ]]; then
+              if [[
+                -f "${guardian_status}"
+                && ! -L "${guardian_status}"
+                && "$(stat -c '%u' "${guardian_status}")" = "$(id -u)"
+                && "$(stat -c '%a' "${guardian_status}")" = "600"
+              ]]; then
+                startup_state="TERMINAL"
+              else
+                startup_state="STARTUP_FAILED"
+              fi
+              break
+            fi
+            if [[ -e "${guardian_started}" || -L "${guardian_started}" ]]; then
+              if [[
+                -f "${guardian_started}"
+                && ! -L "${guardian_started}"
+                && "$(stat -c '%u' "${guardian_started}")" = "$(id -u)"
+                && "$(stat -c '%a' "${guardian_started}")" = "600"
+              ]]; then
+                startup_state="STARTED"
+              else
+                startup_state="STARTUP_FAILED"
+              fi
+              break
+            fi
+            # util-linux setsid는 호출자가 process-group leader이면 fork할 수
+            # 있으므로 부모의 $! 소멸만으로 guardian 실패를 판정하지 않는다.
+            sleep 1
           done
+          if [[ "${startup_state}" == "PENDING" ]]; then
+            startup_state="STARTUP_TIMEOUT"
+          fi
+          printf '%s\n' "${startup_state}"
+          REMOTE_START
+          )"; then
+            echo "::error::Guardian startup command failed."
+            exit 1
+          fi
+
+          case "${startup_state}" in
+            STARTED)
+              completed=0
+              ;;
+            TERMINAL)
+              # status가 이미 private file로 게시된 빠른 terminal은 장시간
+              # poll로 보내지 않고 동일 artifact/status 수집 경로로 합류시킨다.
+              completed=1
+              ;;
+            STARTUP_FAILED)
+              echo "::error::Guardian failed before publishing its start marker."
+              exit 1
+              ;;
+            STARTUP_TIMEOUT)
+              echo "::error::Guardian startup handshake timed out."
+              exit 1
+              ;;
+            *)
+              echo "::error::Guardian startup handshake was invalid."
+              exit 1
+              ;;
+          esac
+
+          if [[ "${completed}" -ne 1 ]]; then
+            for _attempt in $(seq 1 390); do
+              if ssh "${ssh_options[@]}" \
+                "${EC2_USERNAME}@${EC2_HOST}" \
+                "test -f '${remote_root}/status'"
+              then
+                completed=1
+                break
+              fi
+              sleep 10
+            done
+          fi
           if [[ "${completed}" -ne 1 ]]; then
             echo "::error::Guardian did not publish terminal status."
             exit 1

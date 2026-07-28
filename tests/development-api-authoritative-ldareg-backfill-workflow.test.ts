@@ -504,11 +504,89 @@ test('guardian은 공통 operation lock, tmpfs, hard timeout, private cleanup을
     );
 });
 
+test('guardian 기동은 private log를 먼저 고정하고 빠른 terminal과 startup 실패를 구분한다', () => {
+    const remoteStartMarker = workflow.indexOf("<<'REMOTE_START'");
+    const remoteStartEnd = workflow.indexOf(
+        '\n          REMOTE_START',
+        remoteStartMarker
+    );
+    assert.ok(remoteStartMarker >= 0);
+    assert.ok(remoteStartEnd > remoteStartMarker);
+    const remoteStart = workflow.slice(
+        remoteStartMarker,
+        remoteStartEnd
+    );
+    const launchIndex = remoteStart.indexOf('nohup setsid env');
+    const pidCaptureIndex = remoteStart.indexOf(
+        'guardian_pid="$!"',
+        launchIndex
+    );
+    assert.ok(launchIndex > 0);
+    assert.ok(pidCaptureIndex > launchIndex);
+    assert.ok(
+        remoteStart.indexOf(
+            'install -m 600 /dev/null "${guardian_log}"'
+        ) < launchIndex
+    );
+    assert.doesNotMatch(
+        remoteStart.slice(pidCaptureIndex),
+        /guardian_log|guardian\.log|guardian\.pid/
+    );
+    assert.doesNotMatch(
+        `${workflow}\n${guardian}`,
+        /guardian\.pid/
+    );
+
+    const handshake = remoteStart.slice(
+        remoteStart.indexOf('startup_state="PENDING"')
+    );
+    assert.ok(
+        handshake.indexOf(
+            '[[ -e "${guardian_status}" || -L "${guardian_status}" ]]'
+        ) <
+            handshake.indexOf(
+                '[[ -e "${guardian_started}" || -L "${guardian_started}" ]]'
+            )
+    );
+    assert.match(
+        handshake,
+        /startup_state="TERMINAL"[\s\S]+startup_state="STARTED"/
+    );
+    assert.doesNotMatch(handshake, /kill -0 "\$\{guardian_pid\}"/);
+    assert.match(
+        handshake,
+        /startup_state="STARTUP_TIMEOUT"/
+    );
+    assert.match(
+        workflow,
+        /case "\$\{startup_state\}" in[\s\S]+STARTED\)[\s\S]+TERMINAL\)[\s\S]+STARTUP_FAILED\)[\s\S]+STARTUP_TIMEOUT\)/
+    );
+    assert.match(
+        workflow,
+        /TERMINAL\)[\s\S]+completed=1[\s\S]+if \[\[ "\$\{completed\}" -ne 1 \]\]; then[\s\S]+seq 1 390/
+    );
+});
+
 test('취소·오류 cleanup은 exact ACK, 5분 terminal, 75분 absolute TTL로 self-expire한다', () => {
     assert.match(guardian, /absolute_cleanup_ttl_seconds=4500/);
     assert.match(guardian, /export_cleanup_ttl_seconds=300/);
     assert.match(guardian, /JANITOR_MODE=1/);
-    assert.match(guardian, /nohup setsid env[\s\S]+GUARDIAN_START_TICKS/);
+    assert.match(
+        guardian,
+        /guardian_session_id="\$\(ps -o sid= -p "\$\$" \| tr -d '\[:space:\]'\)"[\s\S]+guardian_process_group_id[\s\S]+GUARDIAN_SESSION_ID="\$\{guardian_session_id\}"/
+    );
+    assert.match(
+        guardian,
+        /actual_sid[\s\S]+actual_process_group_id[\s\S]+actual_sid}" = "\$\{expected_session_id\}"[\s\S]+actual_process_group_id}" = "\$\{expected_session_id\}"/
+    );
+    assert.doesNotMatch(
+        guardian,
+        /actual_sid}" = "\$\{guardian_pid\}"/
+    );
+    assert.match(
+        guardian,
+        /kill -TERM -- "-\$\{guardian_session_id\}"[\s\S]+kill -KILL -- "-\$\{guardian_session_id\}"/
+    );
     assert.ok(
         guardian.lastIndexOf('start_cleanup_janitor') <
             guardian.indexOf('flock -w 900')

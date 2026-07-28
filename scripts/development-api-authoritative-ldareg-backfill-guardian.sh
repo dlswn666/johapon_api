@@ -16,6 +16,21 @@ if [[
  ]]; then
   exit 64
 fi
+if [[ "${JANITOR_MODE:-0}" == "1" ]]; then
+  if [[
+    ! "${GUARDIAN_PID:-}" =~ ^[1-9][0-9]*$
+    || ! "${GUARDIAN_START_TICKS:-}" =~ ^[1-9][0-9]*$
+    || ! "${GUARDIAN_SESSION_ID:-}" =~ ^[1-9][0-9]*$
+  ]]; then
+    exit 64
+  fi
+elif [[
+  -n "${GUARDIAN_PID:-}"
+  || -n "${GUARDIAN_START_TICKS:-}"
+  || -n "${GUARDIAN_SESSION_ID:-}"
+ ]]; then
+  exit 64
+fi
 actual_recipient_sha256="$(
   printf '%s' "${OWNER_AGE_RECIPIENT}" | sha256sum | awk '{print $1}'
 )"
@@ -207,8 +222,7 @@ cleanup_host_run() {
       "${host_ack}" \
       "${host_ack}.tmp-${RUN_KEY}" \
       "${host_root}/guardian.sh" \
-      "${host_root}/guardian.log" \
-      "${host_root}/guardian.pid"
+      "${host_root}/guardian.log"
   then
     status=1
   fi
@@ -224,8 +238,7 @@ cleanup_host_run() {
       "${host_container_id}" \
       "${host_ack}" \
       "${host_root}/guardian.sh" \
-      "${host_root}/guardian.log" \
-      "${host_root}/guardian.pid"
+      "${host_root}/guardian.log"
   then
     status=1
   fi
@@ -238,22 +251,28 @@ cleanup_host_run() {
 guardian_identity_is_active() {
   local guardian_pid="${GUARDIAN_PID:-}"
   local expected_ticks="${GUARDIAN_START_TICKS:-}"
+  local expected_session_id="${GUARDIAN_SESSION_ID:-}"
   if [[
     ! "${guardian_pid}" =~ ^[1-9][0-9]*$
     || ! "${expected_ticks}" =~ ^[1-9][0-9]*$
+    || ! "${expected_session_id}" =~ ^[1-9][0-9]*$
     || ! -r "/proc/${guardian_pid}/stat"
     || ! -r "/proc/${guardian_pid}/status"
   ]]; then
     return 1
   fi
-  local actual_ticks actual_uid actual_sid
+  local actual_ticks actual_uid actual_sid actual_process_group_id
   actual_ticks="$(awk '{print $22}' "/proc/${guardian_pid}/stat")"
   actual_uid="$(awk '/^Uid:/ {print $2; exit}' "/proc/${guardian_pid}/status")"
   actual_sid="$(ps -o sid= -p "${guardian_pid}" | tr -d '[:space:]')"
+  actual_process_group_id="$(
+    ps -o pgid= -p "${guardian_pid}" | tr -d '[:space:]'
+  )"
   [[
     "${actual_ticks}" = "${expected_ticks}"
     && "${actual_uid}" = "$(id -u)"
-    && "${actual_sid}" = "${guardian_pid}"
+    && "${actual_sid}" = "${expected_session_id}"
+    && "${actual_process_group_id}" = "${expected_session_id}"
   ]]
 }
 
@@ -277,8 +296,8 @@ terminate_guardian_at_absolute_deadline() {
   if ! guardian_identity_is_active; then
     return 0
   fi
-  local guardian_pid="${GUARDIAN_PID}"
-  kill -TERM -- "-${guardian_pid}" 2>/dev/null || return 1
+  local guardian_session_id="${GUARDIAN_SESSION_ID}"
+  kill -TERM -- "-${guardian_session_id}" 2>/dev/null || return 1
   local _attempt
   for _attempt in $(seq 1 5); do
     if ! guardian_identity_is_active; then
@@ -287,7 +306,7 @@ terminate_guardian_at_absolute_deadline() {
     sleep 1
   done
   if guardian_identity_is_active; then
-    kill -KILL -- "-${guardian_pid}" 2>/dev/null || return 1
+    kill -KILL -- "-${guardian_session_id}" 2>/dev/null || return 1
   fi
 }
 
@@ -324,9 +343,17 @@ run_cleanup_janitor() {
 }
 
 start_cleanup_janitor() {
-  local guardian_start_ticks
+  local guardian_start_ticks guardian_session_id guardian_process_group_id
   guardian_start_ticks="$(awk '{print $22}' "/proc/$$/stat")"
-  if [[ ! "${guardian_start_ticks}" =~ ^[1-9][0-9]*$ ]]; then
+  guardian_session_id="$(ps -o sid= -p "$$" | tr -d '[:space:]')"
+  guardian_process_group_id="$(
+    ps -o pgid= -p "$$" | tr -d '[:space:]'
+  )"
+  if [[
+    ! "${guardian_start_ticks}" =~ ^[1-9][0-9]*$
+    || ! "${guardian_session_id}" =~ ^[1-9][0-9]*$
+    || "${guardian_process_group_id}" != "${guardian_session_id}"
+  ]]; then
     return 1
   fi
   nohup setsid env \
@@ -339,6 +366,7 @@ start_cleanup_janitor() {
     OWNER_AGE_RECIPIENT_SHA256="${OWNER_AGE_RECIPIENT_SHA256}" \
     GUARDIAN_PID="$$" \
     GUARDIAN_START_TICKS="${guardian_start_ticks}" \
+    GUARDIAN_SESSION_ID="${guardian_session_id}" \
     bash "${host_root}/guardian.sh" \
     >/dev/null 2>&1 < /dev/null &
   local janitor_pid="$!"
