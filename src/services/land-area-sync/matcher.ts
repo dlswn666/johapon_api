@@ -23,6 +23,10 @@
 import type { LandAreaSyncIssueCode } from '../../types/land-area-sync.types';
 import type { ExposRootIdentitySource } from './expos-root';
 import { normalizeUnitTuple, unitTupleKey } from './normalizer';
+import {
+    providerUnitShapeWitnessKey,
+    type ProviderUnitShapeWitness,
+} from './provider-unit-shape-bridge';
 
 /** Building HUB 전유부 후보(1단계). */
 export interface ExposUnitCandidate {
@@ -35,6 +39,8 @@ export interface ExposUnitCandidate {
     selfIdentity?: string;
     rawUpIdentity?: string | null;
     rootIdentitySource?: ExposRootIdentitySource;
+    /** exact raw EXPOS shape에서만 생성되는 방향성 provider bridge witness. */
+    providerShapeWitness?: ProviderUnitShapeWitness | null;
 }
 
 /** 기존 building_unit 후보(3·4단계). */
@@ -69,6 +75,8 @@ export interface MatchSource {
     room?: string | null;
     /** 등기 외부 식별자(있으면 3단계, 없으면 4단계). */
     registryExternalId?: string | null;
+    /** exact raw LDAREG shape에서만 생성되는 방향성 provider bridge witness. */
+    providerShapeWitness?: ProviderUnitShapeWitness | null;
     /** 6단계 fallback에서 허용되는 expected PNU 집합. */
     expectedPnuScope: string[];
 }
@@ -91,6 +99,11 @@ export interface MatchInput {
      * EXPOS 단계의 floor+ho exact fallback을 허용한다.
      */
     allowExposFloorHoFallback?: boolean;
+    /**
+     * assemble 단계가 single-root/building + provider witness unique 1:1 set을
+     * 증명한 경우에만 exact provider-shape bridge를 켠다.
+     */
+    allowProviderShapeBridge?: boolean;
 }
 
 /** 결정이 내려진(또는 무변경으로 끝난) 매칭 단계. */
@@ -168,6 +181,33 @@ function matchesKnownBuildingUnitFields(
     return true;
 }
 
+function providerShapeBridgeMatches(
+    source: MatchSource,
+    candidate: ExposUnitCandidate
+): boolean {
+    const sourceWitness = source.providerShapeWitness;
+    const candidateWitness = candidate.providerShapeWitness;
+    if (!sourceWitness || !candidateWitness) return false;
+    if (
+        providerUnitShapeWitnessKey(sourceWitness) !==
+            providerUnitShapeWitnessKey(candidateWitness) ||
+        sourceWitness.canonicalFloor !==
+            candidateWitness.canonicalFloor ||
+        sourceWitness.canonicalHo !== candidateWitness.canonicalHo
+    ) {
+        return false;
+    }
+    const normalizedCandidate = normalizeUnitTuple(candidate);
+    const normalizedWitness = normalizeUnitTuple({
+        floor: candidateWitness.canonicalFloor,
+        ho: candidateWitness.canonicalHo,
+    });
+    return (
+        normalizedCandidate.floor === normalizedWitness.floor &&
+        normalizedCandidate.ho === normalizedWitness.ho
+    );
+}
+
 /**
  * LDAREG 단위를 property_unit(및 building_unit)에 매칭한다 (DESIGN §12.4).
  * 어떤 단계에서 0건/2건+이면 무변경(NO_CHANGE)으로 끝난다.
@@ -175,34 +215,92 @@ function matchesKnownBuildingUnitFields(
 export function matchLdaregUnit(input: MatchInput): MatchDecision {
     const { source, scopeRootIdentity, exposUnits, buildingUnits, propertyUnits, unionId } = input;
     const sourceDfh = dfhKey(source);
+    let sourceForUnitMatching = source;
 
     // 1) Building HUB 전유부 동·층·호 exact match
     const exposMatches = exposUnits.filter((e) => dfhKey(e) === sourceDfh);
     if (exposMatches.length > 1) return noChange('EXPOS_EXACT', 'AMBIGUOUS', 'PROPERTY_UNIT_AMBIGUOUS');
     let expos = exposMatches[0];
     if (!expos) {
-        if (input.allowExposFloorHoFallback !== true) {
-            return noChange('EXPOS_EXACT', 'NONE', 'PROPERTY_UNIT_NOT_FOUND');
+        // provider bridge scope gate도 Phase0와 동일하게 standard FH pair를
+        // 먼저 unique 소진하고 전체 dong compatibility를 증명한다.
+        if (
+            input.allowExposFloorHoFallback === true ||
+            input.allowProviderShapeBridge === true
+        ) {
+            const byFloorHo = exposUnits.filter(
+                (candidate) => fhKey(candidate) === fhKey(source)
+            );
+            if (byFloorHo.length > 1) {
+                return noChange(
+                    'EXPOS_EXACT',
+                    'AMBIGUOUS',
+                    'PROPERTY_UNIT_AMBIGUOUS'
+                );
+            }
+            if (byFloorHo.length === 1) {
+                const sourceDong = normalizeUnitTuple(source).dong;
+                const exposDong = normalizeUnitTuple(
+                    byFloorHo[0]
+                ).dong;
+                // 양쪽 모두 dong이 없으면 원래 DFH exact였어야 하고, 양쪽 모두
+                // 있으면 서로 다른 dong을 버리는 fuzzy 경로다. 한쪽 누락만 허용.
+                if ((sourceDong === '') === (exposDong === '')) {
+                    return noChange(
+                        'EXPOS_EXACT',
+                        'COLLISION',
+                        'UNIT_NORMALIZATION_COLLISION'
+                    );
+                }
+                expos = byFloorHo[0];
+            }
         }
-        const byFloorHo = exposUnits.filter((candidate) => fhKey(candidate) === fhKey(source));
-        if (byFloorHo.length === 0) {
-            return noChange('EXPOS_EXACT', 'NONE', 'PROPERTY_UNIT_NOT_FOUND');
+        if (
+            !expos &&
+            input.allowProviderShapeBridge === true
+        ) {
+            const providerMatches = exposUnits.filter((candidate) =>
+                providerShapeBridgeMatches(source, candidate)
+            );
+            if (providerMatches.length > 1) {
+                return noChange(
+                    'EXPOS_EXACT',
+                    'AMBIGUOUS',
+                    'PROPERTY_UNIT_AMBIGUOUS'
+                );
+            }
+            if (providerMatches.length === 1) {
+                const sourceDong = normalizeUnitTuple(source).dong;
+                const exposDong = normalizeUnitTuple(
+                    providerMatches[0]
+                ).dong;
+                if (
+                    sourceDong !== '' &&
+                    exposDong !== '' &&
+                    sourceDong !== exposDong
+                ) {
+                    return noChange(
+                        'EXPOS_EXACT',
+                        'COLLISION',
+                        'UNIT_NORMALIZATION_COLLISION'
+                    );
+                }
+                expos = providerMatches[0];
+                sourceForUnitMatching = {
+                    ...source,
+                    dong: expos.dong ?? source.dong ?? null,
+                    floor: expos.floor ?? null,
+                    ho: expos.ho ?? null,
+                };
+            }
         }
-        if (byFloorHo.length > 1) {
-            return noChange('EXPOS_EXACT', 'AMBIGUOUS', 'PROPERTY_UNIT_AMBIGUOUS');
-        }
-        const sourceDong = normalizeUnitTuple(source).dong;
-        const exposDong = normalizeUnitTuple(byFloorHo[0]).dong;
-        // 양쪽 모두 dong이 없으면 원래 DFH exact였어야 하고, 양쪽 모두 있으면
-        // 서로 다른 dong을 버리는 fuzzy 경로가 된다. 오직 한쪽 누락만 보강한다.
-        if ((sourceDong === '') === (exposDong === '')) {
+        if (!expos) {
             return noChange(
                 'EXPOS_EXACT',
-                'COLLISION',
-                'UNIT_NORMALIZATION_COLLISION'
+                'NONE',
+                'PROPERTY_UNIT_NOT_FOUND'
             );
         }
-        expos = byFloorHo[0];
     }
 
     // 2) 전유부 root identity == scope root identity
@@ -224,7 +322,10 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
         resolvedBuildingUnitId = byExtId[0].id;
     } else {
         // 4) 외부 ID 없음 → normalized tuple exact match
-        const byTuple = buildingUnits.filter((b) => dfhKey(b) === sourceDfh);
+        const matchedSourceDfh = dfhKey(sourceForUnitMatching);
+        const byTuple = buildingUnits.filter(
+            (b) => dfhKey(b) === matchedSourceDfh
+        );
         if (byTuple.length > 1) {
             // 서로 다른 building_unit이 같은 정규화 key로 수렴 = 정규화 충돌
             return noChange('NORMALIZED_TUPLE_BU', 'COLLISION', 'UNIT_NORMALIZATION_COLLISION');
@@ -245,7 +346,10 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
                 );
             const byKnownFields = oneProvenBuildingScope
                 ? buildingUnits.filter((candidate) =>
-                      matchesKnownBuildingUnitFields(source, candidate)
+                      matchesKnownBuildingUnitFields(
+                          sourceForUnitMatching,
+                          candidate
+                      )
                   )
                 : [];
             if (byKnownFields.length > 1) {
@@ -274,7 +378,7 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
 
     // 6) 연결 없음 → expected PNU scope + normalized tuple + building_unit_id IS NULL fallback
     const scope = new Set(source.expectedPnuScope);
-    const sourceDh = dhKey(source);
+    const sourceDh = dhKey(sourceForUnitMatching);
     const fallback = propertyUnits.filter(
         (p) =>
             p.unionId === unionId &&

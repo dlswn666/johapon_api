@@ -39,10 +39,14 @@ import {
 } from '../services/land-area-sync/normalizer';
 import { normalizeFloorLabel } from '../services/land-area-sync/preview';
 import {
+    providerUnitShapeWitness,
+    providerUnitShapeWitnessKey,
+} from '../services/land-area-sync/provider-unit-shape-bridge';
+import {
     hasPhase0GenericLdaregTitleEvidence,
+    hasPhase0ProviderUnitBridgeCorrelation,
     isPhase0FloorAsUnitShape,
-    PHASE0_FLOOR_AS_UNIT_ABOVE_SHAPE,
-    PHASE0_FLOOR_AS_UNIT_BASEMENT_SHAPE,
+    isPhase0LegacyFloorAsUnitShape,
     type Phase0FloorAsUnitShape,
 } from './land-area-phase0-evidence';
 import {
@@ -72,7 +76,7 @@ export const LAND_AREA_PHASE0_PLAN_VERSION =
 export const LAND_AREA_PHASE0_ARTIFACT_VERSION =
     'land-area-phase0-capture-artifact@6' as const;
 export const LAND_AREA_PHASE0_ARTIFACT_SCHEMA_HASH =
-    '99d06939e77afcf8220fc1b6cef55ea22315f11b38a24a13aeecb45a47c49e16' as const;
+    '0909518650db9d6330549bf67998a75b1c17378ece1dd14473be5f3c3cb3a05a' as const;
 export const LAND_AREA_PHASE0_MAX_ARTIFACT_BYTES = 3 * 1024 * 1024;
 export const LAND_AREA_PHASE0_OUTPUT_DIRECTORY = '.phase0-land-area';
 
@@ -262,6 +266,8 @@ interface ExposInventory extends BoundedInventory {
         unitIdentityHash?: string;
         floorHoIdentityHash?: string;
         dongIdentityHash?: string;
+        providerUnitBridgeHash?: string;
+        providerUnitBridgeKind?: Phase0FloorAsUnitShape;
         mainAttachedTypeCode?: string;
         floorTypeCode?: string;
         floorShape?: string;
@@ -322,6 +328,8 @@ interface ScopeExposEvidence extends BoundedInventory {
         unitIdentityHash?: string;
         floorHoIdentityHash?: string;
         dongIdentityHash?: string;
+        providerUnitBridgeHash?: string;
+        providerUnitBridgeKind?: Phase0FloorAsUnitShape;
     }>;
 }
 
@@ -347,6 +355,8 @@ interface LdaregInventory extends BoundedInventory {
         unitIdentityHash?: string;
         floorHoIdentityHash?: string;
         dongIdentityHash?: string;
+        providerUnitBridgeHash?: string;
+        providerUnitBridgeKind?: Phase0FloorAsUnitShape;
         quotaRatioState: 'VALID' | 'MISSING' | 'INVALID';
         quotaRatioInput: {
             presence: 'ABSENT' | 'NULL' | 'PRESENT';
@@ -403,6 +413,11 @@ export interface LandAreaPhase0SampleArtifact {
             comparedPnuHashes: string[];
             rowCount: number | null;
             rowMultisetDigest: string | null;
+            providerBuildingIdentity?: {
+                aggregateBuildingSerialHash: string;
+                buildingNameHash: string;
+                observedRowCount: number;
+            };
         };
     };
     policyCandidate:
@@ -886,7 +901,8 @@ function unitIdentity(
     hash?: string;
     floorHoHash?: string;
     dongHash?: string;
-    floorAsUnitShape?: Phase0FloorAsUnitShape;
+    providerBridgeHash?: string;
+    providerBridgeKind?: Phase0FloorAsUnitShape;
 } {
     const exactScalarAlias = (
         aliases: readonly string[],
@@ -919,10 +935,7 @@ function unitIdentity(
                     .map((value) => {
                         const scalar = String(value);
                         return options.floor
-                            ? evidenceOptions.allowPhase0V2LdaregEvidence &&
-                              kind === 'LDAREG_UNIT'
-                                ? normalizePhase0FloorLabel(scalar)
-                                : normalizeFloorLabel(scalar)
+                            ? normalizeFloorLabel(scalar)
                             : normalizeUnitSegment(scalar);
                     })
                     .map((value) =>
@@ -957,17 +970,15 @@ function unitIdentity(
     if (!tuple.floor || !tuple.ho) {
         return { shape: 'INCOMPLETE' };
     }
-    const floorAsUnit = evidenceOptions.allowPhase0V2LdaregEvidence
-        ? phase0FloorAsUnitWitness(kind, row, tuple)
+    const providerBridge = evidenceOptions.allowPhase0V2LdaregEvidence
+        ? phase0ProviderUnitShapeWitness(kind, row)
         : null;
-    const floorHoHash =
-        floorAsUnit?.hash ??
-        sha256(
-            `FLOOR_HO_TUPLE_JSON\u0000${stableStringify([
-                tuple.floor,
-                tuple.ho,
-            ])}`
-        );
+    const floorHoHash = sha256(
+        `FLOOR_HO_TUPLE_JSON\u0000${stableStringify([
+            tuple.floor,
+            tuple.ho,
+        ])}`
+    );
     return {
         shape: tuple.dong ? 'DONG_FLOOR_HO' : 'FLOOR_HO',
         hash: sha256(
@@ -978,8 +989,11 @@ function unitIdentity(
             ])}`
         ),
         floorHoHash,
-        ...(floorAsUnit
-            ? { floorAsUnitShape: floorAsUnit.shape }
+        ...(providerBridge
+            ? {
+                  providerBridgeHash: providerBridge.hash,
+                  providerBridgeKind: providerBridge.shape,
+              }
             : {}),
         ...(tuple.dong
             ? {
@@ -992,118 +1006,25 @@ function unitIdentity(
 }
 
 /**
- * Building HUB 숫자 층과 V-World의 exact `지상#층` 표기를 Phase 0 안에서만
- * 같은 양의 정수 층으로 접는다. 일반 sync normalizer의 의미는 변경하지 않는다.
+ * 공개 artifact에는 raw 층/호를 내보내지 않고, 공용 exact provider-shape
+ * witness의 domain-separated hash와 종류만 남긴다. 공용 helper가 인정하지 않은
+ * 표기는 기존 정규화 hash를 그대로 쓰므로 근사/역방향 보강으로 넓어지지 않는다.
  */
-function normalizePhase0FloorLabel(
-    raw: string | number | null | undefined
-): string {
-    if (raw == null) return '';
-    const compact = String(raw)
-        .normalize('NFKC')
-        .replace(/\s+/g, '');
-    const above = /^지상([1-9]\d*)층$/u.exec(compact);
-    return above
-        ? normalizeUnitSegment(above[1])
-        : normalizeFloorLabel(compact);
-}
-
-function exactAliasScalar(
-    row: Record<string, unknown>,
-    aliases: readonly string[]
-): string | null {
-    const present = aliases
-        .filter((alias) => Object.prototype.hasOwnProperty.call(row, alias))
-        .map((alias) => row[alias]);
-    if (
-        present.length === 0 ||
-        present.some(
-            (value) =>
-                typeof value !== 'string' &&
-                !(typeof value === 'number' && Number.isSafeInteger(value))
-        )
-    ) {
-        return null;
-    }
-    const normalized = [
-        ...new Set(
-            present.map((value) =>
-                String(value)
-                    .normalize('NFKC')
-                    .replace(/\s+/g, '')
-            )
-        ),
-    ];
-    return normalized.length === 1 ? normalized[0] : null;
-}
-
-function positiveAboveFloorToken(value: string): string | null {
-    const match = /^([1-9]\d*)$/u.exec(value);
-    if (!match) return null;
-    return `ABOVE:${normalizeUnitSegment(match[1])}`;
-}
-
-/**
- * `LDAREG ho=0000`과 `EXPOS ho=동일 층 라벨`을 연결하는 제한적 witness.
- *
- * - 지상층: EXPOS의 실제 층 번호와 `#층` 호 라벨이 exact 일치해야 한다.
- * - 지층: EXPOS floor type 10 + exact `지층`, LDAREG exact `지층`만 허용한다.
- * - 일반 호실, 0층, 다중 alias 충돌, 임의 문자열은 witness를 만들지 않는다.
- */
-function phase0FloorAsUnitWitness(
+function phase0ProviderUnitShapeWitness(
     kind: 'EXPOS_UNIT' | 'LDAREG_UNIT',
-    row: Record<string, unknown>,
-    tuple: ReturnType<typeof normalizeUnitTuple>
+    row: Record<string, unknown>
 ): { hash: string; shape: Phase0FloorAsUnitShape } | null {
-    let token: string | null = null;
-    let shape: Phase0FloorAsUnitShape | null = null;
-
-    if (kind === 'LDAREG_UNIT') {
-        const rawHo = exactAliasScalar(row, ['buldHoNm', 'hoNm']);
-        if (rawHo !== '0000') return null;
-        const rawFloor = exactAliasScalar(row, [
-            'buldFloorNm',
-            'flrNoNm',
-        ]);
-        if (rawFloor === null) return null;
-        const above = positiveAboveFloorToken(rawFloor);
-        if (above) {
-            token = above;
-            shape = PHASE0_FLOOR_AS_UNIT_ABOVE_SHAPE;
-        } else if (rawFloor === '지층') {
-            token = 'BASEMENT:GENERIC';
-            shape = PHASE0_FLOOR_AS_UNIT_BASEMENT_SHAPE;
-        }
-    } else {
-        const rawHo = exactAliasScalar(row, ['hoNm', 'buldHoNm']);
-        if (rawHo === null) return null;
-        const above = /^([1-9]\d*)층$/u.exec(rawHo);
-        if (
-            above &&
-            exactAliasScalar(row, ['flrNo']) ===
-                normalizeUnitSegment(above[1]) &&
-            tuple.floor === normalizeUnitSegment(above[1]) &&
-            exactAliasScalar(row, ['flrGbCd']) === '20'
-        ) {
-            token = `ABOVE:${normalizeUnitSegment(above[1])}`;
-            shape = PHASE0_FLOOR_AS_UNIT_ABOVE_SHAPE;
-        } else if (
-            rawHo === '지층' &&
-            exactAliasScalar(row, ['flrGbCd']) === '10' &&
-            exactAliasScalar(row, ['flrNo']) === '1' &&
-            tuple.floor === '1'
-        ) {
-            token = 'BASEMENT:GENERIC';
-            shape = PHASE0_FLOOR_AS_UNIT_BASEMENT_SHAPE;
-        }
-    }
-
-    return token && shape
-        ? {
-              hash: sha256(`PHASE0_FLOOR_AS_UNIT\u0000${token}`),
-              shape,
-          }
-        : null;
+    const witness = providerUnitShapeWitness(kind, row);
+    return witness === null
+        ? null
+        : {
+              hash: sha256(
+                  `PHASE0_PROVIDER_UNIT_SHAPE\u0000${providerUnitShapeWitnessKey(
+                      witness
+                  )}`
+              ),
+              shape: witness.kind,
+          };
 }
 
 /**
@@ -1319,6 +1240,15 @@ function buildScopeExposEvidence(
                 ...(unit.dongHash
                     ? { dongIdentityHash: unit.dongHash }
                     : {}),
+                ...(unit.providerBridgeHash &&
+                unit.providerBridgeKind
+                    ? {
+                          providerUnitBridgeHash:
+                              unit.providerBridgeHash,
+                          providerUnitBridgeKind:
+                              unit.providerBridgeKind,
+                      }
+                    : {}),
             });
         }
     }
@@ -1381,7 +1311,16 @@ function resolvedScopeExposEvidenceRecords(
             !record.rootIdentitySource ||
             record.unitIdentityShape === 'INCOMPLETE' ||
             !record.unitIdentityHash ||
-            !record.floorHoIdentityHash
+            !record.floorHoIdentityHash ||
+            ((record.providerUnitBridgeHash === undefined) !==
+                (record.providerUnitBridgeKind === undefined)) ||
+            (record.providerUnitBridgeHash !== undefined &&
+                (!/^[0-9a-f]{64}$/u.test(
+                    record.providerUnitBridgeHash
+                ) ||
+                    !isPhase0FloorAsUnitShape(
+                        record.providerUnitBridgeKind
+                    )))
         ) {
             return null;
         }
@@ -1396,6 +1335,10 @@ function resolvedScopeExposEvidenceRecords(
             unitIdentityHash: record.unitIdentityHash,
             floorHoIdentityHash: record.floorHoIdentityHash,
             dongIdentityHash: record.dongIdentityHash ?? null,
+            providerUnitBridgeHash:
+                record.providerUnitBridgeHash ?? null,
+            providerUnitBridgeKind:
+                record.providerUnitBridgeKind ?? null,
         });
         if (!representativeByKey.has(key)) {
             representativeByKey.set(key, record);
@@ -1520,6 +1463,18 @@ function hasLdaregExposUnitCorrelation(
             new Set(buildingNameHashes).size === 1
         );
     };
+    if (
+        hasPhase0ProviderUnitBridgeCorrelation({
+            scopeExposRecords: exposRecords,
+            exposInventoryRecords,
+            validLdaregRecords,
+            missingLdaregRecords,
+            singleLdaregBuildingIdentity:
+                singleLdaregBuildingIdentity(),
+        })
+    ) {
+        return true;
+    }
 
     /**
      * 호가 없는 층 단위 구분소유의 실응답 표현만 허용한다.
@@ -1548,7 +1503,9 @@ function hasLdaregExposUnitCorrelation(
                     floorShape: Phase0FloorAsUnitShape;
                 } =>
                     typeof record.floorHoIdentityHash === 'string' &&
-                    isPhase0FloorAsUnitShape(record.floorShape)
+                    isPhase0LegacyFloorAsUnitShape(
+                        record.floorShape
+                    )
             )
             .map((record) => [
                 record.floorHoIdentityHash,
@@ -1565,7 +1522,9 @@ function hasLdaregExposUnitCorrelation(
                     floorShape: Phase0FloorAsUnitShape;
                 } =>
                     typeof record.floorHoIdentityHash === 'string' &&
-                    isPhase0FloorAsUnitShape(record.floorShape)
+                    isPhase0LegacyFloorAsUnitShape(
+                        record.floorShape
+                    )
             )
             .map((record) => [
                 record.floorHoIdentityHash,
@@ -1581,17 +1540,24 @@ function hasLdaregExposUnitCorrelation(
             (record) =>
                 record.unitIdentityShape === 'FLOOR_HO' &&
                 typeof record.floorHoIdentityHash === 'string' &&
-                isPhase0FloorAsUnitShape(record.floorShape)
+                isPhase0LegacyFloorAsUnitShape(
+                    record.floorShape
+                )
         ) &&
         validLdaregRecords.length === exposRecords.length &&
         validLdaregRecords.every(
             (record) =>
                 record.unitIdentityShape === 'FLOOR_HO' &&
                 typeof record.floorHoIdentityHash === 'string' &&
-                isPhase0FloorAsUnitShape(record.floorShape)
+                isPhase0LegacyFloorAsUnitShape(
+                    record.floorShape
+                )
         ) &&
         missingLdaregRecords.every(
-            (record) => !isPhase0FloorAsUnitShape(record.floorShape)
+            (record) =>
+                !isPhase0LegacyFloorAsUnitShape(
+                    record.floorShape
+                )
         ) &&
         hasExactUniqueSetMatch(
             scopeFloorUnitHashes,
@@ -1920,13 +1886,20 @@ function exposInventory(
             ...(unit.dongHash
                 ? { dongIdentityHash: unit.dongHash }
                 : {}),
+            ...(unit.providerBridgeHash &&
+            unit.providerBridgeKind
+                ? {
+                      providerUnitBridgeHash:
+                          unit.providerBridgeHash,
+                      providerUnitBridgeKind:
+                          unit.providerBridgeKind,
+                  }
+                : {}),
             ...(mainAttachedTypeCode ? { mainAttachedTypeCode } : {}),
             ...(floorTypeCode ? { floorTypeCode } : {}),
-            ...(unit.floorAsUnitShape || sanitizedFloorShape
+            ...(sanitizedFloorShape
                 ? {
-                      floorShape:
-                          unit.floorAsUnitShape ??
-                          sanitizedFloorShape,
+                      floorShape: sanitizedFloorShape,
                   }
                 : {}),
             ...(area ? { area } : {}),
@@ -2029,16 +2002,23 @@ function ldaregInventory(
             ...(unit.dongHash
                 ? { dongIdentityHash: unit.dongHash }
                 : {}),
+            ...(unit.providerBridgeHash &&
+            unit.providerBridgeKind
+                ? {
+                      providerUnitBridgeHash:
+                          unit.providerBridgeHash,
+                      providerUnitBridgeKind:
+                          unit.providerBridgeKind,
+                  }
+                : {}),
             quotaRatioState,
             quotaRatioInput,
             ...(quotaRatio ? { quotaRatio } : {}),
             ...(classificationCode ? { classificationCode } : {}),
             ...(classificationLabel ? { classificationLabel } : {}),
-            ...(unit.floorAsUnitShape || sanitizedFloorShape
+            ...(sanitizedFloorShape
                 ? {
-                      floorShape:
-                          unit.floorAsUnitShape ??
-                          sanitizedFloorShape,
+                      floorShape: sanitizedFloorShape,
                   }
                 : {}),
         };
@@ -2870,6 +2850,17 @@ function buildSampleArtifact(
                     ldaregReplication?.ok === true
                         ? ldaregReplication.evidence.rowMultisetDigest
                         : null,
+                ...(allowPhase0V2LdaregEvidence &&
+                ldaregRequired &&
+                ldaregReplication?.ok === true &&
+                ldaregReplication.evidence
+                    .providerBuildingIdentity
+                    ? {
+                          providerBuildingIdentity:
+                              ldaregReplication.evidence
+                                  .providerBuildingIdentity,
+                      }
+                    : {}),
             },
         },
         policyCandidate,
