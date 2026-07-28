@@ -205,6 +205,7 @@ function failureAudit(
             REVIEW: 0,
             FAILED: 0,
         },
+        redactedIssueCounts: [],
         capturedEvidence: null,
         capturedEvidencePropertyUnitCount: 0,
         capturedEvidenceManifestSha256: null,

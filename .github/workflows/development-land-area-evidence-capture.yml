@@ -541,6 +541,23 @@ jobs:
             "interceptedTerminalWrites",
             "interceptedFailureWrites",
           ];
+          const issueCountsValid =
+            Array.isArray(audit?.redactedIssueCounts)
+            && new Set(
+              audit.redactedIssueCounts.map((row) => row?.code)
+            ).size === audit.redactedIssueCounts.length
+            && audit.redactedIssueCounts.every(
+              (row) =>
+                row
+                && typeof row === "object"
+                && !Array.isArray(row)
+                && JSON.stringify(Object.keys(row).sort()) ===
+                  JSON.stringify(["code", "count"])
+                && typeof row.code === "string"
+                && safeCode.test(row.code)
+                && Number.isSafeInteger(row.count)
+                && row.count > 0
+            );
           if (
             audit?.version !== "land-area-development-evidence-capture-audit@1"
             || audit?.databaseTarget !== "development"
@@ -554,6 +571,7 @@ jobs:
             || !hex64.test(audit.manifestDigest)
             || !Array.isArray(audit.entries)
             || !audit.redactedAggregate
+            || !issueCountsValid
             || aggregateKeys.some(
               (key) =>
                 !Number.isSafeInteger(audit.redactedAggregate[key])
@@ -578,7 +596,7 @@ jobs:
           const optionalHex = (value) =>
             typeof value === "string" && hex64.test(value) ? value : null;
           const artifact = {
-            version: "land-area-development-evidence-public-artifact@1",
+            version: "land-area-development-evidence-public-artifact@2",
             databaseTarget: "development",
             manifestLabel,
             manifestDigest: audit.manifestDigest,
@@ -592,6 +610,10 @@ jobs:
             redactedAggregate: Object.fromEntries(
               aggregateKeys.map((key) => [key, audit.redactedAggregate[key]])
             ),
+            redactedIssueCounts: audit.redactedIssueCounts.map((row) => ({
+              code: row.code,
+              count: row.count,
+            })),
             readOnlyGuards: Object.fromEntries(
               guardKeys.map((key) => [key, audit.readOnlyGuards[key]])
             ),

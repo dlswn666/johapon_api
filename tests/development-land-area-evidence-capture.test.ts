@@ -14,6 +14,7 @@ import {
     type DevelopmentTargetManifest,
 } from '../src/operations/development-land-area-sync-runner';
 import {
+    aggregateDevelopmentEvidenceCaptureIssueCodes,
     aggregateDevelopmentEvidenceCaptureEntries,
     assertDevelopmentEvidenceCaptureActiveIdentity,
     developmentEvidenceEntryFromSnapshot,
@@ -341,6 +342,56 @@ test('read-only audit 집계는 식별자 없이 CAPTURED/NO_DATA/REVIEW/FAILED�
         JSON.stringify(aggregate).includes(PROPERTY_UNIT_ID),
         false
     );
+});
+
+test('read-only 공개 진단은 개별 PNU를 가리키지 않는 issue code별 건수만 남긴다', () => {
+    const base = {
+        anchorPnu: PNU,
+        strategy: null,
+        scannedPnuCount: 0,
+        propertyUnitCount: 0,
+        snapshotReferenceSha256: null,
+        applyRpcBlocked: false,
+        failureCode: null,
+        terminalScopeState: null,
+        terminalOutcome: null,
+        terminalIssueCodes: [],
+        terminalIssuesTotal: 0,
+        terminalIssuesTruncated: false,
+    } as const;
+    const issueCounts =
+        aggregateDevelopmentEvidenceCaptureIssueCodes([
+            { ...base, status: 'CAPTURED' },
+            {
+                ...base,
+                status: 'FAILED',
+                terminalScopeState: 'REVIEW_REQUIRED',
+                terminalOutcome: 'REVIEW_REQUIRED',
+                terminalIssueCodes: [
+                    'RATIO_PARSE_FAILED',
+                    'PROPERTY_UNIT_NOT_FOUND',
+                    'RATIO_PARSE_FAILED',
+                ],
+                failureCode: 'CAPTURE_REVIEW_REQUIRED',
+            },
+            {
+                ...base,
+                status: 'FAILED',
+                terminalScopeState: 'FAILED',
+                terminalOutcome: 'FAILED',
+                failureCode: 'CAPTURE_DISCOVERY_FAILED',
+            },
+        ]);
+
+    assert.deepEqual(issueCounts, [
+        { code: 'PROPERTY_UNIT_NOT_FOUND', count: 1 },
+        { code: 'RATIO_PARSE_FAILED', count: 1 },
+    ]);
+    const serialized = JSON.stringify(issueCounts);
+    assert.equal(serialized.includes(PNU), false);
+    assert.equal(serialized.includes(PROPERTY_UNIT_ID), false);
+    assert.doesNotMatch(serialized, /\b[0-9]{19}\b/);
+    assert.equal(serialized.includes('anchorIndex'), false);
 });
 
 test('read-only live snapshot은 runner가 재검증하는 strict evidence로 변환된다', () => {

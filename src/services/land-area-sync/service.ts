@@ -121,6 +121,11 @@ export interface LandAreaSyncDeps {
     now(): Date;
     /** apply 직전 resolved scope의 모든 PNU를 DB target-qualified allowlist로 재검증한다. */
     assertCanaryScopeAllowed(unionId: string, scannedPnus: readonly string[]): void;
+    /**
+     * 읽기 전용 증거 캡처는 LINKED LDAREG discovery도 snapshot 고정까지만 수행한다.
+     * 실제 API 런타임은 값을 주입하지 않아 기존 자동 apply 계약을 유지한다.
+     */
+    executionMode?: 'READ_ONLY_CAPTURE';
 }
 
 export interface RunLandAreaSyncArgs {
@@ -748,6 +753,19 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
         return;
     }
 
+    // 읽기 전용 capture는 LINKED scope도 snapshot/terminal까지만 남기고 apply를 시도하지 않는다.
+    if (deps.executionMode === 'READ_ONLY_CAPTURE') {
+        await freezeAndOfferConfirmation(
+            ctx,
+            'LDAREG',
+            'LINKED_SCOPE_RESOLVED',
+            snapshot,
+            counts,
+            assembled.issues
+        );
+        return;
+    }
+
     // discovery LINKED: snapshot 고정 후 apply RPC 1회.
     const frozen = await deps.db.freezeScopeSnapshot(jobId, unionId, {
         scopeState: 'LINKED_SCOPE_RESOLVED',
@@ -845,6 +863,16 @@ async function callApplyAndRecord(
 ): Promise<void> {
     const { deps, jobId, unionId, signal } = ctx;
     if (aborted(signal)) return; // terminal/fatal 이후 apply 금지
+
+    // READ_ONLY_CAPTURE는 discovery/apply 모양과 무관하게 DB 호출 자체를 금지한다.
+    // capture 전용 deps가 잘못 구성돼 confirmation job이 유입되어도 terminal/FAILED
+    // 기록을 포함한 어떤 DB write도 시도하지 않고 호출자에게 즉시 실패를 돌려준다.
+    if (deps.executionMode === 'READ_ONLY_CAPTURE') {
+        throw Object.assign(
+            new Error('읽기 전용 대지권 캡처에서 apply 경로가 차단되었습니다.'),
+            { code: 'READ_ONLY_CAPTURE_APPLY_BLOCKED' }
+        );
+    }
 
     // §13.4 barrier — 확인된 apply job 은 재실행 scope 가 discovery 확인 시점과 exact 일치해야 apply.
     // DB apply RPC 도 동일 lineage 를 재검증하지만(이중 방어), 여기서 먼저 걸러 재실행 scope 가 바뀐

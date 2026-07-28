@@ -73,6 +73,11 @@ export interface DevelopmentEvidenceCaptureRedactedAggregate {
     FAILED: number;
 }
 
+export interface DevelopmentEvidenceCaptureRedactedIssueCount {
+    code: string;
+    count: number;
+}
+
 export interface DevelopmentEvidenceCaptureAudit {
     version: typeof DEVELOPMENT_EVIDENCE_CAPTURE_AUDIT_VERSION;
     databaseTarget: 'development';
@@ -96,6 +101,7 @@ export interface DevelopmentEvidenceCaptureAudit {
      * 상세 entry와 gate는 그대로 유지하며 이 집계가 실패를 성공으로 바꾸지는 않는다.
      */
     redactedAggregate: DevelopmentEvidenceCaptureRedactedAggregate;
+    redactedIssueCounts: DevelopmentEvidenceCaptureRedactedIssueCount[];
     capturedEvidence: DevelopmentEvidenceManifest | null;
     capturedEvidencePropertyUnitCount: number;
     capturedEvidenceManifestSha256: string | null;
@@ -226,6 +232,25 @@ export function aggregateDevelopmentEvidenceCaptureEntries(
         }
     }
     return aggregate;
+}
+
+/**
+ * 공개 진단에는 terminal issue code별 발생 건수만 남긴다.
+ * PNU·manifest 순번·UUID·면적·snapshot hash는 포함하지 않아 저장소 target과
+ * 결합해도 개별 물건지를 역매핑할 수 없다.
+ */
+export function aggregateDevelopmentEvidenceCaptureIssueCodes(
+    entries: readonly DevelopmentEvidenceCaptureAuditEntry[]
+): DevelopmentEvidenceCaptureRedactedIssueCount[] {
+    const counts = new Map<string, number>();
+    for (const entry of entries) {
+        for (const code of new Set(entry.terminalIssueCodes)) {
+            counts.set(code, (counts.get(code) ?? 0) + 1);
+        }
+    }
+    return [...counts.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([code, count]) => ({ code, count }));
 }
 
 function createSyntheticJobRow(
@@ -544,6 +569,7 @@ async function captureOne(input: {
         scans: input.deps.scans,
         db,
         now: input.deps.now,
+        executionMode: 'READ_ONLY_CAPTURE',
         assertCanaryScopeAllowed(_unionId, scannedPnus) {
             if (
                 scannedPnus.some(
@@ -795,6 +821,10 @@ export async function captureDevelopmentLandAreaEvidence(input: {
             entries: results.map((result) => result.audit),
             redactedAggregate:
                 aggregateDevelopmentEvidenceCaptureEntries(
+                    results.map((result) => result.audit)
+                ),
+            redactedIssueCounts:
+                aggregateDevelopmentEvidenceCaptureIssueCodes(
                     results.map((result) => result.audit)
                 ),
             capturedEvidence,
