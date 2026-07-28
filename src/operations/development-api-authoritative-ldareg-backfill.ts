@@ -200,55 +200,55 @@ export interface DevelopmentApiLdaregTargetBundle {
     }>;
 }
 
-// 01~06은 실제 비공개 manifest가 provision될 때까지 의도적으로 실행 불가능한
-// placeholder digest다. raw 식별자는 저장소에 두지 않는다.
+// 실제 비공개 bundle은 보호된 환경 secret으로만 공급한다. 저장소에는
+// key별 manifest digest와 single/linked shape만 pin하고 raw 식별자는 두지 않는다.
 export const DEVELOPMENT_API_LDAREG_TARGET_PINS: DevelopmentApiLdaregTargetPins =
     Object.freeze({
         'ldareg-target-01': Object.freeze({
             manifestDigest:
-                'a342d8b5d20b4f2f1222b96ff1f1f0a83ff0a8c36e1f92ea73b137ed8d5ee398',
+                '3852e734d114f1017832293bb82e9417c10c05c9f9c8ac7896e350a39307811e',
             scopePnuCount: 1,
             bylotCount: 0,
-            provisioned: false,
+            provisioned: true,
         }),
         'ldareg-target-02': Object.freeze({
             manifestDigest:
-                '9ab3705fcbee6d3e73d680acbf1ff142f85fcc57b90239e3e67be5677a6aba56',
+                '2ca3914067d6f9b746f54ae17af736c01a2f0c171c875449b0180da685cadd73',
             scopePnuCount: 1,
             bylotCount: 0,
-            provisioned: false,
+            provisioned: true,
         }),
         'ldareg-target-03': Object.freeze({
             manifestDigest:
-                '69dc35618b7c6c5b24b2131eb49cc86064a41e2517ad7bf8f7e3d1af7db6df36',
+                '5b0aa8bbe739311d418eae86a50ac728e559c1b1e35f00c7bce3fb84ae078398',
             scopePnuCount: 1,
             bylotCount: 0,
-            provisioned: false,
+            provisioned: true,
         }),
         'ldareg-target-04': Object.freeze({
             manifestDigest:
-                '5666d232f784210567ade4f111ecb3177cb3a38ef97a4de0ca0b23359631aed0',
+                '4ca1a4c555b6e5ca435177bd273f20f75d3a3268c199b07bab9a55552862b106',
             scopePnuCount: 1,
             bylotCount: 0,
-            provisioned: false,
+            provisioned: true,
         }),
         'ldareg-target-05': Object.freeze({
             manifestDigest:
-                'e93b2551acec98badd17ad7e94ddd9891c1ff3c96029a9878ce04c0b13fc390a',
+                'f0e56c644779fc8e403a31b25b66351d60e69b94de42e0231516f07ef1340fa9',
             scopePnuCount: 1,
             bylotCount: 0,
-            provisioned: false,
+            provisioned: true,
         }),
         'ldareg-target-06': Object.freeze({
             manifestDigest:
-                'd6d15f4e607a4d84935610528cc3478b11d7aa9d918bacf2819a17bbf649cc75',
+                'a76f4dc8a3d4a70f9c2c8851b15fa3961f74736d184cc9a9d4b0d2de611bd104',
             scopePnuCount: 1,
             bylotCount: 0,
-            provisioned: false,
+            provisioned: true,
         }),
         'ldareg-target-07': Object.freeze({
             manifestDigest:
-                'a896eee9c49cbf8dc249a9d8829349352a2209340fa1f64d1a76d6ce0bdb2b25',
+                '89f05d3c4c98809cfec87e321476c884c5be1baf517e80f798ef6ede02b50999',
             scopePnuCount: 2,
             bylotCount: 1,
             provisioned: true,

@@ -246,11 +246,11 @@ test('exact target 내용은 git에 두지 않고 key별 manifest digest와 sing
     );
     assert.equal(
         (pins.match(/provisioned: false/g) ?? []).length,
-        6
+        0
     );
     assert.equal(
         (pins.match(/provisioned: true/g) ?? []).length,
-        1
+        7
     );
     assert.equal(
         (pins.match(/scopePnuCount: 1/g) ?? []).length,
