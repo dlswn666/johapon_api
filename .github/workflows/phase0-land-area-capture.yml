@@ -13,6 +13,7 @@ on:
           - mia-seven-791-2315-first-observation-20260725
           - mia-seven-791-2280-base-attached-first-observation-20260725
           - mia-seven-clean-multifamily-remaining-six-first-observation-20260725
+          - mia-seven-full-refresh-remaining-fifteen-first-observation-20260728
 
 permissions:
   contents: read
@@ -73,6 +74,9 @@ jobs:
               ;;
             mia-seven-clean-multifamily-remaining-six-first-observation-20260725)
               manifest_path="phase0-manifests/mia-seven-clean-multifamily-remaining-six-first-observation-20260725.json"
+              ;;
+            mia-seven-full-refresh-remaining-fifteen-first-observation-20260728)
+              manifest_path="phase0-manifests/mia-seven-full-refresh-remaining-fifteen-first-observation-20260728.json"
               ;;
             *)
               echo "::error::Manifest is not repository-approved."

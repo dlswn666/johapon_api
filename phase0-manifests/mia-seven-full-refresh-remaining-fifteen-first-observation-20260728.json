@@ -1,0 +1,95 @@
+{
+  "version": "land-area-phase0-capture-input@2",
+  "samples": [
+    {
+      "alias": "mia7-full-refresh-791-2155",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107912155"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2173",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107912173"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2188",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107912188"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2227",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LADFRL",
+      "pnu": "1130510100107912227"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2244",
+      "expectedBylot": "POSITIVE",
+      "expectedFamily": "LADFRL",
+      "pnu": "1130510100107912244"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2267",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107912267"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2282",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107912282"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2313",
+      "expectedBylot": "POSITIVE",
+      "expectedFamily": "LADFRL",
+      "pnu": "1130510100107912313"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2315",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107912315"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2320",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107912320"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2338",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LADFRL",
+      "pnu": "1130510100107912338"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2343",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107912343"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2474",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107912474"
+    },
+    {
+      "alias": "mia7-full-refresh-791-2700",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LADFRL",
+      "pnu": "1130510100107912700"
+    },
+    {
+      "alias": "mia7-full-refresh-791-3568",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107913568"
+    }
+  ]
+}
