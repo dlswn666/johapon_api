@@ -32,11 +32,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[
-            "${GITHUB_REF}" != "refs/heads/main"
-            && "${GITHUB_REF}" != "refs/heads/codex/phase0-final-correlation"
-          ]]; then
-            echo "::error::Phase 0 capture must run from an approved read-only ref."
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Phase 0 capture must run from refs/heads/main."
             exit 1
           fi
 
@@ -180,8 +177,8 @@ jobs:
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
           MANIFEST_PATH: ${{ steps.manifest.outputs.path }}
           RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
-          EXPECTED_GIT_SHA: 7dc569738361588c9d55bcb82e3d9dd4160f51aa
-          EXPECTED_IMAGE_TAG: ghcr.io/dlswn666/alimtalk-proxy:7dc569738361588c9d55bcb82e3d9dd4160f51aa
+          EXPECTED_GIT_SHA: ${{ github.sha }}
+          EXPECTED_IMAGE_TAG: ghcr.io/dlswn666/alimtalk-proxy:${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -364,7 +361,7 @@ jobs:
 
           # TEMPORARY_READ_ONLY_SHAPE_DIAGNOSTIC:
           # 숫자를 모두 #으로 가린 층/호 패턴만 출력한다. 원문 식별자와 인증값은
-          # 출력하지 않으며, 진단 브랜치에서만 실행하고 main에는 반영하지 않는다.
+          # 출력하지 않으며, 표본 확인 직후 제거한다.
           docker exec -i -w /app "${target_container}" node <<'NODE_DIAGNOSTIC'
           const { LandAreaSyncAdapter } = require("./dist/services/land-area-sync/adapter.js");
 
@@ -394,6 +391,17 @@ jobs:
             scan.state === "COMPLETE" || scan.state === "COMPLETE_ZERO"
               ? scan.rows
               : [];
+          const allowedExactTokens = new Set([
+            "B",
+            "b",
+            "비",
+            "지",
+            "지층",
+            "지하",
+            "반지하",
+            "옥탑",
+            "옥탑층",
+          ]);
           const shape = (value) => {
             if (
               typeof value !== "string"
@@ -408,6 +416,10 @@ jobs:
             return (
               redacted.length <= 32
               && /^[\p{L}#()+._-]+$/u.test(redacted)
+              && (
+                redacted.includes("#")
+                || allowedExactTokens.has(redacted)
+              )
             ) ? redacted : "OTHER";
           };
           const ratio = (value) => {
@@ -437,7 +449,6 @@ jobs:
                   floorType: code(row.flrGbCd),
                   floor: shape(row.flrNoNm ?? row.buldFloorNm ?? row.flrNo),
                   ho: shape(row.hoNm ?? row.buldHoNm),
-                  dong: shape(row.dongNm ?? row.buldDongNm),
                 })).sort((left, right) =>
                   JSON.stringify(left).localeCompare(JSON.stringify(right))
                 ),
@@ -446,8 +457,6 @@ jobs:
                   ratio: ratio(row.ldaQotaRate),
                   floor: shape(row.buldFloorNm),
                   ho: shape(row.buldHoNm),
-                  dong: shape(row.buldDongNm),
-                  room: shape(row.buldRoomNm),
                   classification: code(row.clsSeCode),
                 })).sort((left, right) =>
                   JSON.stringify(left).localeCompare(JSON.stringify(right))
