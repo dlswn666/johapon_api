@@ -853,6 +853,48 @@ test('LDAREG(single 확인) apply job: 재실행 scope 일치 → apply RPC 정�
     assert.equal(spy.terminalCalls.length, 0);
 });
 
+test('읽기 전용 모드는 확인 완료 apply job도 모든 DB write 전에 차단한다', async () => {
+    const disc = emptySpy();
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps: makeDeps({
+            resolver: noEvidence(MEMBER),
+            scans: { scanTitle: async () => titleComplete(MULTIPLEX) },
+            spy: disc,
+        }),
+    });
+    const frozen = disc.frozenSnapshots[0];
+
+    const spy = emptySpy();
+    const deps = makeDeps({
+        resolver: noEvidence(MEMBER),
+        scans: { scanTitle: async () => titleComplete(MULTIPLEX) },
+        jobPreviewData: applyJobPreview({
+            confirmedDiscoveryScopeHash: frozen.scopeHash,
+            confirmedPropertyMembershipHash: frozen.propertyMembershipHash,
+        }),
+        spy,
+    });
+    deps.executionMode = 'READ_ONLY_CAPTURE';
+
+    await assert.rejects(
+        runLandAreaSyncJob({
+            jobId: 'job-1',
+            unionId: 'union-1',
+            deps,
+        }),
+        (error: unknown) =>
+            error instanceof Error &&
+            (error as Error & { code?: string }).code ===
+                'READ_ONLY_CAPTURE_APPLY_BLOCKED'
+    );
+    assert.equal(spy.applyCalls, 0);
+    assert.equal(spy.freezeCalls, 0);
+    assert.equal(spy.terminalCalls.length, 0);
+    assert.equal(spy.failedCalls.length, 0);
+});
+
 test('LDAREG(single 확인) apply job: 재실행 scopeHash 불일치 → apply RPC 0회 + REVIEW_REQUIRED', async () => {
     const spy = emptySpy();
     const deps = makeDeps({
