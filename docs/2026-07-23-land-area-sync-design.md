@@ -1026,6 +1026,31 @@ transaction timestamp receipt와 terminal payload의 원자 UPDATE를 담당한�
 - zero PNU와 nonzero PNU가 섞이거나 replica multiset/property match가 다르면 같은
   property의 일부 PNU 양수값만 합산하지 않고 job 전체를 차단한다.
 
+#### 13.4.1 미아7 DEV 전체 공식 API 재조회 예외 프로필
+
+일반 운영 scope resolver 계약과 별도로, repo-pinned 미아7 개발 target 한 개에만
+`DEVELOPMENT_FULL_REFRESH_API_REQUERY_V1`을 허용한다. 목적은 기존 relation에 잡힌 일부
+호실을 백필하는 것이 아니라 개발 DB의 활성 물건 `429`개 전체를 공식 API로 다시 조회하는
+것이다. exact 대상과 PASS/FAIL 계약은
+[`2026-07-28-mia7-development-land-area-full-refresh.md`](./2026-07-28-mia7-development-land-area-full-refresh.md)
+를 source of truth로 한다.
+
+- production에서는 표식의 존재 자체를 admission 전에 거부한다.
+- 실행 scope는 공식 API same-run component closure로만 정한다. relation/GIS 데이터는
+  scope 선택에 사용하지 않고 DML도 수행하지 않는다.
+- 기존 DB resolver hash와 property membership은 적용 직전 동시성·비대상 변경 guard로만
+  보존한다.
+- read-only capture와 discovery/apply는 서로 다른 fresh 공식 API scan이다. capture
+  evidence의 `officialComponentDigest`와 discovery snapshot을 exact 대조한다.
+- `MANUAL` 현재 숫자는 분자·분모·매칭·fallback에 사용하지 않는다. tuple prestate는
+  overwrite 및 동시성 guard일 뿐이다.
+- 공식 API 값이 기존 숫자와 같아도 source가 `MANUAL`이면 no-op이 아니다.
+  apply transaction은 숫자와 함께 source `LDAREG`/`LADFRL`, DB clock synced time,
+  apply job ID provenance를 갱신한다.
+- 새로운 approval 테이블이나 전용 apply RPC를 만들지 않는다. 기존 confirmation v2가
+  immutable 표식을 복사하고 기존 apply v1이 표식에 결합된 synthetic scope hash를
+  재계산하는 최소 확장만 허용한다.
+
 ### 13.5 freshness
 
 - `p_scan_started_at > status_evaluated_at`: 평가 가능

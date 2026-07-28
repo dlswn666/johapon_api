@@ -36,6 +36,10 @@ import {
 
 export const SCOPE_HASH_VERSION = 'land-area-sync/scope-hash@2';
 export const EXTERNAL_SCOPE_DIGEST_VERSION = 'land-area-sync/external-scope-digest@3';
+export const SAME_RUN_OFFICIAL_READ_ONLY_SCOPE_SOURCE =
+    'SAME_RUN_OFFICIAL_READ_ONLY' as const;
+export const SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE =
+    'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH' as const;
 
 // ── DB resolver 결과 (DESIGN §11 계약) ────────────────────────────
 
@@ -179,6 +183,25 @@ export interface ParcelScopeResult {
     scannedPnus: string[];
     dbScopeHash: string;
     externalScopeDigest: string;
+}
+
+/**
+ * DB relation을 승격하지 않고 같은 실행의 공식 title/attached/bylot만으로 확정한
+ * READ_ONLY_CAPTURE 전용 component다. 일반 discovery/apply에서는 절대 사용하지 않는다.
+ */
+export interface SameRunOfficialReadOnlyComponent {
+    source: typeof SAME_RUN_OFFICIAL_READ_ONLY_SCOPE_SOURCE;
+    canonicalBasePnu: string;
+    memberPnus: string[];
+    managementPk: string;
+    pairCount: number;
+    officialComponentDigest: string;
+}
+
+/** DEV 전체 갱신에서 write-time 재조회까지 허용하는 same-run 공식 component. */
+export interface SameRunOfficialDevelopmentFullRefreshComponent
+    extends Omit<SameRunOfficialReadOnlyComponent, 'source'> {
+    source: typeof SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE;
 }
 
 function scanRows<T>(scan: StrictScan<T>): T[] {
@@ -373,6 +396,340 @@ export function resolveParcelScopeCompleteness(input: ParcelScopeInput): ParcelS
     }
     // PENDING/BLOCKING은 위에서 REVIEW 처리됨 — 도달 시 방어적 REVIEW
     return finalize('REVIEW_REQUIRED', ['SCOPE_NOT_LINKED']);
+}
+
+/**
+ * NO_EVIDENCE + strict official attached evidence를 read-only component로 해석한다.
+ *
+ * 기존 공통 gate가 오직 SCOPE_CACHE_SCAN_CONFLICT 때문에 멈춘 경우에만 좁게 허용한다.
+ * relation 생성·LINKED 승격·normal apply 계약은 변경하지 않는다.
+ */
+export function resolveSameRunOfficialReadOnlyComponent(
+    input: ParcelScopeInput & { anchorPnu: string }
+): SameRunOfficialReadOnlyComponent | null {
+    const { anchorPnu, dbScope, baseScans } = input;
+    if (
+        dbScope.dbState !== 'NO_EVIDENCE' ||
+        dbScope.componentTruncated ||
+        dbScope.linkedEvidenceKeys.length > 0 ||
+        dbScope.pendingEvidenceKeys.length > 0 ||
+        dbScope.blockingEvidence.length > 0 ||
+        dbScope.openUnresolvedEvidenceKeys.length > 0 ||
+        baseScans.length !== 1 ||
+        baseScans[0].pnu !== anchorPnu ||
+        baseScans[0].title.state !== 'COMPLETE' ||
+        baseScans[0].attached.state !== 'COMPLETE'
+    ) {
+        return null;
+    }
+
+    const normalGate = resolveParcelScopeCompleteness(input);
+    if (
+        normalGate.state !== 'REVIEW_REQUIRED' ||
+        normalGate.issues.length !== 1 ||
+        normalGate.issues[0] !== 'SCOPE_CACHE_SCAN_CONFLICT' ||
+        normalGate.classification.kind !== 'CLASSIFIED' ||
+        normalGate.classification.family !== 'LDAREG' ||
+        normalGate.bylot.status !== 'RESOLVED'
+    ) {
+        return null;
+    }
+
+    const normalizedRows = baseScans[0].attached.rows.map((row) => ({
+        ...row,
+        mgmBldrgstPk:
+            normalizeRegistryManagementPk(row.mgmBldrgstPk) ?? '',
+    }));
+    const attached = assembleAttachedPnus(
+        normalizedRows as unknown as AtchJibunRowInput[]
+    );
+    if (
+        attached.pairs.length === 0 ||
+        attached.rejected.length > 0 ||
+        attached.pairs.some((pair) => pair.basePnu !== anchorPnu)
+    ) {
+        return null;
+    }
+
+    const titleSelfPks = [
+        ...new Set(
+            baseScans[0].title.rows
+                .map((row) =>
+                    normalizeRegistryManagementPk(row.mgmBldrgstPk)
+                )
+                .filter((value): value is string => value !== null)
+        ),
+    ].sort();
+    if (titleSelfPks.length !== 1) return null;
+    const managementPk = titleSelfPks[0];
+    if (
+        attached.pairs.some(
+            (pair) =>
+                normalizeRegistryManagementPk(pair.mgmBldrgstPk) !==
+                managementPk
+        ) ||
+        normalGate.expectedPks.length !== 1 ||
+        normalGate.expectedPks[0] !== managementPk
+    ) {
+        return null;
+    }
+    const bylotEvidence = normalGate.bylot.evidence.find(
+        (row) => row.mgmBldrgstPk === managementPk
+    );
+    if (
+        !bylotEvidence ||
+        bylotEvidence.count !== attached.pairs.length
+    ) {
+        return null;
+    }
+
+    const memberPnus = [
+        ...new Set([
+            anchorPnu,
+            ...attached.pairs.map((pair) => pair.attachedPnu),
+        ]),
+    ].sort();
+    if (
+        memberPnus.length !== attached.pairs.length + 1 ||
+        memberPnus.length > 50
+    ) {
+        return null;
+    }
+    const pairs = attached.pairs
+        .map((pair) => ({
+            basePnu: pair.basePnu,
+            attachedPnu: pair.attachedPnu,
+            managementPk,
+        }))
+        .sort((left, right) =>
+            left.attachedPnu.localeCompare(right.attachedPnu)
+        );
+    const officialComponentDigest = sha256Hex(
+        canonicalStableStringify({
+            version: 'land-area-sync.same-run-official-component@1',
+            canonicalBasePnu: anchorPnu,
+            memberPnus,
+            managementPk,
+            pairs,
+            externalScopeDigest: normalGate.externalScopeDigest,
+        })
+    );
+    return {
+        source: SAME_RUN_OFFICIAL_READ_ONLY_SCOPE_SOURCE,
+        canonicalBasePnu: anchorPnu,
+        memberPnus,
+        managementPk,
+        pairCount: pairs.length,
+        officialComponentDigest,
+    };
+}
+
+/**
+ * read-only와 같은 strict 공식 근거를 사용하되, DEV 전체 갱신 표식이 별도 보안 계층에서
+ * 검증된 실행에만 호출하는 write-time component다.
+ */
+export function resolveSameRunOfficialDevelopmentFullRefreshComponent(
+    input: ParcelScopeInput & { anchorPnu: string }
+): SameRunOfficialDevelopmentFullRefreshComponent | null {
+    // 기존 LINKED relation은 동시성 prestate(dbScopeHash)로만 남기고 공식 component
+    // 계산에는 사용하지 않는다. pending/blocking/truncated 상태는 우회하지 않는다.
+    const officialOnlyDbScope =
+        createDevelopmentFullRefreshOfficialOnlyDbScope(
+            input.dbScope,
+            input.anchorPnu
+        );
+    if (!officialOnlyDbScope) return null;
+    const component = resolveSameRunOfficialReadOnlyComponent({
+        ...input,
+        dbScope: officialOnlyDbScope,
+    });
+    if (component) {
+        return {
+            ...component,
+            source:
+                SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE,
+        };
+    }
+
+    // family와 무관하게 single component도 DB relation과 독립된 공식 scope
+    // commitment가 필요하다. title/bylot0/attached-zero가 모두 complete일 때만
+    // pairCount=0으로 고정하며, 일반 READ_ONLY_CAPTURE의 자동 single 승격 계약은
+    // 변경하지 않는다.
+    if (
+        input.baseScans.length !== 1 ||
+        input.baseScans[0].pnu !== input.anchorPnu ||
+        input.baseScans[0].title.state !== 'COMPLETE' ||
+        input.baseScans[0].attached.state !== 'COMPLETE_ZERO'
+    ) {
+        return null;
+    }
+    const singletonGate = resolveParcelScopeCompleteness({
+        ...input,
+        dbScope: officialOnlyDbScope,
+    });
+    if (
+        singletonGate.state !==
+            'SINGLE_SCOPE_CONFIRMATION_REQUIRED' ||
+        singletonGate.issues.length !== 0 ||
+        singletonGate.classification.kind !== 'CLASSIFIED' ||
+        singletonGate.bylot.status !== 'RESOLVED'
+    ) {
+        return null;
+    }
+    const titleSelfPks = [
+        ...new Set(
+            input.baseScans[0].title.rows
+                .map((row) =>
+                    normalizeRegistryManagementPk(
+                        row.mgmBldrgstPk
+                    )
+                )
+                .filter(
+                    (value): value is string => value !== null
+                )
+        ),
+    ].sort();
+    if (
+        titleSelfPks.length !== 1 ||
+        singletonGate.expectedPks.length !== 1 ||
+        singletonGate.expectedPks[0] !== titleSelfPks[0] ||
+        singletonGate.bylot.evidence.length !== 1 ||
+        singletonGate.bylot.evidence[0].mgmBldrgstPk !==
+            titleSelfPks[0] ||
+        singletonGate.bylot.evidence[0].count !== 0
+    ) {
+        return null;
+    }
+    const managementPk = titleSelfPks[0];
+    const memberPnus = [input.anchorPnu];
+    return {
+        source:
+            SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH_SCOPE_SOURCE,
+        canonicalBasePnu: input.anchorPnu,
+        memberPnus,
+        managementPk,
+        pairCount: 0,
+        officialComponentDigest: sha256Hex(
+            canonicalStableStringify({
+                version:
+                    'land-area-sync.same-run-official-component@1',
+                canonicalBasePnu: input.anchorPnu,
+                memberPnus,
+                managementPk,
+                pairs: [],
+                externalScopeDigest:
+                    singletonGate.externalScopeDigest,
+            })
+        ),
+    };
+}
+
+/**
+ * DEV 전체 재조회 계산에서 relation-derived component를 제거한다.
+ * 원 resolver hash와 membership은 동시성/단일 필지 확인용으로 유지한다.
+ */
+export function createDevelopmentFullRefreshOfficialOnlyDbScope(
+    dbScope: DbScopeResolution,
+    anchorPnu: string
+): DbScopeResolution | null {
+    if (
+        dbScope.dbState === 'PENDING' ||
+        dbScope.dbState === 'BLOCKING_EVIDENCE' ||
+        dbScope.componentTruncated ||
+        dbScope.pendingEvidenceKeys.length > 0 ||
+        dbScope.blockingEvidence.length > 0 ||
+        dbScope.openUnresolvedEvidenceKeys.length > 0
+    ) {
+        return null;
+    }
+    return {
+        ...dbScope,
+        dbState: 'NO_EVIDENCE',
+        componentPnus: [anchorPnu],
+        linkedBasePnus: [],
+        linkedPnus: [],
+        linkedEvidenceKeys: [],
+        pendingEvidenceKeys: [],
+        blockingEvidence: [],
+        openUnresolvedEvidenceKeys: [],
+        componentTruncated: false,
+    };
+}
+
+/**
+ * 기존 DB resolver 응답을 변경하지 않고 read-only branch 계산에만 쓰는 effective scope.
+ * dbScopeHash도 원 resolver hash + 공식 component + 현재 membership의 결정적 digest다.
+ */
+export function createSameRunOfficialReadOnlyEffectiveScope(input: {
+    dbScope: DbScopeResolution;
+    component: SameRunOfficialReadOnlyComponent;
+    propertyMembership: unknown[];
+}): DbScopeResolution {
+    const propertyMembership = normalizePropertyMembershipOrder(
+        input.propertyMembership
+    ) as unknown[];
+    return {
+        ...input.dbScope,
+        dbState: 'LINKED',
+        componentPnus: [...input.component.memberPnus],
+        linkedBasePnus: [input.component.canonicalBasePnu],
+        linkedPnus: [...input.component.memberPnus],
+        linkedEvidenceKeys: [],
+        pendingEvidenceKeys: [],
+        blockingEvidence: [],
+        openUnresolvedEvidenceKeys: [],
+        componentTruncated: false,
+        propertyMembership,
+        dbScopeHash: sha256Hex(
+            canonicalStableStringify({
+                version:
+                    'land-area-sync.same-run-official-read-only-db-scope@1',
+                originalDbScopeHash: input.dbScope.dbScopeHash,
+                officialComponentDigest:
+                    input.component.officialComponentDigest,
+                propertyMembership,
+            })
+        ),
+    };
+}
+
+/**
+ * DEV 전체 갱신 전용 effective scope. relation을 생성하거나 LINKED로 저장하지 않으며,
+ * apply RPC가 같은 공식 component와 현재 membership으로 동일 hash를 다시 계산한다.
+ */
+export function createSameRunOfficialDevelopmentFullRefreshEffectiveScope(
+    input: {
+        dbScope: DbScopeResolution;
+        component: SameRunOfficialDevelopmentFullRefreshComponent;
+        propertyMembership: unknown[];
+    }
+): DbScopeResolution {
+    const propertyMembership = normalizePropertyMembershipOrder(
+        input.propertyMembership
+    ) as unknown[];
+    return {
+        ...input.dbScope,
+        dbState: 'LINKED',
+        componentPnus: [...input.component.memberPnus],
+        linkedBasePnus: [input.component.canonicalBasePnu],
+        linkedPnus: [...input.component.memberPnus],
+        linkedEvidenceKeys: [],
+        pendingEvidenceKeys: [],
+        blockingEvidence: [],
+        openUnresolvedEvidenceKeys: [],
+        componentTruncated: false,
+        propertyMembership,
+        dbScopeHash: sha256Hex(
+            canonicalStableStringify({
+                version:
+                    'land-area-sync.same-run-official-development-full-refresh-db-scope@1',
+                originalDbScopeHash: input.dbScope.dbScopeHash,
+                officialComponentDigest:
+                    input.component.officialComponentDigest,
+                propertyMembership,
+            })
+        ),
+    };
 }
 
 /** bounded component 전체에서 LINKED PNU와 complete attached scan이 exact 일치하는지 (DESIGN §11). */

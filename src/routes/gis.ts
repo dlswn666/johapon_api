@@ -24,6 +24,12 @@ import {
     assertLandAreaSyncCanaryAllowed,
     assertLandAreaSyncScopeAllowed,
 } from '../security/land-area-sync-canary-policy';
+import {
+    DevelopmentLandAreaFullRefreshError,
+    assertDevelopmentLandAreaFullRefreshAllowed,
+    developmentLandAreaFullRefreshMarkersEqual,
+    parseDevelopmentLandAreaFullRefreshMarker,
+} from '../security/development-land-area-full-refresh-policy';
 import { env } from '../config/env';
 import { createLogger } from '../utils/logger';
 import type { LandAreaSyncPreview } from '../types/land-area-sync-job.types';
@@ -769,7 +775,12 @@ router.post('/inspect', authMiddleware, gisSystemAdminMiddleware, async (req, re
  * SYSTEM_ADMIN 재검증(gis-system-admin) 후 durable INSERT 성공 시 202. admission 실패 시 503.
  */
 router.post('/land-area-sync', authMiddleware, gisSystemAdminMiddleware, landAreaSyncEnabledMiddleware, landAreaSyncDiscoveryCanaryMiddleware, async (req, res) => {
-    const { unionId, anchorPnu, admissionKey } = req.body ?? {};
+    const {
+        unionId,
+        anchorPnu,
+        admissionKey,
+        developmentFullRefresh: rawDevelopmentFullRefresh,
+    } = req.body ?? {};
 
     if (!isUuid(unionId)) {
         return res.status(400).json({ success: false, code: 'INVALID_UNION_ID', error: 'unionId(UUID)가 필요합니다.' });
@@ -782,15 +793,36 @@ router.post('/land-area-sync', authMiddleware, gisSystemAdminMiddleware, landAre
     }
 
     try {
+        const developmentFullRefresh =
+            parseDevelopmentLandAreaFullRefreshMarker(
+                rawDevelopmentFullRefresh
+            );
+        if (developmentFullRefresh) {
+            assertDevelopmentLandAreaFullRefreshAllowed({
+                databaseTarget: req.user!.databaseTarget,
+                unionId,
+                marker: developmentFullRefresh,
+            });
+        }
         const info = await landAreaSyncQueueService.addDiscoveryJob({
             unionId,
             anchorPnu,
             admissionKey,
             actorUserId: req.user!.actorUserId!,
             databaseTarget: req.user!.databaseTarget,
+            ...(developmentFullRefresh
+                ? { developmentFullRefresh }
+                : {}),
         });
         return res.status(202).json({ success: true, ...info });
     } catch (error) {
+        if (error instanceof DevelopmentLandAreaFullRefreshError) {
+            return res.status(error.status).json({
+                success: false,
+                code: error.code,
+                error: error.message,
+            });
+        }
         logger.error(`LAND_AREA_SYNC discovery start failed (${unionId}/${anchorPnu})`, error);
         return sendGisQueueError(res, error);
     }
@@ -870,6 +902,17 @@ router.post('/land-area-sync/:discoveryJobId/confirm', authMiddleware, gisSystem
             });
         }
         const discoveryLandAreaSync = readLandAreaSync(discoveryJob);
+        const developmentFullRefresh =
+            parseDevelopmentLandAreaFullRefreshMarker(
+                discoveryLandAreaSync?.developmentFullRefresh
+            );
+        if (developmentFullRefresh) {
+            assertDevelopmentLandAreaFullRefreshAllowed({
+                databaseTarget: req.user!.databaseTarget,
+                unionId: discoveryJob.union_id,
+                marker: developmentFullRefresh,
+            });
+        }
         const discoveryAnchorPnu = discoveryLandAreaSync?.anchorPnu;
         const discoveryScannedPnus =
             discoveryLandAreaSync?.scopeSnapshot?.scannedPnus;
@@ -946,7 +989,11 @@ router.post('/land-area-sync/:discoveryJobId/confirm', authMiddleware, gisSystem
             applyJob.id !== newJobId ||
             applyLand?.admissionKey?.toLowerCase() !==
                 admissionKey.toLowerCase() ||
-            applyLand.sourceDiscoveryJobId !== discoveryJobId
+            applyLand.sourceDiscoveryJobId !== discoveryJobId ||
+            !developmentLandAreaFullRefreshMarkersEqual(
+                applyLand.developmentFullRefresh,
+                developmentFullRefresh
+            )
         ) {
             return res.status(500).json({ success: false, code: 'CONFIRMATION_ADMISSION_MISMATCH', error: '확인 작업 admission lineage가 일치하지 않습니다.' });
         }
@@ -960,6 +1007,13 @@ router.post('/land-area-sync/:discoveryJobId/confirm', authMiddleware, gisSystem
         }
         return res.status(202).json({ success: true, jobId: applyJob.id, unionId, sourceDiscoveryJobId: discoveryJobId, status: 'pending' });
     } catch (error) {
+        if (error instanceof DevelopmentLandAreaFullRefreshError) {
+            return res.status(error.status).json({
+                success: false,
+                code: error.code,
+                error: error.message,
+            });
+        }
         logger.error(`LAND_AREA_SYNC confirmation failed (${discoveryJobId})`, error);
         return res.status(500).json({ success: false, code: 'CONFIRMATION_ERROR', error: '확인 처리에 실패했습니다.' });
     }

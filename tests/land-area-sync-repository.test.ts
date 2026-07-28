@@ -71,6 +71,39 @@ test('insertDiscoveryJob 은 LAND_AREA_SYNC job_type 과 seed preview 로 INSERT
     assert.equal(value.preview_data.landAreaSync.workerFinalization, undefined);
 });
 
+test('insertDiscoveryJob 은 DEV 전체 갱신 표식을 seed preview에 immutable 저장한다', async () => {
+    const marker = {
+        profile:
+            'DEVELOPMENT_FULL_REFRESH_API_REQUERY_V1' as const,
+        manifestDigest: 'a'.repeat(64),
+        scopeDigest: 'b'.repeat(64),
+    };
+    const { client, calls } = fakeClient({
+        insertResult: {
+            data: { id: JOB, union_id: UNION },
+            error: null,
+        },
+    });
+    await insertDiscoveryJob(client, JOB, {
+        unionId: UNION,
+        anchorPnu: '1168010100107360024',
+        actorUserId: 'admin-1',
+        developmentFullRefresh: marker,
+    });
+    const value = calls[0].value as {
+        preview_data: {
+            landAreaSync: {
+                developmentFullRefresh?: unknown;
+            };
+        };
+    };
+    assert.deepEqual(
+        value.preview_data.landAreaSync
+            .developmentFullRefresh,
+        marker
+    );
+});
+
 test('getScopedJob 은 id+union+type 로 스코프한다', async () => {
     const row: LandAreaSyncJobRow = { id: JOB, union_id: UNION, status: 'PROCESSING', progress: 0, preview_data: {}, created_at: '', updated_at: '', error_log: null };
     const { client, calls } = fakeClient({ selectResult: { data: row, error: null } });

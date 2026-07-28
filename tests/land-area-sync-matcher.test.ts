@@ -100,6 +100,60 @@ test('legacy building_unit의 층 누락은 EXPOS 입증 뒤 호 exact 1건으�
     assert.equal(d.kind === 'MATCHED' && d.via, 'PROPERTY_UNIT_BY_BU');
 });
 
+test('활성 물건지가 없는 exact shadow 행 대신 같은 건물의 활성-linked known-field 행을 사용한다', () => {
+    const d = matchLdaregUnit(
+        input({
+            source: {
+                targetPnu: PNU,
+                dong: null,
+                floor: '5',
+                ho: '501',
+                registryExternalId: null,
+                expectedPnuScope: [PNU],
+            },
+            exposUnits: [
+                expos({
+                    dong: null,
+                    floor: '5',
+                    ho: '501',
+                }),
+            ],
+            buildingUnits: [
+                bu({
+                    id: 'BU-SHADOW',
+                    dong: null,
+                    floor: '5',
+                    ho: '501',
+                }),
+                bu({
+                    id: 'BU-ACTIVE',
+                    dong: null,
+                    floor: null,
+                    ho: '501',
+                }),
+            ],
+            propertyUnits: [
+                pu({
+                    id: 'PU-ACTIVE',
+                    buildingUnitId: 'BU-ACTIVE',
+                    dong: null,
+                    ho: '501',
+                }),
+            ],
+        })
+    );
+
+    assert.equal(d.kind, 'MATCHED');
+    assert.equal(
+        d.kind === 'MATCHED' && d.propertyUnitId,
+        'PU-ACTIVE'
+    );
+    assert.equal(
+        d.kind === 'MATCHED' && d.buildingUnitRef,
+        'BU-ACTIVE'
+    );
+});
+
 test('legacy building_unit known-field 후보가 같은 호로 2건이면 추정하지 않고 충돌 처리한다', () => {
     const d = matchLdaregUnit(
         input({
@@ -243,7 +297,7 @@ test('assemble가 허용한 경우에만 EXPOS의 dong 누락을 floor+ho exact�
             propertyUnits: [
                 pu({
                     buildingUnitId: null,
-                    dong: null,
+                    dong: '101동',
                 }),
             ],
         })
@@ -269,13 +323,53 @@ test('assemble가 허용한 경우에만 EXPOS의 dong 누락을 floor+ho exact�
             propertyUnits: [
                 pu({
                     buildingUnitId: null,
-                    dong: null,
+                    dong: '101동',
                 }),
             ],
             allowExposFloorHoFallback: true,
         })
     );
     assert.equal(withGate.kind, 'MATCHED');
+});
+
+test('floor+ho 보강으로 찾은 EXPOS 동을 building_unit 매칭에도 그대로 사용한다', () => {
+    const d = matchLdaregUnit(
+        input({
+            source: {
+                targetPnu: PNU,
+                dong: null,
+                floor: '3층',
+                ho: '302호',
+                registryExternalId: null,
+                expectedPnuScope: [PNU],
+            },
+            exposUnits: [expos({ dong: '101동' })],
+            buildingUnits: [
+                bu({
+                    id: 'BU-302',
+                    dong: '101동',
+                    floor: '3층',
+                    ho: '302호',
+                }),
+            ],
+            propertyUnits: [
+                pu({
+                    id: 'PU-302',
+                    buildingUnitId: 'BU-302',
+                    dong: '101동',
+                    ho: '302호',
+                }),
+            ],
+            allowExposFloorHoFallback: true,
+        })
+    );
+
+    assert.equal(d.kind, 'MATCHED');
+    assert.equal(d.kind === 'MATCHED' && d.propertyUnitId, 'PU-302');
+    assert.equal(
+        d.kind === 'MATCHED' && d.buildingUnitRef,
+        'BU-302'
+    );
 });
 
 test('floor+ho gate가 켜져도 양쪽 dong이 다르면 dong을 버리지 않는다', () => {
@@ -352,6 +446,38 @@ test('4단계 normalized tuple building_unit 2건+ → 무변경 / UNIT_NORMALIZ
     assert.equal(d.kind === 'NO_CHANGE' && d.issue, 'UNIT_NORMALIZATION_COLLISION');
 });
 
+test('서로 다른 building의 exact tuple은 한쪽만 active-backed여도 충돌을 유지한다', () => {
+    const d = matchLdaregUnit(
+        input({
+            buildingUnits: [
+                bu({
+                    id: 'BU-ACTIVE',
+                    buildingId: 'B-1',
+                }),
+                bu({
+                    id: 'BU-SHADOW',
+                    buildingId: 'B-2',
+                }),
+            ],
+            propertyUnits: [
+                pu({
+                    id: 'PU-ACTIVE',
+                    buildingUnitId: 'BU-ACTIVE',
+                }),
+            ],
+        })
+    );
+    assert.equal(d.kind, 'NO_CHANGE');
+    assert.equal(
+        d.kind === 'NO_CHANGE' && d.stage,
+        'NORMALIZED_TUPLE_BU'
+    );
+    assert.equal(
+        d.kind === 'NO_CHANGE' && d.issue,
+        'UNIT_NORMALIZATION_COLLISION'
+    );
+});
+
 test('5단계 property_unit 0건 → 무변경 / NOT_FOUND', () => {
     const d = matchLdaregUnit(input({ propertyUnits: [] }));
     assert.equal(d.kind, 'NO_CHANGE');
@@ -370,6 +496,28 @@ test('5단계 is_deleted=true property_unit는 후보에서 제외 → NOT_FOUND
     const d = matchLdaregUnit(input({ propertyUnits: [pu({ isDeleted: true })] }));
     assert.equal(d.kind, 'NO_CHANGE');
     assert.equal(d.kind === 'NO_CHANGE' && d.issue, 'PROPERTY_UNIT_NOT_FOUND');
+});
+
+test('5단계 wrong union/null·out-of-scope PNU 링크는 active-backed 근거가 아니다', () => {
+    const d = matchLdaregUnit(
+        input({
+            propertyUnits: [
+                pu({ id: 'PU-WRONG-UNION', unionId: 'other-union' }),
+                pu({ id: 'PU-NULL-PNU', pnu: null }),
+                pu({ id: 'PU-OUT-OF-SCOPE', pnu: 'OTHER-PNU' }),
+                pu({ id: 'PU-DELETED', isDeleted: true }),
+            ],
+        })
+    );
+    assert.equal(d.kind, 'NO_CHANGE');
+    assert.equal(
+        d.kind === 'NO_CHANGE' && d.stage,
+        'PROPERTY_UNIT_BY_BU'
+    );
+    assert.equal(
+        d.kind === 'NO_CHANGE' && d.issue,
+        'PROPERTY_UNIT_NOT_FOUND'
+    );
 });
 
 test('6단계 fallback 0건 → NOT_FOUND (PNU scope 벗어난 pnu 제외)', () => {

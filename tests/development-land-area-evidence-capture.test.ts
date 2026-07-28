@@ -6,24 +6,31 @@ import {
     DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2,
     DEVELOPMENT_TARGET_MANIFEST_VERSION,
     DEVELOPMENT_TARGET_MANIFEST_VERSION_V2,
+    DEVELOPMENT_TARGET_MANIFEST_VERSION_V3,
+    computeDevelopmentActivePnuDigest,
     computeDevelopmentTargetDigest,
     computeDevelopmentTargetV2ManifestDigest,
+    computeDevelopmentTargetV3ManifestDigest,
     developmentTargetScopeDigest,
     parseDevelopmentEvidenceManifest,
     parseDevelopmentTargetManifest,
+    validateDevelopmentRunnerManifests,
     type DevelopmentTargetManifest,
 } from '../src/operations/development-land-area-sync-runner';
 import {
     aggregateDevelopmentEvidenceCaptureIssueCodes,
     aggregateDevelopmentEvidenceCaptureEntries,
     assertDevelopmentEvidenceCaptureActiveIdentity,
+    captureDevelopmentLandAreaEvidence,
     developmentEvidenceEntryFromSnapshot,
+    hasStableDevelopmentActivePropertyIdentity,
 } from '../src/operations/development-land-area-evidence-capture';
 import type { LandAreaSyncScopeSnapshot } from '../src/types/land-area-sync-job.types';
 
 const UNION_ID = '00f48b95-e9bc-4c92-a0e5-6b9a57adcfb9';
 const PNU = '1130510100107912166';
 const ATTACHED_PNU = '1130510100107912167';
+const THIRD_PNU = '1130510100107912168';
 const PROPERTY_UNIT_ID =
     '5a1a4cbb-c8ad-45a3-ae40-b90665dc949c';
 const MIA_791_2280_TARGET_URL = new URL(
@@ -36,6 +43,10 @@ const MIA_AUTO_286_TARGET_URL = new URL(
 );
 const MIA_FULL_299_TARGET_URL = new URL(
     '../development-land-area-sync-manifests/mia-seven-full-299-api-readonly-target-20260728.json',
+    import.meta.url
+);
+const MIA_FULL_295_COMPONENT_TARGET_URL = new URL(
+    '../development-land-area-sync-manifests/mia-seven-full-295-components-api-readonly-target-20260728.json',
     import.meta.url
 );
 const MIA_FULL_299_DELTA = [
@@ -120,8 +131,8 @@ function targetV2(): DevelopmentTargetManifest {
         allowedScopePnus,
         targetCount: 1,
         expectedPropertyUnitCount: 1,
-        expectedUnionActivePropertyUnitCount: 429,
-        expectedUnionActivePnuCount: 299,
+        expectedUnionActivePropertyUnitCount: 1,
+        expectedUnionActivePnuCount: 1,
         allowManualOverwrite: true as const,
     };
     return {
@@ -134,6 +145,38 @@ function targetV2(): DevelopmentTargetManifest {
         ),
         manifestDigest:
             computeDevelopmentTargetV2ManifestDigest(identity),
+    };
+}
+
+function threePnuComponentTargetV3(): DevelopmentTargetManifest {
+    const allowedScopePnus = [PNU, ATTACHED_PNU, THIRD_PNU];
+    const expectedUnionActivePnus = [PNU];
+    const identity = {
+        unionId: UNION_ID,
+        anchors: [PNU],
+        allowedScopePnus,
+        expectedUnionActivePnus,
+        expectedUnionActivePnuDigest:
+            computeDevelopmentActivePnuDigest(
+                UNION_ID,
+                expectedUnionActivePnus
+            ),
+        targetCount: 1,
+        expectedPropertyUnitCount: 1,
+        expectedUnionActivePropertyUnitCount: 1,
+        expectedUnionActivePnuCount: 1,
+        allowManualOverwrite: true as const,
+    };
+    return {
+        version: DEVELOPMENT_TARGET_MANIFEST_VERSION_V3,
+        databaseTarget: 'development',
+        ...identity,
+        scopeDigest: computeDevelopmentTargetDigest(
+            identity.unionId,
+            identity.allowedScopePnus
+        ),
+        manifestDigest:
+            computeDevelopmentTargetV3ManifestDigest(identity),
     };
 }
 
@@ -244,21 +287,176 @@ test('미아7 전체 API 재조회 target은 활성 anchor 299건과 property un
     );
 });
 
-test('전체 capture는 실행 직전 DEV 활성 429호·299 PNU가 anchor와 exact 일치해야 한다', () => {
+test('미아7 component target은 활성 299 PNU를 295 anchor·300 allowed scope로 고정한다', () => {
     const full299 = parseDevelopmentTargetManifest(
         JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
     );
+    const component295 = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(MIA_FULL_295_COMPONENT_TARGET_URL, 'utf8')
+        )
+    );
     assert.equal(
-        full299.version,
-        DEVELOPMENT_TARGET_MANIFEST_VERSION_V2
+        component295.version,
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
     );
     if (
-        full299.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2
+        full299.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 ||
+        component295.version !==
+            DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
     ) {
-        throw new Error('v2 full299 expected');
+        throw new Error('v2 full manifests expected');
+    }
+
+    assert.equal(component295.anchors.length, 295);
+    assert.equal(component295.targetCount, 295);
+    assert.equal(component295.allowedScopePnus.length, 300);
+    assert.equal(component295.expectedPropertyUnitCount, 429);
+    assert.equal(
+        component295.expectedUnionActivePropertyUnitCount,
+        429
+    );
+    assert.equal(component295.expectedUnionActivePnuCount, 299);
+    assert.deepEqual(
+        component295.expectedUnionActivePnus,
+        full299.anchors
+    );
+    assert.equal(
+        component295.expectedUnionActivePnuDigest,
+        computeDevelopmentActivePnuDigest(
+            UNION_ID,
+            full299.anchors
+        )
+    );
+    assert.deepEqual(
+        component295.allowedScopePnus.filter(
+            (pnu) =>
+                !component295.expectedUnionActivePnus.includes(pnu)
+        ),
+        ['1130510100107912281']
+    );
+    assert.deepEqual(
+        full299.anchors.filter(
+            (pnu) => !component295.anchors.includes(pnu)
+        ),
+        [
+            '1130510100107450052',
+            '1130510100107912212',
+            '1130510100107912213',
+            '1130510100107912344',
+        ]
+    );
+    assert.deepEqual(
+        component295.allowedScopePnus,
+        full299.allowedScopePnus
+    );
+    assert.equal(
+        component295.scopeDigest,
+        computeDevelopmentTargetDigest(
+            UNION_ID,
+            component295.allowedScopePnus
+        )
+    );
+    assert.equal(
+        component295.manifestDigest,
+        computeDevelopmentTargetV3ManifestDigest(component295)
+    );
+    const changedActivePnus = component295.expectedUnionActivePnus
+        .filter((pnu) => pnu !== '1130510100107450052')
+        .concat('1130510100107912281')
+        .sort();
+    assert.throws(
+        () =>
+            parseDevelopmentTargetManifest({
+                ...component295,
+                expectedUnionActivePnus: changedActivePnus,
+                expectedUnionActivePnuDigest:
+                    computeDevelopmentActivePnuDigest(
+                        UNION_ID,
+                        changedActivePnus
+                    ),
+            }),
+        /TARGET_MANIFEST_INVALID/
+    );
+    assert.throws(
+        () =>
+            parseDevelopmentTargetManifest({
+                ...component295,
+                expectedUnionActivePnuDigest: '0'.repeat(64),
+            }),
+        /TARGET_MANIFEST_INVALID/
+    );
+});
+
+test('pinned v3 capture snapshot은 singleton까지 full-refresh official digest provenance로 기록한다', () => {
+    const component295 = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(
+                MIA_FULL_295_COMPONENT_TARGET_URL,
+                'utf8'
+            )
+        )
+    );
+    if (
+        component295.version !==
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v3 full target expected');
+    }
+    const fullSnapshot: LandAreaSyncScopeSnapshot = {
+        ...snapshot(),
+        developmentFullRefreshScopeResolution: {
+            source:
+                'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
+            canonicalBasePnu: PNU,
+            memberPnus: [PNU],
+            managementPk: '1010111038',
+            pairCount: 0,
+            officialComponentDigest: 'a'.repeat(64),
+            manifestDigest: component295.manifestDigest,
+            scopeDigest: component295.scopeDigest,
+        },
+    };
+    const entry = developmentEvidenceEntryFromSnapshot({
+        target: component295,
+        captureRunId: '30118336235',
+        anchorPnu: PNU,
+        snapshot: fullSnapshot,
+    });
+    assert.ok('kind' in entry.sourceReferences);
+    if (!('kind' in entry.sourceReferences)) {
+        throw new Error('official capture provenance expected');
+    }
+    assert.deepEqual(entry.sourceReferences, {
+        kind: 'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE',
+        captureRunId: '30118336235',
+        snapshotReferenceSha256:
+            entry.sourceReferences.snapshotReferenceSha256,
+        officialComponentDigest: 'a'.repeat(64),
+    });
+});
+
+test('v3 전체 capture는 실행 직전 DEV 활성 429호·299 PNU exact 집합을 고정한다', () => {
+    const full299 = parseDevelopmentTargetManifest(
+        JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
+    );
+    const component295 = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(MIA_FULL_295_COMPONENT_TARGET_URL, 'utf8')
+        )
+    );
+    if (
+        full299.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 ||
+        component295.version !==
+            DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v2 full299 and v3 full295 expected');
     }
     const rows = Array.from(
-        { length: full299.expectedUnionActivePropertyUnitCount },
+        {
+            length:
+                component295.expectedUnionActivePropertyUnitCount,
+        },
         (_, index) => ({
             id: `00000000-0000-4000-a000-${String(index + 1).padStart(12, '0')}`,
             pnu: full299.anchors[
@@ -270,18 +468,27 @@ test('전체 capture는 실행 직전 DEV 활성 429호·299 PNU가 anchor와 ex
     );
     assert.doesNotThrow(() =>
         assertDevelopmentEvidenceCaptureActiveIdentity({
-            target: full299,
+            target: component295,
             rows,
         })
     );
 
-    const sameCountsDifferentPnu = rows.map((row) => ({ ...row }));
-    sameCountsDifferentPnu[full299.anchors.length - 1].pnu =
-        '1130510100109999999';
+    const replacedActivePnu = '1130510100107450052';
+    const replacementIndex = rows.findIndex(
+        (row) => row.pnu === replacedActivePnu
+    );
+    assert.notEqual(replacementIndex, -1);
+    const sameCountsDifferentPnu = rows.map((row) => ({
+        ...row,
+        pnu:
+            row.pnu === replacedActivePnu
+                ? '1130510100107912281'
+                : row.pnu,
+    }));
     assert.throws(
         () =>
             assertDevelopmentEvidenceCaptureActiveIdentity({
-                target: full299,
+                target: component295,
                 rows: sameCountsDifferentPnu,
             }),
         /CAPTURE_UNION_ACTIVE_PNU_SET_MISMATCH/
@@ -289,10 +496,99 @@ test('전체 capture는 실행 직전 DEV 활성 429호·299 PNU가 anchor와 ex
     assert.throws(
         () =>
             assertDevelopmentEvidenceCaptureActiveIdentity({
-                target: full299,
+                target: component295,
                 rows: rows.slice(0, -1),
             }),
         /CAPTURE_UNION_ACTIVE_PROPERTY_SET_MISMATCH/
+    );
+});
+
+test('295 component capture는 anchor 밖 active PNU 4개를 허용하되 300 scope 밖 PNU는 거부한다', () => {
+    const full299 = parseDevelopmentTargetManifest(
+        JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
+    );
+    const component295 = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(MIA_FULL_295_COMPONENT_TARGET_URL, 'utf8')
+        )
+    );
+    if (
+        full299.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 ||
+        component295.version !==
+            DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v2 full manifests expected');
+    }
+    const rows = Array.from(
+        {
+            length:
+                component295.expectedUnionActivePropertyUnitCount,
+        },
+        (_, index) => ({
+            id: `00000000-0000-4000-a000-${String(index + 1).padStart(12, '0')}`,
+            pnu: full299.anchors[index % full299.anchors.length],
+        })
+    );
+
+    assert.doesNotThrow(() =>
+        assertDevelopmentEvidenceCaptureActiveIdentity({
+            target: component295,
+            rows,
+        })
+    );
+    const replacedPnu = rows[0].pnu;
+    const outsideScope = rows.map((row) => ({
+        ...row,
+        pnu:
+            row.pnu === replacedPnu
+                ? '1130510100109999999'
+                : row.pnu,
+    }));
+    assert.throws(
+        () =>
+            assertDevelopmentEvidenceCaptureActiveIdentity({
+                target: component295,
+                rows: outsideScope,
+            }),
+        /CAPTURE_UNION_ACTIVE_PNU_SET_MISMATCH/
+    );
+});
+
+test('동일 개수 active property ID가 교체되면 시작·종료 identity digest가 달라진다', () => {
+    const targetManifest = threePnuComponentTargetV3();
+    const initial =
+        assertDevelopmentEvidenceCaptureActiveIdentity({
+            target: targetManifest,
+            rows: [{ id: PROPERTY_UNIT_ID, pnu: PNU }],
+        });
+    const changed =
+        assertDevelopmentEvidenceCaptureActiveIdentity({
+            target: targetManifest,
+            rows: [
+                {
+                    id: '8ee4871c-41c5-4c17-9b41-b11b1db7bc55',
+                    pnu: PNU,
+                },
+            ],
+        });
+
+    assert.equal(
+        hasStableDevelopmentActivePropertyIdentity(
+            initial,
+            initial
+        ),
+        true
+    );
+    assert.equal(
+        hasStableDevelopmentActivePropertyIdentity(
+            initial,
+            changed
+        ),
+        false
+    );
+    assert.equal(
+        hasStableDevelopmentActivePropertyIdentity(initial, null),
+        false
     );
 });
 
@@ -310,6 +606,7 @@ test('read-only audit 집계는 식별자 없이 CAPTURED/NO_DATA/REVIEW/FAILED�
         terminalIssueCodes: [],
         terminalIssuesTotal: 0,
         terminalIssuesTruncated: false,
+        scopeResolutionSource: 'DB_RESOLVER',
     } as const;
     const aggregate = aggregateDevelopmentEvidenceCaptureEntries([
         { ...base, status: 'CAPTURED' },
@@ -358,6 +655,7 @@ test('read-only 공개 진단은 개별 PNU를 가리키지 않는 issue code별
         terminalIssueCodes: [],
         terminalIssuesTotal: 0,
         terminalIssuesTruncated: false,
+        scopeResolutionSource: 'DB_RESOLVER',
     } as const;
     const issueCounts =
         aggregateDevelopmentEvidenceCaptureIssueCodes([
@@ -516,6 +814,266 @@ test('v2 API capture는 MANUAL 값을 동시성 guard로 보존하고 API 제안
             manifestDigest: targetManifest.manifestDigest,
             entries: [entry],
         })
+    );
+});
+
+test('READ_ONLY same-run 1→3 official component는 전 PNU를 LDAREG/LADFRL scan해 issue 0 CAPTURED로 남기고 write 승격은 차단한다', async () => {
+    const targetManifest = threePnuComponentTargetV3();
+    if (
+        targetManifest.version !==
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v3 target expected');
+    }
+    const managementPk = '1010111038';
+    const ldaregPnus = new Set<string>();
+    const ladfrlPnus = new Set<string>();
+    let activeIdentityReads = 0;
+    const result = await captureDevelopmentLandAreaEvidence({
+        target: targetManifest,
+        captureRunId: '30118336235',
+        concurrency: 1,
+        deps: {
+            now: () => new Date('2026-07-28T00:00:00.000Z'),
+            async readActivePropertyIdentity() {
+                activeIdentityReads += 1;
+                return [{ id: PROPERTY_UNIT_ID, pnu: PNU }];
+            },
+            async resolveScope() {
+                return {
+                    data: {
+                        dbState: 'NO_EVIDENCE',
+                        rootBuildingIdentities: [managementPk],
+                        componentPnus: [PNU],
+                        linkedBasePnus: [],
+                        linkedPnus: [],
+                        linkedEvidenceKeys: [],
+                        pendingEvidenceKeys: [],
+                        blockingEvidence: [],
+                        openUnresolvedEvidenceKeys: [],
+                        componentTruncated: false,
+                        propertyMembership: [
+                            {
+                                propertyUnitId: PROPERTY_UNIT_ID,
+                                pnu: PNU,
+                                buildingUnitId: null,
+                            },
+                        ],
+                        dbScopeHash: 'db-scope-no-evidence',
+                    },
+                    error: null,
+                };
+            },
+            async readBuildingUnits() {
+                return [];
+            },
+            async readPropertyUnits() {
+                return [
+                    {
+                        id: PROPERTY_UNIT_ID,
+                        unionId: UNION_ID,
+                        buildingUnitId: null,
+                        pnu: PNU,
+                        isDeleted: false,
+                        dong: '101',
+                        ho: '301',
+                    },
+                ];
+            },
+            async readCurrentLandTuples() {
+                return [
+                    {
+                        propertyUnitId: PROPERTY_UNIT_ID,
+                        landArea: '',
+                        source: 'LEGACY_UNKNOWN',
+                    },
+                ];
+            },
+            scans: {
+                async scanTitle() {
+                    return {
+                        state: 'COMPLETE',
+                        rows: [
+                            {
+                                mgmBldrgstPk: managementPk,
+                                bylotCnt: '2',
+                                regstrGbCd: '2',
+                                mainPurpsCd: '02003',
+                                mainPurpsCdNm: '다세대주택',
+                            },
+                        ],
+                        totalCount: 1,
+                        pagesFetched: 1,
+                    };
+                },
+                async scanAttached() {
+                    return {
+                        state: 'COMPLETE',
+                        rows: [
+                            {
+                                mgmBldrgstPk: managementPk,
+                                sigunguCd: '11305',
+                                bjdongCd: '10100',
+                                platGbCd: '0',
+                                bun: '0791',
+                                ji: '2166',
+                                atchSigunguCd: '11305',
+                                atchBjdongCd: '10100',
+                                atchPlatGbCd: '0',
+                                atchBun: '0791',
+                                atchJi: '2167',
+                            },
+                            {
+                                mgmBldrgstPk: managementPk,
+                                sigunguCd: '11305',
+                                bjdongCd: '10100',
+                                platGbCd: '0',
+                                bun: '0791',
+                                ji: '2166',
+                                atchSigunguCd: '11305',
+                                atchBjdongCd: '10100',
+                                atchPlatGbCd: '0',
+                                atchBun: '0791',
+                                atchJi: '2168',
+                            },
+                        ],
+                        totalCount: 2,
+                        pagesFetched: 1,
+                    };
+                },
+                async scanBasis(pnu) {
+                    return {
+                        state: 'COMPLETE',
+                        rows: [{ pnu, mgmBldrgstPk: managementPk }],
+                        totalCount: 1,
+                        pagesFetched: 1,
+                    };
+                },
+                async scanExpos(pnu) {
+                    return {
+                        state: 'COMPLETE',
+                        rows: [
+                            {
+                                pnu,
+                                mgmBldrgstPk: managementPk,
+                                dongNm: '101',
+                                flrNoNm: '3',
+                                hoNm: '301',
+                            },
+                        ],
+                        totalCount: 1,
+                        pagesFetched: 1,
+                    };
+                },
+                async scanLadfrl(pnu) {
+                    ladfrlPnus.add(pnu);
+                    return {
+                        state: 'COMPLETE',
+                        rows: [{ pnu, lndpclAr: '33.5' }],
+                        totalCount: 1,
+                        pagesFetched: 1,
+                    };
+                },
+                async scanLdareg(pnu) {
+                    ldaregPnus.add(pnu);
+                    return {
+                        state: 'COMPLETE',
+                        rows: [
+                            {
+                                pnu,
+                                agbldgSn: '1744',
+                                ldaQotaRate: '10/100.5',
+                                clsSeCode: '0',
+                                clsSeCodeNm: '현행',
+                                buldDongNm: '101',
+                                buldFloorNm: '3',
+                                buldHoNm: '301',
+                            },
+                        ],
+                        totalCount: 1,
+                        pagesFetched: 1,
+                    };
+                },
+            },
+        },
+    });
+
+    assert.deepEqual([...ldaregPnus].sort(), [
+        PNU,
+        ATTACHED_PNU,
+        THIRD_PNU,
+    ]);
+    assert.deepEqual([...ladfrlPnus].sort(), [
+        PNU,
+        ATTACHED_PNU,
+        THIRD_PNU,
+    ]);
+    assert.equal(result.audit.gate.status, 'PASS');
+    assert.equal(activeIdentityReads, 2);
+    assert.equal(result.audit.activePropertyIdentityStable, true);
+    assert.equal(
+        result.audit.initialActivePropertyIdentityDigest,
+        result.audit.finalActivePropertyIdentityDigest
+    );
+    assert.equal(result.audit.redactedAggregate.CAPTURED, 1);
+    assert.equal(result.audit.entries[0].status, 'CAPTURED');
+    assert.deepEqual(result.audit.entries[0].terminalIssueCodes, []);
+    assert.equal(result.audit.entries[0].terminalIssuesTotal, 0);
+    assert.equal(
+        result.audit.entries[0].scopeResolutionSource,
+        'SAME_RUN_OFFICIAL_READ_ONLY'
+    );
+    assert.equal(result.audit.scannedPnuCount, 3);
+    assert.equal(result.audit.sameRunOfficialComponentCount, 1);
+    assert.deepEqual(result.audit.promotionGate, {
+        status: 'BLOCKED',
+        writeEligible: false,
+        failureCodes: [
+            'SAME_RUN_OFFICIAL_SCOPE_NOT_DB_REVALIDATABLE',
+        ],
+    });
+    assert.equal(
+        result.audit.readOnlyGuards.propertyUnitWriteRpcCalls,
+        0
+    );
+    assert.equal(result.evidence?.entries.length, 1);
+    const [entry] = result.evidence?.entries ?? [];
+    assert.ok(entry && 'kind' in entry.sourceReferences);
+    if (!entry || !('kind' in entry.sourceReferences)) {
+        throw new Error('same-run capture provenance expected');
+    }
+    assert.equal(
+        entry.sourceReferences.kind,
+        'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE'
+    );
+    if (
+        entry.sourceReferences.kind !==
+        'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE'
+    ) {
+        throw new Error('same-run capture provenance expected');
+    }
+    assert.match(
+        entry.sourceReferences.officialComponentDigest,
+        /^[0-9a-f]{64}$/
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                targetManifest,
+                {
+                    version:
+                        'land-area-development-db-approval-manifest@1',
+                    databaseTarget: 'development',
+                    unionId: UNION_ID,
+                    pnus: targetManifest.allowedScopePnus,
+                    targetCount:
+                        targetManifest.allowedScopePnus.length,
+                    manifestDigest: targetManifest.scopeDigest,
+                    enabled: true,
+                },
+                result.evidence!
+            ),
+        /TARGET_FULL_REFRESH_POLICY_MISMATCH/
     );
 });
 

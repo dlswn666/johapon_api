@@ -75,6 +75,125 @@ test('confirm route 는 확인자·시각 body 금지 + scope hash·정렬 prope
     assert.match(s, /p_actor_user_id: req\.user!\.actorUserId!/);
 });
 
+test('LAND_AREA_SYNC queue는 admission wall timer와 AbortSignal로 대기·실행 worker를 실제 종료하고 wrapper timeout을 쓰지 않는다', async () => {
+    const queue = await readFile(
+        'src/services/land-area-sync/queue.ts',
+        'utf8'
+    );
+    const service = await readFile(
+        'src/services/land-area-sync/service.ts',
+        'utf8'
+    );
+    assert.match(
+        queue,
+        /LAND_AREA_SYNC_ADMISSION_WALL_TIMEOUT_MS\s*=\s*10 \* 60_000/
+    );
+    assert.match(queue, /new PQueue\(\{ concurrency: 2 \}\)/);
+    assert.doesNotMatch(
+        queue,
+        /new PQueue\(\{[^}]*timeout\s*:/
+    );
+    assert.match(
+        queue,
+        /setTimeout\([\s\S]*workerController\.abort\(\)[\s\S]*if \(!started\) queuedController\.abort\(\)[\s\S]*LAND_AREA_SYNC_ADMISSION_WALL_TIMEOUT_MS/
+    );
+    assert.match(
+        queue,
+        /started = true[\s\S]+signal: workerController\.signal[\s\S]+signal: queuedController\.signal/
+    );
+    assert.match(
+        queue,
+        /timedOut = true[\s\S]+await runLandAreaSyncJob\([\s\S]+if \(timedOut\)[\s\S]+ensureTimedOutJobHasDurableTerminal/
+    );
+    assert.match(queue, /clearTimeout\(deadlineTimer\)/);
+    assert.match(
+        service,
+        /if \(aborted\(signal\)\) return; \/\/ terminal\/fatal 이후 apply 금지[\s\S]+deps\.db\.applyRpc/
+    );
+});
+
+test('실행 중 wall timeout은 worker drain 뒤 PROCESSING을 durable FAILED로 닫고 기존 terminal은 보존한다', async () => {
+    const { ensureTimedOutJobHasDurableTerminal } =
+        await import(
+            '../src/services/land-area-sync/queue-timeout-terminal'
+        );
+    const events: string[] = [];
+    const controller = new AbortController();
+    const worker = new Promise<void>((resolve) => {
+        controller.signal.addEventListener(
+            'abort',
+            () => {
+                setImmediate(() => {
+                    events.push('worker-drained');
+                    resolve();
+                });
+            },
+            { once: true }
+        );
+    });
+
+    controller.abort();
+    await worker;
+    const marked = await ensureTimedOutJobHasDurableTerminal({
+        readJob: async () => {
+            events.push('terminal-read');
+            return {
+                id: '11111111-1111-4111-8111-111111111111',
+                union_id: '22222222-2222-4222-8222-222222222222',
+                status: 'PROCESSING',
+                progress: 50,
+                preview_data: {
+                    landAreaSync: {
+                        schemaVersion: 2,
+                    },
+                },
+                created_at: '2026-07-28T00:00:00.000Z',
+                updated_at: '2026-07-28T00:00:00.000Z',
+                error_log: null,
+            };
+        },
+        markFailed: async () => {
+            events.push('durable-failed');
+            return true;
+        },
+    });
+    assert.equal(marked, true);
+    assert.deepEqual(events, [
+        'worker-drained',
+        'terminal-read',
+        'durable-failed',
+    ]);
+
+    let overwriteAttempts = 0;
+    const preserved = await ensureTimedOutJobHasDurableTerminal({
+        readJob: async () => ({
+            id: '11111111-1111-4111-8111-111111111111',
+            union_id: '22222222-2222-4222-8222-222222222222',
+            status: 'COMPLETED',
+            progress: 100,
+            preview_data: {
+                landAreaSync: {
+                    schemaVersion: 2,
+                    outcome: 'APPLIED',
+                    workerFinalization: {
+                        version: 1,
+                        finalizedAt: '2026-07-28T00:01:00.000Z',
+                    },
+                },
+            },
+            created_at: '2026-07-28T00:00:00.000Z',
+            updated_at: '2026-07-28T00:01:00.000Z',
+            error_log: null,
+        }),
+        markFailed: async () => {
+            overwriteAttempts += 1;
+            return true;
+        },
+    });
+    assert.equal(preserved, false);
+    assert.equal(overwriteAttempts, 0);
+});
+
 test('GET projection은 immutable worker finalization receipt 없는 raw terminal을 공개하지 않는다', async () => {
     const s = await gisRoute();
     assert.match(s, /receipt\.version === 1/);

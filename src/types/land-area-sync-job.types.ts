@@ -25,6 +25,13 @@ export const LAND_AREA_SYNC_SCHEMA_VERSION = 2;
 /** 적용 전략 2종(v1). */
 export type LandAreaSyncStrategy = 'LADFRL' | 'LDAREG';
 
+/** 미아7 개발 전체 재조회용 immutable 실행 표식. 일반/운영 동기화에는 존재하지 않는다. */
+export interface LandAreaSyncDevelopmentFullRefresh {
+    profile: 'DEVELOPMENT_FULL_REFRESH_API_REQUERY_V1';
+    manifestDigest: string;
+    scopeDigest: string;
+}
+
 /** §14.2 scopeState 6종. */
 export type LandAreaSyncScopeState =
     | 'SINGLE_SCOPE_CONFIRMATION_REQUIRED'
@@ -76,6 +83,30 @@ export interface LandAreaSyncScopeSnapshot {
     frozenAt: string;
     strategy: LandAreaSyncStrategy;
     scannedPnus: string[];
+    /**
+     * DB relation 승격 없이 same-run 공식 근거로만 확장된 READ_ONLY_CAPTURE scope.
+     * 이 필드가 있으면 일반 write runner/apply 증거로 사용할 수 없다.
+     */
+    readOnlyScopeResolution?: {
+        source: 'SAME_RUN_OFFICIAL_READ_ONLY';
+        canonicalBasePnu: string;
+        memberPnus: string[];
+        officialComponentDigest: string;
+    };
+    /**
+     * 관계 테이블을 승격하지 않고 같은 실행의 공식 API 근거로 확정한 DEV 전체 갱신
+     * component. discovery와 확인 후 apply가 각각 새로 조회해 이 값을 exact 비교한다.
+     */
+    developmentFullRefreshScopeResolution?: {
+        source: 'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH';
+        canonicalBasePnu: string;
+        memberPnus: string[];
+        managementPk: string;
+        pairCount: number;
+        officialComponentDigest: string;
+        manifestDigest: string;
+        scopeDigest: string;
+    };
     /**
      * DB resolver(`resolve_land_area_sync_scope_v1`) 호출에 실제 사용한 root 관리번호 식별자
      * 배열(정렬·dedup). up-PK 우선(`mgmUpBldrgstPk` 있으면 그 값, 없으면 `mgmBldrgstPk`)으로
@@ -173,6 +204,8 @@ export interface LandAreaSyncPreview {
     schemaVersion: number;
     anchorPnu: string;
     sourceDiscoveryJobId: string | null;
+    /** DEV 미아7 전체 재조회 요청에만 저장되는 immutable 표식. */
+    developmentFullRefresh?: LandAreaSyncDevelopmentFullRefresh;
     /** admission 응답 유실 시 exact job을 찾기 위한 UUID. PROCESSING부터 immutable이다. */
     admissionKey?: string;
     /**
@@ -208,6 +241,7 @@ export interface LandAreaSyncDiscoveryRequest {
     admissionKey: string;
     actorUserId: string;
     databaseTarget: DatabaseTarget;
+    developmentFullRefresh?: LandAreaSyncDevelopmentFullRefresh;
 }
 
 /** confirmation route body(확인자·시각은 body 금지 — §14.1). */

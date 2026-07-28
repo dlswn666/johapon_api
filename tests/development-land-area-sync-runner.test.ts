@@ -10,14 +10,17 @@ import {
     DEVELOPMENT_GIS_JWT_TTL_SECONDS,
     DEVELOPMENT_JOB_POLL_SOFT_TIMEOUT_MS,
     DEVELOPMENT_PUBLIC_RUN_ARTIFACT_VERSION,
+    DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES,
     DEVELOPMENT_RUN_ARTIFACT_VERSION,
     DEVELOPMENT_TARGET_MANIFEST_VERSION,
     DEVELOPMENT_TARGET_MANIFEST_VERSION_V2,
+    DEVELOPMENT_TARGET_MANIFEST_VERSION_V3,
     LocalhostDevelopmentLandAreaSyncClient,
     computeDevelopmentTargetDigest,
     computeDevelopmentTargetV2ManifestDigest,
     createDevelopmentGisSystemAdminJwt,
     createDevelopmentPublicRunArtifact,
+    developmentFullRefreshMarkerForTarget,
     developmentTargetAllowedScopePnus,
     developmentTargetScopeDigest,
     parseDevelopmentDbApprovalManifest,
@@ -25,18 +28,23 @@ import {
     parseDevelopmentTargetManifest,
     runDevelopmentLandAreaSync,
     validateDevelopmentPublicRunArtifact,
+    validateDevelopmentLandRightTransition,
     validateDevelopmentRunArtifact,
     validateDevelopmentRunnerEnvironment,
     validateDevelopmentRunnerManifests,
     type DevelopmentDbApprovalManifest,
+    type DevelopmentActivePropertyUnit,
     type DevelopmentEvidenceEntry,
     type DevelopmentEvidenceManifest,
     type DevelopmentReadOnlyPreflightReader,
+    type DevelopmentRelationGisInvariantSnapshot,
     type DevelopmentRunArtifact,
     type DevelopmentTargetManifest,
     type DevelopmentTargetManifestV2,
+    type DevelopmentTargetManifestV3,
     type LandAreaSyncApiClient,
     type LandAreaSyncApiJob,
+    type ObservedDevelopmentLandRight,
 } from '../src/operations/development-land-area-sync-runner';
 import type { LandAreaSyncScopeSnapshot } from '../src/types/land-area-sync-job.types';
 
@@ -54,6 +62,10 @@ const SECOND_APPLY_JOB_ID = '44444444-4444-4444-8444-444444444444';
 const HASH = 'a'.repeat(64);
 const REPRESENTATIVE_EVIDENCE_MANIFEST_URL = new URL(
     '../development-land-area-sync-manifests/mia-seven-representative-evidence-20260725.json',
+    import.meta.url
+);
+const FULL_REFRESH_TARGET_MANIFEST_URL = new URL(
+    '../development-land-area-sync-manifests/mia-seven-full-295-components-api-readonly-target-20260728.json',
     import.meta.url
 );
 
@@ -364,6 +376,11 @@ function validRunArtifact(): DevelopmentRunArtifact {
             tupleDigest: '9'.repeat(64),
             nonTargetTupleDigest,
         },
+        relationGisPreflight: null,
+        relationGisPostflight: null,
+        landRightPreflight: null,
+        landRightPostflight: null,
+        landRightWriteAttribution: null,
         writeAttribution: {
             writerJobCount: 1,
             attributedPropertyUnitCount: 1,
@@ -390,6 +407,547 @@ function validRunArtifact(): DevelopmentRunArtifact {
             failureCode: null,
             stoppedBeforePnu: null,
         },
+    };
+}
+
+function fullRefreshRelationGisSnapshot():
+    DevelopmentRelationGisInvariantSnapshot {
+    const tables = Object.fromEntries(
+        DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES.map(
+            (table, index) => [
+                table,
+                {
+                    rowCount: index + 1,
+                    digest: sha256Utf8(`relation-gis:${table}`),
+                },
+            ]
+        )
+    ) as DevelopmentRelationGisInvariantSnapshot['tables'];
+    return {
+        scopePnuCount: 300,
+        propertyUnitCount: 429,
+        tables,
+        aggregateDigest: sha256Utf8(
+            JSON.stringify(
+                DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES.map(
+                    (table) => ({
+                        table,
+                        ...tables[table],
+                    })
+                )
+            )
+        ),
+    };
+}
+
+function validFullRefreshRunArtifact(): {
+    artifact: DevelopmentRunArtifact;
+    targetManifest: DevelopmentTargetManifestV3;
+} {
+    const targetManifest = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(FULL_REFRESH_TARGET_MANIFEST_URL, 'utf8')
+        )
+    );
+    assert.equal(
+        targetManifest.version,
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    );
+    if (
+        targetManifest.version !==
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v3 full refresh target expected');
+    }
+    const relationGis = fullRefreshRelationGisSnapshot();
+    const rights = {
+        rowCount: 0,
+        targetRowCount: 0,
+        activeTargetRowCount: 0,
+        allRowsDigest: sha256Utf8('land-rights:all:empty'),
+        nonTargetRowsDigest: sha256Utf8(
+            'land-rights:non-target:empty'
+        ),
+    };
+    return {
+        targetManifest,
+        artifact: {
+            version: DEVELOPMENT_RUN_ARTIFACT_VERSION,
+            databaseTarget: 'development',
+            unionId: targetManifest.unionId,
+            targetCount: targetManifest.targetCount,
+            manifestDigest: targetManifest.manifestDigest,
+            expectedPropertyUnitCount:
+                targetManifest.expectedPropertyUnitCount,
+            observedPropertyUnitCount:
+                targetManifest.expectedPropertyUnitCount,
+            startedAt: '2026-07-28T00:00:00.000Z',
+            completedAt: '2026-07-28T03:00:00.000Z',
+            preflight: {
+                activePropertyUnitCount: 429,
+                activePnuCount: 299,
+                positiveLandAreaCount: 0,
+                identityDigest: sha256Utf8(
+                    'full-refresh-property-identity'
+                ),
+                tupleDigest: sha256Utf8(
+                    'full-refresh-preflight-tuples'
+                ),
+                nonTargetTupleDigest: sha256Utf8(
+                    'full-refresh-non-target-tuples'
+                ),
+            },
+            postflight: {
+                activePropertyUnitCount: 429,
+                activePnuCount: 299,
+                positiveLandAreaCount: 429,
+                identityDigest: sha256Utf8(
+                    'full-refresh-property-identity'
+                ),
+                tupleDigest: sha256Utf8(
+                    'full-refresh-postflight-tuples'
+                ),
+                nonTargetTupleDigest: sha256Utf8(
+                    'full-refresh-non-target-tuples'
+                ),
+            },
+            relationGisPreflight: relationGis,
+            relationGisPostflight: structuredClone(relationGis),
+            landRightPreflight: rights,
+            landRightPostflight: { ...rights },
+            landRightWriteAttribution: {
+                changedRowCount: 0,
+                writerJobCount: 0,
+                attributedPropertyUnitCount: 0,
+                attributionDigest: sha256Utf8(
+                    'full-refresh-land-right-attribution-empty'
+                ),
+            },
+            writeAttribution: {
+                writerJobCount: 1,
+                attributedPropertyUnitCount: 429,
+                attributionDigest: sha256Utf8(
+                    'full-refresh-property-attribution'
+                ),
+            },
+            results: targetManifest.anchors.map((pnu) => ({
+                pnu,
+                admission: 'NEW_DISCOVERY',
+                discoveryJobId: DISCOVERY_JOB_ID,
+                applyJobId: APPLY_JOB_ID,
+                writerJobId: APPLY_JOB_ID,
+                status: 'COMPLETED',
+                strategy: 'LADFRL',
+                scopeState: 'SINGLE_PNU_CONFIRMED',
+                outcome: 'APPLIED',
+                updatedPropertyUnits: 1,
+                unchangedPropertyUnits: 0,
+                issueCodes: [],
+            })),
+            gate: {
+                status: 'PASS',
+                failureCode: null,
+                stoppedBeforePnu: null,
+            },
+        },
+    };
+}
+
+function numberedUuid(prefix: string, index: number): string {
+    return `${prefix}-0000-4000-8000-${String(index + 1).padStart(
+        12,
+        '0'
+    )}`;
+}
+
+function fullRefreshRuntimeFixture(input: {
+    ldaregAnchorIndex?: number;
+} = {}): {
+    targetManifest: DevelopmentTargetManifestV3;
+    evidenceManifest: DevelopmentEvidenceManifest;
+    preRows: DevelopmentActivePropertyUnit[];
+    postRows: DevelopmentActivePropertyUnit[];
+    writerJobIdByPnu: Map<string, string>;
+    terminalByJobId: Map<string, LandAreaSyncApiJob>;
+} {
+    const parsed = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(FULL_REFRESH_TARGET_MANIFEST_URL, 'utf8')
+        )
+    );
+    assert.equal(
+        parsed.version,
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    );
+    if (
+        parsed.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v3 full refresh target expected');
+    }
+    const extraPnus = parsed.allowedScopePnus.filter(
+        (pnu) => !parsed.anchors.includes(pnu)
+    );
+    const scannedPnusByAnchor = new Map(
+        parsed.anchors.map((anchor, index) => [
+            anchor,
+            index === 0
+                ? [anchor, ...extraPnus].sort()
+                : [anchor],
+        ])
+    );
+    const anchorByPnu = new Map<string, string>();
+    for (const [anchor, scannedPnus] of scannedPnusByAnchor) {
+        for (const pnu of scannedPnus) {
+            anchorByPnu.set(pnu, anchor);
+        }
+    }
+    const propertyRowsByAnchor = new Map<
+        string,
+        Array<{ id: string; pnu: string }>
+    >(parsed.anchors.map((anchor) => [anchor, []]));
+    let propertyIndex = 0;
+    for (const pnu of parsed.expectedUnionActivePnus) {
+        const anchor = anchorByPnu.get(pnu);
+        assert.ok(anchor, `active PNU ${pnu} component missing`);
+        propertyRowsByAnchor.get(anchor!)!.push({
+            id: numberedUuid('10000000', propertyIndex),
+            pnu,
+        });
+        propertyIndex += 1;
+    }
+    while (propertyIndex < parsed.expectedPropertyUnitCount) {
+        propertyRowsByAnchor.get(parsed.anchors[0])!.push({
+            id: numberedUuid('10000000', propertyIndex),
+            pnu: parsed.anchors[0],
+        });
+        propertyIndex += 1;
+    }
+    const writerJobIdByPnu = new Map(
+        parsed.anchors.map((pnu, index) => [
+            pnu,
+            numberedUuid('20000000', index),
+        ])
+    );
+    const marker = developmentFullRefreshMarkerForTarget(parsed)!;
+    const entries = parsed.anchors.map((anchor, index) => {
+        const strategy =
+            index === input.ldaregAnchorIndex
+                ? ('LDAREG' as const)
+                : ('LADFRL' as const);
+        const scannedPnus = scannedPnusByAnchor.get(anchor)!;
+        const properties = propertyRowsByAnchor
+            .get(anchor)!
+            .sort((left, right) => left.id.localeCompare(right.id));
+        const officialComponentDigest = sha256Utf8(
+            `official-component:${anchor}`
+        );
+        return {
+            anchorPnu: anchor,
+            expectedStrategy: strategy,
+            expectedScannedPnus: scannedPnus,
+            expectedPropertyUnitIds: properties.map(
+                (property) => property.id
+            ),
+            expectedProposedLandAreas: properties.map(
+                (property) => ({
+                    propertyUnitId: property.id,
+                    landArea: '1',
+                })
+            ),
+            expectedLadfrlAreaEvidence: {
+                parcels: scannedPnus.map((pnu) => ({
+                    pnu,
+                    area: '1',
+                })),
+                totalArea: String(scannedPnus.length),
+            },
+            allowedPrestates: properties.map((property) => ({
+                propertyUnitId: property.id,
+                landArea: null,
+                landAreaSource: 'LEGACY_UNKNOWN' as const,
+            })),
+            parcelScopeEvidence: {
+                kind: 'API_RELATION_CROSS_CHECK' as const,
+                ref: `capture=${index + 1}`,
+            },
+            landOwnershipEvidence:
+                strategy === 'LADFRL'
+                    ? {
+                          kind: 'LAND_LEDGER_COPY' as const,
+                          ref: `capture=${index + 1}`,
+                      }
+                    : null,
+            allowManualOverwrite: true,
+            sourceReferences: {
+                kind: 'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE' as const,
+                captureRunId: String(40000000 + index),
+                snapshotReferenceSha256: sha256Utf8(
+                    `snapshot:${anchor}`
+                ),
+                officialComponentDigest,
+            },
+        } satisfies DevelopmentEvidenceEntry;
+    });
+    const evidenceManifest: DevelopmentEvidenceManifest = {
+        version: DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2,
+        databaseTarget: 'development',
+        unionId: parsed.unionId,
+        manifestDigest: parsed.manifestDigest,
+        entries,
+    };
+    const preRows = entries.flatMap((entry) =>
+        propertyRowsByAnchor.get(entry.anchorPnu)!.map((property) => ({
+            id: property.id,
+            pnu: property.pnu,
+            landArea: null,
+            landAreaSource: 'LEGACY_UNKNOWN' as const,
+            landAreaSyncedAt: null,
+            landAreaSyncJobId: null,
+        }))
+    );
+    const postRows = entries.flatMap((entry) => {
+        const writerJobId = writerJobIdByPnu.get(
+            entry.anchorPnu
+        )!;
+        return propertyRowsByAnchor
+            .get(entry.anchorPnu)!
+            .map((property) => ({
+                id: property.id,
+                pnu: property.pnu,
+                landArea: '1',
+                landAreaSource: entry.expectedStrategy,
+                landAreaSyncedAt:
+                    '2026-07-28T00:01:00.000Z',
+                landAreaSyncJobId: writerJobId,
+            }));
+    });
+    const terminalByJobId = new Map<string, LandAreaSyncApiJob>();
+    for (const entry of entries) {
+        const writerJobId = writerJobIdByPnu.get(
+            entry.anchorPnu
+        )!;
+        const officialComponentDigest =
+            entry.sourceReferences.kind ===
+            'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE'
+                ? entry.sourceReferences.officialComponentDigest
+                : HASH;
+        terminalByJobId.set(writerJobId, {
+            jobId: writerJobId,
+            unionId: parsed.unionId,
+            status: 'COMPLETED',
+            progress: 100,
+            landAreaSync: {
+                anchorPnu: entry.anchorPnu,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+                admissionKey: writerJobId,
+                workerFinalization: {
+                    version: 1,
+                    finalizedAt: '2026-07-28T00:01:00.000Z',
+                },
+                scopeState: 'SINGLE_PNU_CONFIRMED',
+                scopeSnapshot: {
+                    frozenAt: '2026-07-28T00:00:30.000Z',
+                    strategy: entry.expectedStrategy,
+                    scannedPnus: entry.expectedScannedPnus,
+                    developmentFullRefreshScopeResolution: {
+                        source:
+                            'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
+                        canonicalBasePnu: entry.anchorPnu,
+                        memberPnus: entry.expectedScannedPnus,
+                        managementPk: `management-${entry.anchorPnu}`,
+                        pairCount:
+                            entry.expectedScannedPnus.length - 1,
+                        officialComponentDigest,
+                        manifestDigest: marker.manifestDigest,
+                        scopeDigest: marker.scopeDigest,
+                    },
+                    scopeHash: sha256Utf8(
+                        `scope:${entry.anchorPnu}`
+                    ),
+                    candidatePropertyUnitIds:
+                        entry.expectedPropertyUnitIds,
+                    proposedLandAreas:
+                        entry.expectedProposedLandAreas,
+                    ladfrlAreaEvidence: {
+                        version: 'land-area-sync.ladfrl-scope.v1',
+                        ...entry.expectedLadfrlAreaEvidence,
+                    },
+                } as LandAreaSyncScopeSnapshot,
+                branch: entry.expectedStrategy,
+                outcome: 'APPLIED',
+                counts: {
+                    updatedPropertyUnits:
+                        entry.expectedPropertyUnitIds.length,
+                    unchangedPropertyUnits: 0,
+                },
+                issues: [],
+                issuesTotal: 0,
+                issuesTruncated: false,
+            },
+        });
+    }
+    return {
+        targetManifest: parsed,
+        evidenceManifest,
+        preRows,
+        postRows,
+        writerJobIdByPnu,
+        terminalByJobId,
+    };
+}
+
+async function runFullRefreshRuntime(input: {
+    omitRelationReader?: boolean;
+    mutateRelationPost?: boolean;
+    ldaregAnchorIndex?: number;
+    wrongLandRightWriter?: boolean;
+} = {}): Promise<{
+    artifact: DevelopmentRunArtifact;
+    targetManifest: DevelopmentTargetManifestV3;
+    admissionCount: number;
+    latestReadCount: number;
+}> {
+    const fixture = fullRefreshRuntimeFixture({
+        ldaregAnchorIndex: input.ldaregAnchorIndex,
+    });
+    let admissionCount = 0;
+    let latestReadCount = 0;
+    let activeReadCount = 0;
+    let relationReadCount = 0;
+    let landRightReadCount = 0;
+    let admissionKeyIndex = 0;
+    const relationRows = () =>
+        Object.fromEntries(
+            DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES.map(
+                (table) => [table, []]
+            )
+        ) as Record<
+            (typeof DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES)[number],
+            Array<Record<string, unknown>>
+        >;
+    const reader: DevelopmentReadOnlyPreflightReader = {
+        async readActivePropertyUnits() {
+            activeReadCount += 1;
+            return activeReadCount === 1 || admissionCount === 0
+                ? fixture.preRows
+                : fixture.postRows;
+        },
+        async readPropertyUnitsBySyncJobIds(jobIds) {
+            assert.deepEqual(
+                jobIds,
+                [...fixture.writerJobIdByPnu.values()].sort()
+            );
+            return fixture.postRows.map((row) => ({
+                id: row.id,
+                unionId: fixture.targetManifest.unionId,
+                landAreaSyncJobId: row.landAreaSyncJobId!,
+            }));
+        },
+        ...(input.omitRelationReader
+            ? {}
+            : {
+                  async readRelationGisInvariantRows() {
+                      relationReadCount += 1;
+                      const rows = relationRows();
+                      if (
+                          input.mutateRelationPost &&
+                          relationReadCount > 1
+                      ) {
+                          rows.buildings = [
+                              {
+                                  building_id:
+                                      'postflight-mutation',
+                              },
+                          ];
+                      }
+                      return rows;
+                  },
+              }),
+        async readPropertyUnitLandRights() {
+            landRightReadCount += 1;
+            if (landRightReadCount === 1) return [];
+            const rights: Array<Record<string, unknown>> = [];
+            for (const entry of fixture.evidenceManifest.entries) {
+                if (entry.expectedStrategy !== 'LDAREG') continue;
+                const writerJobId =
+                    fixture.writerJobIdByPnu.get(
+                        entry.anchorPnu
+                    )!;
+                for (const propertyUnitId of entry.expectedPropertyUnitIds) {
+                    rights.push({
+                        union_id:
+                            fixture.targetManifest.unionId,
+                        property_unit_id: propertyUnitId,
+                        target_pnu: entry.expectedScannedPnus[0],
+                        lifecycle_status: 'ACTIVE',
+                        last_seen_sync_job_id:
+                            input.wrongLandRightWriter
+                                ? numberedUuid('90000000', 0)
+                                : writerJobId,
+                        last_evaluated_sync_job_id:
+                            input.wrongLandRightWriter
+                                ? numberedUuid('90000000', 0)
+                                : writerJobId,
+                    });
+                }
+            }
+            return rights;
+        },
+    };
+    const marker = developmentFullRefreshMarkerForTarget(
+        fixture.targetManifest
+    )!;
+    const artifact = await runDevelopmentLandAreaSync({
+        target: fixture.targetManifest,
+        dbApproval: approval(fixture.targetManifest),
+        evidence: fixture.evidenceManifest,
+        client: {
+            async getLatest() {
+                latestReadCount += 1;
+                return null;
+            },
+            async getJob(_unionId, jobId) {
+                const terminal =
+                    fixture.terminalByJobId.get(jobId);
+                assert.ok(terminal, `terminal ${jobId} missing`);
+                return terminal!;
+            },
+            async admitDiscovery(
+                unionId,
+                pnu,
+                _admissionKey,
+                developmentFullRefresh
+            ) {
+                admissionCount += 1;
+                assert.equal(
+                    unionId,
+                    fixture.targetManifest.unionId
+                );
+                assert.deepEqual(
+                    developmentFullRefresh,
+                    marker
+                );
+                return fixture.writerJobIdByPnu.get(pnu)!;
+            },
+            async confirmDiscovery() {
+                throw new Error('direct APPLIED fixture must not confirm');
+            },
+        },
+        preflightReader: reader,
+        createAdmissionKey: () =>
+            numberedUuid(
+                '30000000',
+                admissionKeyIndex++
+            ),
+        sleep: async () => undefined,
+        now: () => new Date('2026-07-28T00:00:00.000Z'),
+    });
+    return {
+        artifact,
+        targetManifest: fixture.targetManifest,
+        admissionCount,
+        latestReadCount,
     };
 }
 
@@ -528,8 +1086,10 @@ test('공개 artifact는 집계와 digest allowlist만 남기고 raw 식별자·
         'databaseTarget',
         'digests',
         'gate',
+        'landRightTransition',
         'manifestLabel',
         'outcomeCounts',
+        'relationGisInvariant',
         'strategyCounts',
         'version',
     ]);
@@ -636,6 +1196,424 @@ test('공개 artifact는 집계와 digest allowlist만 남기고 raw 식별자·
                 targetManifest
             ),
         /RUN_ARTIFACT_IDENTITY_CHANGED/
+    );
+});
+
+test('미아7 전체 재조회 private/public artifact는 295 구성요소·300 PNU·429 물건과 relation/rights 게이트를 고정한다', () => {
+    const { artifact, targetManifest } =
+        validFullRefreshRunArtifact();
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(artifact, targetManifest)
+    );
+    const publicArtifact = createDevelopmentPublicRunArtifact(
+        artifact,
+        'mia-seven-full-295-components-api-readonly-20260728'
+    );
+    assert.doesNotThrow(() =>
+        validateDevelopmentPublicRunArtifact(
+            publicArtifact,
+            'mia-seven-full-295-components-api-readonly-20260728'
+        )
+    );
+    assert.equal(publicArtifact.aggregateCounts.targetCount, 295);
+    assert.equal(
+        publicArtifact.aggregateCounts.expectedPropertyUnitCount,
+        429
+    );
+    assert.equal(
+        publicArtifact.relationGisInvariant.preflight
+            ?.scopePnuCount,
+        300
+    );
+    assert.deepEqual(publicArtifact.strategyCounts, {
+        LADFRL: 295,
+        LDAREG: 0,
+        NONE: 0,
+    });
+});
+
+test('미아7 전체 공개 artifact는 relation/rights 누락 또는 변조 digest를 PASS로 공개하지 않는다', () => {
+    const { artifact, targetManifest } =
+        validFullRefreshRunArtifact();
+    const publicArtifact = createDevelopmentPublicRunArtifact(
+        artifact,
+        'mia-seven-full-295-components-api-readonly-20260728'
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentPublicRunArtifact(
+                {
+                    ...publicArtifact,
+                    relationGisInvariant: {
+                        ...publicArtifact.relationGisInvariant,
+                        preflight: null,
+                    },
+                },
+                'mia-seven-full-295-components-api-readonly-20260728'
+            ),
+        /PUBLIC_RUN_ARTIFACT_INVALID/
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentPublicRunArtifact(
+                {
+                    ...publicArtifact,
+                    relationGisInvariant: {
+                        ...publicArtifact.relationGisInvariant,
+                        preflight: {
+                            ...publicArtifact.relationGisInvariant
+                                .preflight!,
+                            aggregateDigest: '0'.repeat(64),
+                        },
+                    },
+                },
+                'mia-seven-full-295-components-api-readonly-20260728'
+            ),
+        /PUBLIC_RUN_ARTIFACT_INVALID/
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentPublicRunArtifact(
+                {
+                    ...publicArtifact,
+                    landRightTransition: {
+                        preflight: null,
+                        postflight: null,
+                        writeAttribution: null,
+                    },
+                },
+                'mia-seven-full-295-components-api-readonly-20260728'
+            ),
+        /PUBLIC_RUN_ARTIFACT_INVALID/
+    );
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(artifact, targetManifest)
+    );
+});
+
+test('relation/GIS 변이는 정확한 FAIL code로만 artifact에 남고 PASS 위장은 거부된다', () => {
+    const { artifact, targetManifest } =
+        validFullRefreshRunArtifact();
+    const mutatedPost = structuredClone(
+        artifact.relationGisPostflight!
+    );
+    mutatedPost.tables.buildings = {
+        rowCount: mutatedPost.tables.buildings.rowCount + 1,
+        digest: sha256Utf8('mutated-buildings'),
+    };
+    mutatedPost.aggregateDigest = sha256Utf8(
+        JSON.stringify(
+            DEVELOPMENT_RELATION_GIS_INVARIANT_TABLES.map(
+                (table) => ({
+                    table,
+                    ...mutatedPost.tables[table],
+                })
+            )
+        )
+    );
+    const passMutation: DevelopmentRunArtifact = {
+        ...artifact,
+        relationGisPostflight: mutatedPost,
+    };
+    assert.throws(
+        () =>
+            validateDevelopmentRunArtifact(
+                passMutation,
+                targetManifest
+            ),
+        /RUN_ARTIFACT_RELATION_GIS_CHANGED/
+    );
+    assert.throws(
+        () =>
+            createDevelopmentPublicRunArtifact(
+                passMutation,
+                'mia-seven-full-295-components-api-readonly-20260728'
+            ),
+        /PUBLIC_RUN_ARTIFACT_INVALID/
+    );
+
+    const truthfulFailure: DevelopmentRunArtifact = {
+        ...passMutation,
+        gate: {
+            status: 'FAIL',
+            failureCode: 'POSTFLIGHT_RELATION_GIS_CHANGED',
+            stoppedBeforePnu: null,
+        },
+    };
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(
+            truthfulFailure,
+            targetManifest
+        )
+    );
+    assert.doesNotThrow(() =>
+        createDevelopmentPublicRunArtifact(
+            truthfulFailure,
+            'mia-seven-full-295-components-api-readonly-20260728'
+        )
+    );
+});
+
+test('비대상 대지권 변이는 정확한 FAIL로만 보존되고 PASS 위장은 거부된다', () => {
+    const { artifact, targetManifest } =
+        validFullRefreshRunArtifact();
+    const passMutation: DevelopmentRunArtifact = {
+        ...artifact,
+        landRightPostflight: {
+            ...artifact.landRightPostflight!,
+            allRowsDigest: sha256Utf8(
+                'mutated-all-land-right-rows'
+            ),
+            nonTargetRowsDigest: sha256Utf8(
+                'mutated-non-target-land-right-rows'
+            ),
+        },
+    };
+    assert.throws(
+        () =>
+            validateDevelopmentRunArtifact(
+                passMutation,
+                targetManifest
+            ),
+        /RUN_ARTIFACT_LAND_RIGHT_NON_TARGET_CHANGED/
+    );
+    assert.throws(
+        () =>
+            createDevelopmentPublicRunArtifact(
+                passMutation,
+                'mia-seven-full-295-components-api-readonly-20260728'
+            ),
+        /PUBLIC_RUN_ARTIFACT_INVALID/
+    );
+
+    const truthfulFailure: DevelopmentRunArtifact = {
+        ...passMutation,
+        gate: {
+            status: 'FAIL',
+            failureCode:
+                'POSTFLIGHT_LAND_RIGHT_NON_TARGET_CHANGED',
+            stoppedBeforePnu: null,
+        },
+    };
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(
+            truthfulFailure,
+            targetManifest
+        )
+    );
+    assert.doesNotThrow(() =>
+        createDevelopmentPublicRunArtifact(
+            truthfulFailure,
+            'mia-seven-full-295-components-api-readonly-20260728'
+        )
+    );
+});
+
+test('전체 재조회는 relation/GIS reader 누락 시 첫 API admission 전에 중단한다', async () => {
+    const {
+        artifact,
+        targetManifest,
+        admissionCount,
+        latestReadCount,
+    } = await runFullRefreshRuntime({
+        omitRelationReader: true,
+    });
+    assert.equal(admissionCount, 0);
+    assert.equal(latestReadCount, 0);
+    assert.equal(artifact.results.length, 0);
+    assert.deepEqual(artifact.gate, {
+        status: 'FAIL',
+        failureCode: 'PREFLIGHT_RELATION_GIS_READER_MISSING',
+        stoppedBeforePnu: targetManifest.anchors[0],
+    });
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(artifact, targetManifest)
+    );
+});
+
+test('전체 재조회 runtime은 relation/GIS postflight 변이를 정확한 FAIL artifact로 만든다', async () => {
+    const {
+        artifact,
+        targetManifest,
+        admissionCount,
+        latestReadCount,
+    } = await runFullRefreshRuntime({
+        mutateRelationPost: true,
+    });
+    assert.equal(admissionCount, 295);
+    assert.equal(latestReadCount, 0);
+    assert.equal(artifact.results.length, 295);
+    assert.equal(artifact.gate.status, 'FAIL');
+    assert.equal(
+        artifact.gate.failureCode,
+        'POSTFLIGHT_RELATION_GIS_CHANGED'
+    );
+    assert.notEqual(
+        artifact.relationGisPreflight?.aggregateDigest,
+        artifact.relationGisPostflight?.aggregateDigest
+    );
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(artifact, targetManifest)
+    );
+    assert.doesNotThrow(() =>
+        createDevelopmentPublicRunArtifact(
+            artifact,
+            'mia-seven-full-295-components-api-readonly-20260728'
+        )
+    );
+});
+
+test('전체 재조회 runtime은 LDAREG 권리원장 writer 전이를 attribution하고 PASS한다', async () => {
+    const {
+        artifact,
+        targetManifest,
+        admissionCount,
+        latestReadCount,
+    } = await runFullRefreshRuntime({
+        ldaregAnchorIndex: 1,
+    });
+    assert.equal(admissionCount, 295);
+    assert.equal(latestReadCount, 0);
+    assert.deepEqual(artifact.gate, {
+        status: 'PASS',
+        failureCode: null,
+        stoppedBeforePnu: null,
+    });
+    assert.deepEqual(artifact.landRightWriteAttribution, {
+        changedRowCount: 1,
+        writerJobCount: 1,
+        attributedPropertyUnitCount: 1,
+        attributionDigest:
+            artifact.landRightWriteAttribution
+                ?.attributionDigest,
+    });
+    assert.equal(
+        artifact.landRightPostflight?.activeTargetRowCount,
+        1
+    );
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(artifact, targetManifest)
+    );
+    assert.doesNotThrow(() =>
+        createDevelopmentPublicRunArtifact(
+            artifact,
+            'mia-seven-full-295-components-api-readonly-20260728'
+        )
+    );
+});
+
+test('전체 재조회 runtime은 LDAREG 권리원장 writer 불일치를 FAIL로 남기고 공개 failure artifact를 허용한다', async () => {
+    const { artifact, targetManifest, admissionCount } =
+        await runFullRefreshRuntime({
+            ldaregAnchorIndex: 1,
+            wrongLandRightWriter: true,
+        });
+    assert.equal(admissionCount, 295);
+    assert.equal(artifact.gate.status, 'FAIL');
+    assert.equal(
+        artifact.gate.failureCode,
+        'POSTFLIGHT_LAND_RIGHT_ATTRIBUTION_INVALID'
+    );
+    assert.equal(artifact.landRightWriteAttribution, null);
+    assert.doesNotThrow(() =>
+        validateDevelopmentRunArtifact(artifact, targetManifest)
+    );
+    assert.doesNotThrow(() =>
+        createDevelopmentPublicRunArtifact(
+            artifact,
+            'mia-seven-full-295-components-api-readonly-20260728'
+        )
+    );
+});
+
+test('LDAREG synthetic PASS artifact는 권리원장 attribution exact count 없이는 거부된다', () => {
+    const { artifact, targetManifest } =
+        validFullRefreshRunArtifact();
+    const tampered: DevelopmentRunArtifact = {
+        ...artifact,
+        results: artifact.results.map((result, index) =>
+            index === 0
+                ? {
+                      ...result,
+                      strategy: 'LDAREG',
+                      updatedPropertyUnits: 1,
+                  }
+                : result
+        ),
+    };
+    assert.throws(
+        () =>
+            validateDevelopmentRunArtifact(
+                tampered,
+                targetManifest
+            ),
+        /RUN_ARTIFACT_LAND_RIGHT_ATTRIBUTION_INVALID/
+    );
+    assert.throws(
+        () =>
+            createDevelopmentPublicRunArtifact(
+                tampered,
+                'mia-seven-full-295-components-api-readonly-20260728'
+            ),
+        /PUBLIC_RUN_ARTIFACT_INVALID/
+    );
+});
+
+test('LDAREG 권리원장 transition validator는 expected writer와 ACTIVE coverage를 exact 검증한다', () => {
+    const entry = {
+        ...evidenceEntry(),
+        expectedStrategy: 'LDAREG' as const,
+        landOwnershipEvidence: null,
+    };
+    const evidenceManifest = evidence(target(), [entry]);
+    const postRow: ObservedDevelopmentLandRight = {
+        key: `${PROPERTY_UNIT_ID}:${PNU}`,
+        propertyUnitId: PROPERTY_UNIT_ID,
+        targetPnu: PNU,
+        lifecycleStatus: 'ACTIVE',
+        lastSeenSyncJobId: APPLY_JOB_ID,
+        lastEvaluatedSyncJobId: APPLY_JOB_ID,
+        canonical: '{"active":true}',
+    };
+    const result = {
+        ...validRunArtifact().results[0],
+        strategy: 'LDAREG' as const,
+    };
+    assert.deepEqual(
+        validateDevelopmentLandRightTransition({
+            preRows: [],
+            postRows: [postRow],
+            evidence: evidenceManifest,
+            results: [result],
+        }),
+        {
+            changedRowCount: 1,
+            writerJobCount: 1,
+            attributedPropertyUnitCount: 1,
+            attributionDigest:
+                validateDevelopmentLandRightTransition({
+                    preRows: [],
+                    postRows: [postRow],
+                    evidence: evidenceManifest,
+                    results: [result],
+                }).attributionDigest,
+        }
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentLandRightTransition({
+                preRows: [],
+                postRows: [
+                    {
+                        ...postRow,
+                        lastEvaluatedSyncJobId:
+                            SECOND_APPLY_JOB_ID,
+                    },
+                ],
+                evidence: evidenceManifest,
+                results: [result],
+            }),
+        /POSTFLIGHT_LAND_RIGHT_ATTRIBUTION_INVALID/
     );
 });
 
@@ -921,6 +1899,122 @@ test('v2 target은 실행 anchor와 전체 허용 scope를 분리하고 API capt
     );
 });
 
+test('repo-pinned v3 전체 갱신 target만 정책 marker로 승격하고 임의 v3 digest는 거부한다', () => {
+    const targetManifest = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(FULL_REFRESH_TARGET_MANIFEST_URL, 'utf8')
+        )
+    );
+    assert.equal(
+        targetManifest.version,
+        DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    );
+    const marker =
+        developmentFullRefreshMarkerForTarget(targetManifest);
+    assert.deepEqual(marker, {
+        profile: 'DEVELOPMENT_FULL_REFRESH_API_REQUERY_V1',
+        manifestDigest:
+            '02bf999d970a9f0228a0bc683cc630fb157e5f4becb8576d0f4aa5b4dec1d3db',
+        scopeDigest:
+            '8c87b46f17416cd5aad9aaa242f09ff04aefb4186f74b72370ebb9c1407caa73',
+    });
+    assert.throws(
+        () =>
+            developmentFullRefreshMarkerForTarget({
+                ...(targetManifest as DevelopmentTargetManifestV3),
+                manifestDigest: '0'.repeat(64),
+            }),
+        /TARGET_FULL_REFRESH_POLICY_MISMATCH/
+    );
+});
+
+test('same-run official evidence는 component digest를 필수 commitment로 요구한다', () => {
+    const targetManifest = targetV2();
+    const raw = evidenceV2(targetManifest, [evidenceEntry()]);
+    const sourceReferences = {
+        kind: 'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE',
+        captureRunId: '30118336235',
+        snapshotReferenceSha256: HASH,
+        officialComponentDigest: 'b'.repeat(64),
+    } as const;
+    const sameRun = {
+        ...raw,
+        entries: [
+            {
+                ...raw.entries[0],
+                sourceReferences,
+            },
+        ],
+    };
+    assert.doesNotThrow(() =>
+        parseDevelopmentEvidenceManifest(sameRun)
+    );
+    const {
+        officialComponentDigest: _omittedOfficialComponentDigest,
+        ...sourceWithoutDigest
+    } = sourceReferences;
+    assert.throws(
+        () =>
+            parseDevelopmentEvidenceManifest({
+                ...sameRun,
+                entries: [
+                    {
+                        ...sameRun.entries[0],
+                        sourceReferences: sourceWithoutDigest,
+                    },
+                ],
+            }),
+        /EVIDENCE_SOURCE_INVALID/
+    );
+});
+
+test('localhost discovery POST는 DEV 전체 갱신 marker를 canonical API body에 포함한다', async () => {
+    const targetManifest = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(FULL_REFRESH_TARGET_MANIFEST_URL, 'utf8')
+        )
+    );
+    const marker =
+        developmentFullRefreshMarkerForTarget(targetManifest);
+    assert.ok(marker);
+    let requestBody: unknown = null;
+    const client = new LocalhostDevelopmentLandAreaSyncClient(
+        'development-secret-value',
+        ACTOR_AUTH_ID,
+        () => new Date('2026-07-28T00:00:00.000Z'),
+        async (_url, init) => {
+            requestBody =
+                typeof init?.body === 'string'
+                    ? JSON.parse(init.body)
+                    : null;
+            return new Response(
+                JSON.stringify({
+                    success: true,
+                    jobId: DISCOVERY_JOB_ID,
+                }),
+                {
+                    status: 202,
+                    headers: {
+                        'content-type': 'application/json',
+                    },
+                }
+            );
+        }
+    );
+    await client.admitDiscovery(
+        UNION_ID,
+        PNU,
+        DISCOVERY_JOB_ID,
+        marker
+    );
+    assert.deepEqual(requestBody, {
+        unionId: UNION_ID,
+        anchorPnu: PNU,
+        admissionKey: DISCOVERY_JOB_ID,
+        developmentFullRefresh: marker,
+    });
+});
+
 test('v2 evidence entry 간 property unit ID 중복은 expected count와 무관하게 fail-close한다', () => {
     const targetManifest = targetV2(
         [PNU, SECOND_PNU],
@@ -1045,7 +2139,11 @@ test('runtime은 dev service env 격리, exact allowlist, write feature flag를 
 });
 
 test('v2 preflight는 anchor PNU가 아니라 evidence property ID exact 집합으로 부속지번 호실을 검증한다', async () => {
-    const targetManifest = targetV2();
+    const targetManifest = targetV2(
+        [PNU],
+        [PNU, SECOND_PNU],
+        1
+    );
     const linkedEntry: DevelopmentEvidenceEntry = {
         ...evidenceEntry(),
         expectedScannedPnus: [PNU, SECOND_PNU],
@@ -1473,7 +2571,7 @@ test('latest DB COMPLETED라도 receipt 전에는 terminal로 보지 않고 fina
     assert.equal(exactReads, 1);
 });
 
-test('APPLIED terminal의 단일 RATIO_PARSE_FAILED만 허용하고 REVIEW_REQUIRED에서는 계속 차단한다', async () => {
+test('APPLIED terminal은 issue 0건만 통과하고 RATIO_PARSE_FAILED는 개수와 무관하게 차단한다', async () => {
     const targetManifest = target();
     const ldaregEntry: DevelopmentEvidenceEntry = {
         ...evidenceEntry(),
@@ -1527,21 +2625,35 @@ test('APPLIED terminal의 단일 RATIO_PARSE_FAILED만 허용하고 REVIEW_REQUI
         scopeState: 'LINKED_SCOPE_RESOLVED',
         outcome: 'APPLIED',
         scopeSnapshot: ldaregSnapshot,
-        issueCodes: ['RATIO_PARSE_FAILED'],
+        issueCodes: [],
     });
     applied.landAreaSync!.branch = 'LDAREG';
-    applied.landAreaSync!.issues = [
-        { code: 'RATIO_PARSE_FAILED', targetPnu: PNU },
-    ];
     const passArtifact = await runWithTerminal(applied);
     assert.equal(
         passArtifact.gate.status,
         'PASS',
         passArtifact.gate.failureCode ?? undefined
     );
-    assert.deepEqual(passArtifact.results[0].issueCodes, [
-        'RATIO_PARSE_FAILED',
-    ]);
+    assert.deepEqual(passArtifact.results[0].issueCodes, []);
+
+    const leakedPlaceholderIssue = job(APPLY_JOB_ID, {
+        status: 'COMPLETED',
+        scopeState: 'LINKED_SCOPE_RESOLVED',
+        outcome: 'APPLIED',
+        scopeSnapshot: ldaregSnapshot,
+        issueCodes: ['RATIO_PARSE_FAILED'],
+    });
+    leakedPlaceholderIssue.landAreaSync!.branch = 'LDAREG';
+    leakedPlaceholderIssue.landAreaSync!.issues = [
+        { code: 'RATIO_PARSE_FAILED', targetPnu: PNU },
+    ];
+    const leakedIssueArtifact =
+        await runWithTerminal(leakedPlaceholderIssue);
+    assert.equal(leakedIssueArtifact.gate.status, 'FAIL');
+    assert.equal(
+        leakedIssueArtifact.gate.failureCode,
+        'APPLY_TERMINAL_NOT_PASS'
+    );
 
     const repeatedPlaceholder = job(APPLY_JOB_ID, {
         status: 'COMPLETED',
@@ -1563,47 +2675,6 @@ test('APPLIED terminal의 단일 RATIO_PARSE_FAILED만 허용하고 REVIEW_REQUI
     assert.equal(repeatedFailArtifact.gate.status, 'FAIL');
     assert.equal(
         repeatedFailArtifact.gate.failureCode,
-        'APPLY_TERMINAL_NOT_PASS'
-    );
-
-    const currentUnitRatioFailure = job(APPLY_JOB_ID, {
-        status: 'COMPLETED',
-        scopeState: 'LINKED_SCOPE_RESOLVED',
-        outcome: 'APPLIED',
-        scopeSnapshot: ldaregSnapshot,
-        issueCodes: ['RATIO_PARSE_FAILED'],
-    });
-    currentUnitRatioFailure.landAreaSync!.branch = 'LDAREG';
-    currentUnitRatioFailure.landAreaSync!.issues = [
-        {
-            code: 'RATIO_PARSE_FAILED',
-            targetPnu: PNU,
-            propertyUnitId: PROPERTY_UNIT_ID,
-        },
-    ];
-    const currentUnitFailArtifact = await runWithTerminal(
-        currentUnitRatioFailure
-    );
-    assert.equal(currentUnitFailArtifact.gate.status, 'FAIL');
-    assert.equal(
-        currentUnitFailArtifact.gate.failureCode,
-        'APPLY_TERMINAL_NOT_PASS'
-    );
-
-    const ladfrlRatioFailure = job(APPLY_JOB_ID, {
-        status: 'COMPLETED',
-        scopeState: 'LINKED_SCOPE_RESOLVED',
-        outcome: 'APPLIED',
-        scopeSnapshot: ldaregSnapshot,
-        issueCodes: ['RATIO_PARSE_FAILED'],
-    });
-    ladfrlRatioFailure.landAreaSync!.issues = [
-        { code: 'RATIO_PARSE_FAILED', targetPnu: PNU },
-    ];
-    const ladfrlFailArtifact = await runWithTerminal(ladfrlRatioFailure);
-    assert.equal(ladfrlFailArtifact.gate.status, 'FAIL');
-    assert.equal(
-        ladfrlFailArtifact.gate.failureCode,
         'APPLY_TERMINAL_NOT_PASS'
     );
 

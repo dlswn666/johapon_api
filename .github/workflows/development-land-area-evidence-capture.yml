@@ -7,8 +7,9 @@ on:
         description: Repository-approved development target
         required: true
         type: choice
-        default: mia-seven-full-299-api-readonly-20260728
+        default: mia-seven-full-295-components-api-readonly-20260728
         options:
+          - mia-seven-full-295-components-api-readonly-20260728
           - mia-seven-full-299-api-readonly-20260728
           - mia-seven-auto-286-20260725
           - mia-seven-auto-76-20260725
@@ -64,6 +65,11 @@ jobs:
         run: |
           set -euo pipefail
           case "${MANIFEST_NAME}" in
+            mia-seven-full-295-components-api-readonly-20260728)
+              target_path="development-land-area-sync-manifests/mia-seven-full-295-components-api-readonly-target-20260728.json"
+              target_count="295"
+              property_unit_count="429"
+              ;;
             mia-seven-full-299-api-readonly-20260728)
               target_path="development-land-area-sync-manifests/mia-seven-full-299-api-readonly-target-20260728.json"
               target_count="299"
@@ -425,6 +431,7 @@ jobs:
         env:
           TARGET_PATH: ${{ steps.manifest.outputs.target_path }}
           CAPTURE_RUN_ID: ${{ github.run_id }}
+          MANIFEST_LABEL: ${{ inputs.manifest }}
         run: |
           set -euo pipefail
           root="development-land-area-evidence-output"
@@ -470,32 +477,66 @@ jobs:
           const audit = read(process.argv[4]);
           const evidenceText = fs.readFileSync(process.argv[3], "utf8");
           const evidenceSha = crypto.createHash("sha256").update(evidenceText).digest("hex");
+          const expectedSameRunOfficial =
+            process.env.MANIFEST_LABEL ===
+              "mia-seven-full-295-components-api-readonly-20260728";
           if (
             evidence.unionId !== target.unionId
             || evidence.manifestDigest !== target.manifestDigest
             || evidence.entries.length !== target.targetCount
             || new Set(evidence.entries.flatMap((entry) => entry.expectedPropertyUnitIds)).size
               !== target.expectedPropertyUnitCount
-            || audit?.version !== "land-area-development-evidence-capture-audit@1"
+            || audit?.version !== "land-area-development-evidence-capture-audit@2"
             || audit?.captureRunId !== process.argv[5]
             || audit?.gate?.status !== "PASS"
             || audit?.readOnlyGuards?.durableSyncJobWrites !== 0
             || audit?.readOnlyGuards?.propertyUnitWriteRpcCalls !== 0
             || audit?.evidenceManifestSha256 !== evidenceSha
+            || audit?.activePnuCount !== target.expectedUnionActivePnuCount
+            || (
+              target.version === "land-area-development-target-manifest@3"
+              && audit?.activePnuDigest !== target.expectedUnionActivePnuDigest
+            )
+            || audit?.activePropertyIdentityStable !== true
+            || audit?.initialActivePropertyIdentityDigest !==
+              audit?.finalActivePropertyIdentityDigest
+            || audit?.resolvedComponentCount !== target.targetCount
+            || audit?.scannedPnuCount !== approvedScopePnus.length
           ) process.exit(1);
-          validateDevelopmentRunnerManifests(
-            target,
-            {
-              version: "land-area-development-db-approval-manifest@1",
-              databaseTarget: "development",
-              unionId: target.unionId,
-              pnus: approvedScopePnus,
-              targetCount: approvedScopePnus.length,
-              manifestDigest: approvedScopeDigest,
-              enabled: true,
-            },
-            evidence
-          );
+          const dbApproval = {
+            version: "land-area-development-db-approval-manifest@1",
+            databaseTarget: "development",
+            unionId: target.unionId,
+            pnus: approvedScopePnus,
+            targetCount: approvedScopePnus.length,
+            manifestDigest: approvedScopeDigest,
+            enabled: true,
+          };
+          if (expectedSameRunOfficial) {
+            if (
+              audit?.sameRunOfficialComponentCount !== target.targetCount
+              || audit?.promotionGate?.status !== "PASS"
+              || audit?.promotionGate?.writeEligible !== true
+              || audit?.promotionGate?.failureCodes?.length !== 0
+            ) process.exit(1);
+            validateDevelopmentRunnerManifests(
+              target,
+              dbApproval,
+              evidence
+            );
+          } else {
+            if (
+              audit?.sameRunOfficialComponentCount !== 0
+              || audit?.promotionGate?.status !== "PASS"
+              || audit?.promotionGate?.writeEligible !== true
+              || audit?.promotionGate?.failureCodes?.length !== 0
+            ) process.exit(1);
+            validateDevelopmentRunnerManifests(
+              target,
+              dbApproval,
+              evidence
+            );
+          }
           NODE
           sha256sum \
             "${root}/evidence.json" \
@@ -559,7 +600,7 @@ jobs:
                 && row.count > 0
             );
           if (
-            audit?.version !== "land-area-development-evidence-capture-audit@1"
+            audit?.version !== "land-area-development-evidence-capture-audit@2"
             || audit?.databaseTarget !== "development"
             || typeof manifestLabel !== "string"
             || !/^[a-z0-9-]{1,100}$/.test(manifestLabel)
@@ -567,6 +608,21 @@ jobs:
             || audit.targetCount < 0
             || !Number.isSafeInteger(audit.expectedPropertyUnitCount)
             || audit.expectedPropertyUnitCount < 0
+            || !Number.isSafeInteger(audit.activePnuCount)
+            || audit.activePnuCount < 0
+            || typeof audit.activePnuDigest !== "string"
+            || !hex64.test(audit.activePnuDigest)
+            || typeof audit.initialActivePropertyIdentityDigest !== "string"
+            || !hex64.test(audit.initialActivePropertyIdentityDigest)
+            || typeof audit.finalActivePropertyIdentityDigest !== "string"
+            || !hex64.test(audit.finalActivePropertyIdentityDigest)
+            || typeof audit.activePropertyIdentityStable !== "boolean"
+            || !Number.isSafeInteger(audit.resolvedComponentCount)
+            || audit.resolvedComponentCount < 0
+            || !Number.isSafeInteger(audit.scannedPnuCount)
+            || audit.scannedPnuCount < 0
+            || !Number.isSafeInteger(audit.sameRunOfficialComponentCount)
+            || audit.sameRunOfficialComponentCount < 0
             || typeof audit.manifestDigest !== "string"
             || !hex64.test(audit.manifestDigest)
             || !Array.isArray(audit.entries)
@@ -589,6 +645,13 @@ jobs:
             || audit.gate.failureCodes.some(
               (code) => typeof code !== "string" || !safeCode.test(code)
             )
+            || !audit.promotionGate
+            || !["PASS", "BLOCKED"].includes(audit.promotionGate.status)
+            || typeof audit.promotionGate.writeEligible !== "boolean"
+            || !Array.isArray(audit.promotionGate.failureCodes)
+            || audit.promotionGate.failureCodes.some(
+              (code) => typeof code !== "string" || !safeCode.test(code)
+            )
             || !/^[0-9]+$/.test(statusText)
           ) process.exit(1);
           const sha256 = (value) =>
@@ -602,6 +665,18 @@ jobs:
             manifestDigest: audit.manifestDigest,
             targetCount: audit.targetCount,
             expectedPropertyUnitCount: audit.expectedPropertyUnitCount,
+            activePnuCount: audit.activePnuCount,
+            activePnuDigest: audit.activePnuDigest,
+            initialActivePropertyIdentityDigest:
+              audit.initialActivePropertyIdentityDigest,
+            finalActivePropertyIdentityDigest:
+              audit.finalActivePropertyIdentityDigest,
+            activePropertyIdentityStable:
+              audit.activePropertyIdentityStable,
+            resolvedComponentCount: audit.resolvedComponentCount,
+            scannedPnuCount: audit.scannedPnuCount,
+            sameRunOfficialComponentCount:
+              audit.sameRunOfficialComponentCount,
             entryCount: audit.entries.length,
             capturedEvidencePropertyUnitCount:
               Number.isSafeInteger(audit.capturedEvidencePropertyUnitCount)
@@ -620,6 +695,12 @@ jobs:
             gate: {
               status: audit.gate.status,
               failureCodes: [...audit.gate.failureCodes].sort(),
+            },
+            promotionGate: {
+              status: audit.promotionGate.status,
+              writeEligible: audit.promotionGate.writeEligible,
+              failureCodes:
+                [...audit.promotionGate.failureCodes].sort(),
             },
             captureExitStatus: Number(statusText),
             hashes: {
@@ -697,10 +778,10 @@ jobs:
               exit 1
             fi
             for candidate in \
-              "${root}/status" \
-              "${root}/audit.json" \
-              "${root}/evidence.json" \
-              "${root}/sha256sums.txt"
+            "${root}/status" \
+            "${root}/audit.json" \
+            "${root}/evidence.json" \
+            "${root}/sha256sums.txt"
             do
               if [[ -e "${candidate}" || -L "${candidate}" ]]; then
                 if [[ ! -f "${candidate}" || -L "${candidate}" ]]; then

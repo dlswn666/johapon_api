@@ -16,6 +16,12 @@ import type {
     StrictScan,
 } from '../src/types/land-area-sync.types';
 import type { LandAreaSyncIssue } from '../src/types/land-area-sync-job.types';
+import {
+    DEVELOPMENT_LAND_AREA_FULL_REFRESH_PROFILE,
+    MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_MANIFEST_DIGEST,
+    MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_SCOPE_DIGEST,
+    MIA_SEVEN_DEVELOPMENT_UNION_ID,
+} from '../src/security/development-land-area-full-refresh-policy';
 
 const ANCHOR = '1168010100107360024';
 const PROP_ID = '11111111-1111-4111-8111-111111111111';
@@ -63,6 +69,75 @@ function ldaregCurrent(): StrictScan<LdaregRow> {
     };
 }
 
+function officialTwoPnuLdaregScans(
+    attachedPnu: string
+): Partial<LandAreaSyncDeps['scans']> {
+    return {
+        scanTitle: async () => ({
+            ...titleComplete(MULTIPLEX),
+            rows: [
+                {
+                    ...titleComplete(MULTIPLEX).rows[0],
+                    bylotCnt: '1',
+                },
+            ],
+        }),
+        scanAttached: async () => ({
+            state: 'COMPLETE',
+            rows: [
+                {
+                    mgmBldrgstPk: PK,
+                    sigunguCd: '11680',
+                    bjdongCd: '10100',
+                    platGbCd: '0',
+                    bun: '0736',
+                    ji: '0024',
+                    atchSigunguCd: '11680',
+                    atchBjdongCd: '10100',
+                    atchPlatGbCd: '0',
+                    atchBun: '0736',
+                    atchJi: '0025',
+                },
+            ],
+            totalCount: 1,
+            pagesFetched: 1,
+        }),
+        scanBasis: async (pnu) => ({
+            state: 'COMPLETE',
+            rows: [{ pnu, mgmBldrgstPk: PK }],
+            totalCount: 1,
+            pagesFetched: 1,
+        }),
+        scanExpos: async (pnu) =>
+            exposComplete([
+                {
+                    pnu,
+                    mgmBldrgstPk: PK,
+                    dongNm: '101',
+                    flrNoNm: '3',
+                    hoNm: '301',
+                },
+            ]),
+        scanLadfrl: async (pnu) => ({
+            state: 'COMPLETE',
+            rows: [{ pnu, lndpclAr: '50.25' }],
+            totalCount: 1,
+            pagesFetched: 1,
+        }),
+        scanLdareg: async (pnu) => ({
+            state: 'COMPLETE',
+            rows: [
+                {
+                    ...ldaregCurrent().rows[0],
+                    pnu,
+                },
+            ],
+            totalCount: 1,
+            pagesFetched: 1,
+        }),
+    };
+}
+
 interface Spy {
     freezeCalls: number;
     applyCalls: number;
@@ -74,11 +149,17 @@ interface Spy {
     /** resolveScope 로 넘어간 params(p_root_mgm_bldrgst_pks 검증용). */
     resolverParams: Array<{ p_root_mgm_bldrgst_pks: string[] }>;
     /** freezeScopeSnapshot 로 고정된 snapshot 의 scope/membership hash + resolverRootPks. */
-    frozenSnapshots: Array<{ scopeHash: string; propertyMembershipHash: string; resolverRootPks: string[] }>;
+    frozenSnapshots: Array<{
+        scopeHash: string;
+        propertyMembershipHash: string;
+        resolverRootPks: string[];
+        scopeSnapshot: import('../src/types/land-area-sync-job.types').LandAreaSyncScopeSnapshot;
+    }>;
 }
 
 function makeDeps(opts: {
     resolver: unknown;
+    databaseTarget?: 'development' | 'production';
     scans?: Partial<LandAreaSyncDeps['scans']>;
     applyResult?: { data: unknown; error: { message: string; code?: string } | null };
     membership?: unknown;
@@ -89,6 +170,11 @@ function makeDeps(opts: {
     jobPreviewData?: Record<string, unknown>;
     assertCanaryScopeAllowed?: LandAreaSyncDeps['assertCanaryScopeAllowed'];
     writeDiscoveryTerminalResult?: boolean;
+    currentLandTuples?: Array<{
+        propertyUnitId: string;
+        landArea: string;
+        source: string;
+    }>;
     spy: Spy;
 }): LandAreaSyncDeps {
     const { spy } = opts;
@@ -101,6 +187,9 @@ function makeDeps(opts: {
         scanLdareg: async () => zero<LdaregRow>(),
     };
     return {
+        ...(opts.databaseTarget
+            ? { databaseTarget: opts.databaseTarget }
+            : {}),
         now: () => new Date('2026-07-23T00:00:00.000Z'),
         assertCanaryScopeAllowed:
             opts.assertCanaryScopeAllowed ?? (() => undefined),
@@ -129,6 +218,7 @@ function makeDeps(opts: {
                     scopeHash: patch.scopeSnapshot.scopeHash,
                     propertyMembershipHash: patch.scopeSnapshot.propertyMembershipHash,
                     resolverRootPks: patch.scopeSnapshot.resolverRootPks,
+                    scopeSnapshot: patch.scopeSnapshot,
                 });
                 return true;
             },
@@ -144,7 +234,8 @@ function makeDeps(opts: {
                 opts.onReadProperty?.();
                 return (opts.propertyUnits ?? []) as never;
             },
-            readCurrentLandTuples: async () => [],
+            readCurrentLandTuples: async () =>
+                opts.currentLandTuples ?? [],
         },
     };
 }
@@ -175,6 +266,17 @@ function applyJobPreview(confirmation: {
             sourceDiscoveryJobId: 'disc-1',
             confirmation: { overwriteManualConfirmed: false, ...confirmation },
         },
+    };
+}
+
+function developmentFullRefreshMarker() {
+    return {
+        profile:
+            DEVELOPMENT_LAND_AREA_FULL_REFRESH_PROFILE,
+        manifestDigest:
+            MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_MANIFEST_DIGEST,
+        scopeDigest:
+            MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_SCOPE_DIGEST,
     };
 }
 
@@ -426,6 +528,603 @@ test('읽기 전용 LDAREG LINKED discovery는 snapshot과 terminal만 남기고
             outcome: 'REVIEW_REQUIRED',
         },
     ]);
+});
+
+test('READ_ONLY_CAPTURE만 no-cache official attached component를 1회 확장하고 normal discovery는 계속 REVIEW한다', async () => {
+    const attachedPnu = '1168010100107360025';
+    const scans: Partial<LandAreaSyncDeps['scans']> = {
+        scanTitle: async () => ({
+            ...titleComplete(MULTIPLEX),
+            rows: [
+                {
+                    ...titleComplete(MULTIPLEX).rows[0],
+                    bylotCnt: '1',
+                },
+            ],
+        }),
+        scanAttached: async () => ({
+            state: 'COMPLETE',
+            rows: [
+                {
+                    mgmBldrgstPk: PK,
+                    sigunguCd: '11680',
+                    bjdongCd: '10100',
+                    platGbCd: '0',
+                    bun: '0736',
+                    ji: '0024',
+                    atchSigunguCd: '11680',
+                    atchBjdongCd: '10100',
+                    atchPlatGbCd: '0',
+                    atchBun: '0736',
+                    atchJi: '0025',
+                },
+            ],
+            totalCount: 1,
+            pagesFetched: 1,
+        }),
+        scanBasis: async (pnu) => ({
+            state: 'COMPLETE',
+            rows: [{ pnu, mgmBldrgstPk: PK }],
+            totalCount: 1,
+            pagesFetched: 1,
+        }),
+        scanExpos: async (pnu) =>
+            exposComplete([
+                {
+                    pnu,
+                    mgmBldrgstPk: PK,
+                    dongNm: '101',
+                    flrNoNm: '3',
+                    hoNm: '301',
+                },
+            ]),
+        scanLadfrl: async (pnu) => ({
+            state: 'COMPLETE',
+            rows: [{ pnu, lndpclAr: '50.25' }],
+            totalCount: 1,
+            pagesFetched: 1,
+        }),
+        scanLdareg: async (pnu) => ({
+            state: 'COMPLETE',
+            rows: [
+                {
+                    ...ldaregCurrent().rows[0],
+                    pnu,
+                },
+            ],
+            totalCount: 1,
+            pagesFetched: 1,
+        }),
+    };
+    const propertyUnits = [
+        {
+            id: PROP_ID,
+            unionId: 'union-1',
+            buildingUnitId: null,
+            pnu: ANCHOR,
+            isDeleted: false,
+            dong: '101',
+            ho: '301',
+        },
+    ];
+
+    const normalSpy = emptySpy();
+    const normalDeps = makeDeps({
+        resolver: noEvidence(MEMBER),
+        scans,
+        propertyUnits,
+        spy: normalSpy,
+    });
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps: normalDeps,
+    });
+    assert.equal(normalSpy.freezeCalls, 0);
+    assert.equal(normalSpy.applyCalls, 0);
+    assert.equal(
+        normalSpy.terminalCalls[0]?.scopeState,
+        'REVIEW_REQUIRED'
+    );
+
+    const captureSpy = emptySpy();
+    const scannedBranchPnus = new Set<string>();
+    const captureDeps = makeDeps({
+        resolver: noEvidence(MEMBER),
+        scans: {
+            ...scans,
+            scanLdareg: async (pnu) => {
+                scannedBranchPnus.add(pnu);
+                return {
+                    state: 'COMPLETE',
+                    rows: [
+                        {
+                            ...ldaregCurrent().rows[0],
+                            pnu,
+                        },
+                    ],
+                    totalCount: 1,
+                    pagesFetched: 1,
+                };
+            },
+        },
+        propertyUnits,
+        spy: captureSpy,
+    });
+    captureDeps.executionMode = 'READ_ONLY_CAPTURE';
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps: captureDeps,
+    });
+    assert.deepEqual([...scannedBranchPnus].sort(), [
+        ANCHOR,
+        attachedPnu,
+    ]);
+    assert.equal(captureSpy.freezeCalls, 1);
+    assert.equal(captureSpy.applyCalls, 0);
+    assert.deepEqual(captureSpy.terminalCalls, [
+        {
+            status: 'COMPLETED',
+            scopeState: 'LINKED_SCOPE_RESOLVED',
+            outcome: 'REVIEW_REQUIRED',
+        },
+    ]);
+});
+
+test('DEV 전체 갱신 LADFRL singleton은 pairCount=0 공식 snapshot으로 prepare/apply를 fresh 재조회한다', async () => {
+    const unrelatedRelationPnu = '1168010100107360026';
+    const marker = developmentFullRefreshMarker();
+    const resolver = {
+        ...(linked(MEMBER) as Record<string, unknown>),
+        componentPnus: [unrelatedRelationPnu],
+        linkedBasePnus: [unrelatedRelationPnu],
+        linkedPnus: [unrelatedRelationPnu],
+        dbScopeHash: 'db-hash-linked-unrelated-relation',
+    };
+    const propertyUnits = [
+        {
+            id: PROP_ID,
+            unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+            buildingUnitId: null,
+            pnu: ANCHOR,
+            isDeleted: false,
+            dong: null,
+            ho: null,
+        },
+    ];
+    const currentLandTuples = [
+        {
+            propertyUnitId: PROP_ID,
+            landArea: '100.5',
+            source: 'MANUAL',
+        },
+    ];
+    const scannedTitles: string[] = [];
+    const discoverySpy = emptySpy();
+    const discoveryDeps = makeDeps({
+        databaseTarget: 'development',
+        resolver,
+        propertyUnits,
+        currentLandTuples,
+        scans: {
+            scanTitle: async (pnu) => {
+                scannedTitles.push(pnu);
+                return titleComplete(DETACHED);
+            },
+        },
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy: discoverySpy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: discoveryDeps,
+    });
+
+    assert.equal(discoverySpy.applyCalls, 0);
+    assert.equal(discoverySpy.freezeCalls, 1);
+    assert.equal(
+        discoverySpy.terminalCalls[0]?.scopeState,
+        'MANUAL_OVERWRITE_CONFIRMATION_REQUIRED'
+    );
+    const prepared =
+        discoverySpy.frozenSnapshots[0].scopeSnapshot;
+    assert.deepEqual(
+        prepared.developmentFullRefreshScopeResolution,
+        {
+            source:
+                'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
+            canonicalBasePnu: ANCHOR,
+            memberPnus: [ANCHOR],
+            managementPk: PK,
+            pairCount: 0,
+            officialComponentDigest:
+                prepared
+                    .developmentFullRefreshScopeResolution
+                    ?.officialComponentDigest,
+            manifestDigest: marker.manifestDigest,
+            scopeDigest: marker.scopeDigest,
+        }
+    );
+    assert.notEqual(
+        prepared.dbScopeHash,
+        resolver.dbScopeHash,
+        'relation-derived hash는 공식 singleton+membership synthetic hash로 감싼다'
+    );
+
+    const applySpy = emptySpy();
+    const applyPreview = applyJobPreview({
+        confirmedDiscoveryScopeHash: prepared.scopeHash,
+        confirmedPropertyMembershipHash:
+            prepared.propertyMembershipHash,
+        overwriteManualConfirmed: true,
+    });
+    const applyDeps = makeDeps({
+        databaseTarget: 'development',
+        resolver,
+        propertyUnits,
+        currentLandTuples,
+        scans: {
+            scanTitle: async (pnu) => {
+                scannedTitles.push(pnu);
+                return titleComplete(DETACHED);
+            },
+        },
+        jobPreviewData: {
+            ...applyPreview,
+            landAreaSync: {
+                ...(applyPreview.landAreaSync as Record<
+                    string,
+                    unknown
+                >),
+                developmentFullRefresh: marker,
+            },
+        },
+        applyResult: {
+            data: { outcome: 'APPLIED', issues: [] },
+            error: null,
+        },
+        spy: applySpy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: applyDeps,
+    });
+
+    assert.deepEqual(scannedTitles, [ANCHOR, ANCHOR]);
+    assert.equal(applySpy.freezeCalls, 0);
+    assert.equal(applySpy.applyCalls, 1);
+    const applyParams = applySpy.lastApplyParams as {
+        p_db_scope_hash: string;
+        p_scanned_pnus: string[];
+    };
+    assert.equal(
+        applyParams.p_db_scope_hash,
+        prepared.dbScopeHash
+    );
+    assert.deepEqual(applyParams.p_scanned_pnus, [ANCHOR]);
+});
+
+test('DEV 전체 갱신 LDAREG singleton도 pairCount=0 공식 snapshot으로 prepare/apply를 fresh 재조회한다', async () => {
+    const unrelatedRelationPnu = '1168010100107360026';
+    const marker = developmentFullRefreshMarker();
+    const resolver = {
+        ...(linked(MEMBER) as Record<string, unknown>),
+        componentPnus: [unrelatedRelationPnu],
+        linkedBasePnus: [unrelatedRelationPnu],
+        linkedPnus: [unrelatedRelationPnu],
+        dbScopeHash: 'db-hash-linked-unrelated-relation',
+    };
+    const propertyUnits = [
+        {
+            id: PROP_ID,
+            unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+            buildingUnitId: null,
+            pnu: ANCHOR,
+            isDeleted: false,
+            dong: '101',
+            ho: '301',
+        },
+    ];
+    const currentLandTuples = [
+        {
+            propertyUnitId: PROP_ID,
+            landArea: '10',
+            source: 'MANUAL',
+        },
+    ];
+    const scannedTitles: string[] = [];
+    const singletonLdaregScans: Partial<
+        LandAreaSyncDeps['scans']
+    > = {
+        scanTitle: async (pnu) => {
+            scannedTitles.push(pnu);
+            return titleComplete(MULTIPLEX);
+        },
+        scanBasis: async (pnu) => ({
+            state: 'COMPLETE',
+            rows: [{ pnu, mgmBldrgstPk: PK }],
+            totalCount: 1,
+            pagesFetched: 1,
+        }),
+        scanLdareg: async () => ldaregCurrent(),
+    };
+    const discoverySpy = emptySpy();
+    const discoveryDeps = makeDeps({
+        databaseTarget: 'development',
+        resolver,
+        scans: singletonLdaregScans,
+        propertyUnits,
+        currentLandTuples,
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy: discoverySpy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: discoveryDeps,
+    });
+
+    assert.equal(discoverySpy.applyCalls, 0);
+    assert.equal(discoverySpy.freezeCalls, 1);
+    const prepared =
+        discoverySpy.frozenSnapshots[0].scopeSnapshot;
+    assert.equal(
+        prepared.strategy,
+        'LDAREG'
+    );
+    assert.deepEqual(
+        prepared.developmentFullRefreshScopeResolution,
+        {
+            source:
+                'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
+            canonicalBasePnu: ANCHOR,
+            memberPnus: [ANCHOR],
+            managementPk: PK,
+            pairCount: 0,
+            officialComponentDigest:
+                prepared
+                    .developmentFullRefreshScopeResolution
+                    ?.officialComponentDigest,
+            manifestDigest: marker.manifestDigest,
+            scopeDigest: marker.scopeDigest,
+        }
+    );
+
+    const applySpy = emptySpy();
+    const applyPreview = applyJobPreview({
+        confirmedDiscoveryScopeHash: prepared.scopeHash,
+        confirmedPropertyMembershipHash:
+            prepared.propertyMembershipHash,
+        overwriteManualConfirmed: true,
+    });
+    const applyDeps = makeDeps({
+        databaseTarget: 'development',
+        resolver,
+        scans: singletonLdaregScans,
+        propertyUnits,
+        currentLandTuples,
+        jobPreviewData: {
+            ...applyPreview,
+            landAreaSync: {
+                ...(applyPreview.landAreaSync as Record<
+                    string,
+                    unknown
+                >),
+                developmentFullRefresh: marker,
+            },
+        },
+        applyResult: {
+            data: { outcome: 'APPLIED', issues: [] },
+            error: null,
+        },
+        spy: applySpy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: applyDeps,
+    });
+
+    assert.deepEqual(scannedTitles, [ANCHOR, ANCHOR]);
+    assert.equal(applySpy.freezeCalls, 0);
+    assert.equal(applySpy.applyCalls, 1);
+    const applyParams = applySpy.lastApplyParams as {
+        p_db_scope_hash: string;
+        p_scanned_pnus: string[];
+    };
+    assert.equal(
+        applyParams.p_db_scope_hash,
+        prepared.dbScopeHash
+    );
+    assert.deepEqual(applyParams.p_scanned_pnus, [ANCHOR]);
+});
+
+test('DEV 전체 갱신은 relation 범위를 사용하지 않고 공식 API를 prepare/apply마다 새로 조회한다', async () => {
+    const attachedPnu = '1168010100107360025';
+    const unrelatedRelationPnu = '1168010100107360026';
+    const marker = developmentFullRefreshMarker();
+    const resolver = {
+        ...(linked(MEMBER) as Record<string, unknown>),
+        componentPnus: [unrelatedRelationPnu],
+        linkedBasePnus: [unrelatedRelationPnu],
+        linkedPnus: [unrelatedRelationPnu],
+        dbScopeHash: 'db-hash-linked-unrelated-relation',
+    };
+    const propertyUnits = [
+        {
+            id: PROP_ID,
+            unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+            buildingUnitId: null,
+            pnu: ANCHOR,
+            isDeleted: false,
+            dong: '101',
+            ho: '301',
+        },
+    ];
+    const currentLandTuples = [
+        {
+            propertyUnitId: PROP_ID,
+            // 공식 LDAREG 분자 합계와 같아도 source/provenance 교체 승인이 필요하다.
+            landArea: '10',
+            source: 'MANUAL',
+        },
+    ];
+    const scannedTitles: string[] = [];
+    const scans = officialTwoPnuLdaregScans(attachedPnu);
+    const baseScanTitle = scans.scanTitle!;
+    const countedScans = {
+        ...scans,
+        scanTitle: async (pnu: string, signal?: AbortSignal) => {
+            scannedTitles.push(pnu);
+            return baseScanTitle(pnu, signal);
+        },
+    };
+
+    const discoverySpy = emptySpy();
+    const discoveryDeps = makeDeps({
+        databaseTarget: 'development',
+        resolver,
+        scans: countedScans,
+        propertyUnits,
+        currentLandTuples,
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh: marker,
+            },
+        },
+        spy: discoverySpy,
+    });
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: discoveryDeps,
+    });
+
+    assert.equal(discoverySpy.applyCalls, 0);
+    assert.equal(discoverySpy.freezeCalls, 1);
+    assert.equal(
+        discoverySpy.terminalCalls[0]?.scopeState,
+        'MANUAL_OVERWRITE_CONFIRMATION_REQUIRED'
+    );
+    assert.deepEqual(scannedTitles, [ANCHOR]);
+    const prepared =
+        discoverySpy.frozenSnapshots[0].scopeSnapshot;
+    assert.deepEqual(
+        prepared.developmentFullRefreshScopeResolution,
+        {
+            source:
+                'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH',
+            canonicalBasePnu: ANCHOR,
+            memberPnus: [ANCHOR, attachedPnu],
+            managementPk: PK,
+            pairCount: 1,
+            officialComponentDigest:
+                prepared
+                    .developmentFullRefreshScopeResolution
+                    ?.officialComponentDigest,
+            manifestDigest: marker.manifestDigest,
+            scopeDigest: marker.scopeDigest,
+        }
+    );
+
+    const applySpy = emptySpy();
+    const applyDeps = makeDeps({
+        databaseTarget: 'development',
+        resolver,
+        scans: countedScans,
+        propertyUnits,
+        currentLandTuples,
+        jobPreviewData: {
+            ...applyJobPreview({
+                confirmedDiscoveryScopeHash:
+                    prepared.scopeHash,
+                confirmedPropertyMembershipHash:
+                    prepared.propertyMembershipHash,
+                overwriteManualConfirmed: true,
+            }),
+            landAreaSync: {
+                ...(applyJobPreview({
+                    confirmedDiscoveryScopeHash:
+                        prepared.scopeHash,
+                    confirmedPropertyMembershipHash:
+                        prepared.propertyMembershipHash,
+                    overwriteManualConfirmed: true,
+                }).landAreaSync as Record<string, unknown>),
+                developmentFullRefresh: marker,
+            },
+        },
+        applyResult: {
+            data: { outcome: 'APPLIED', issues: [] },
+            error: null,
+        },
+        spy: applySpy,
+    });
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+        deps: applyDeps,
+    });
+
+    assert.deepEqual(
+        scannedTitles,
+        [ANCHOR, ANCHOR],
+        'prepare/apply가 각각 공식 title을 새로 조회한다'
+    );
+    assert.equal(applySpy.freezeCalls, 0);
+    assert.equal(applySpy.applyCalls, 1);
+});
+
+test('DEV 전체 갱신 표식은 production target에서 worker 진입 전에 거부한다', async () => {
+    const spy = emptySpy();
+    const deps = makeDeps({
+        databaseTarget: 'production',
+        resolver: noEvidence(MEMBER),
+        jobPreviewData: {
+            landAreaSync: {
+                schemaVersion: 2,
+                anchorPnu: ANCHOR,
+                sourceDiscoveryJobId: null,
+                developmentFullRefresh:
+                    developmentFullRefreshMarker(),
+            },
+        },
+        spy,
+    });
+    await assert.rejects(
+        runLandAreaSyncJob({
+            jobId: 'job-1',
+            unionId: MIA_SEVEN_DEVELOPMENT_UNION_ID,
+            deps,
+        }),
+        /운영 환경/
+    );
+    assert.equal(spy.resolverParams.length, 0);
+    assert.equal(spy.freezeCalls, 0);
+    assert.equal(spy.applyCalls, 0);
 });
 
 test('LDAREG base+attached는 branch basis를 PNU별 정확히 1회 scan하고 합산 count에 반영한다', async () => {
@@ -915,7 +1614,7 @@ test('LDAREG(single 확인) apply job: 재실행 scopeHash 불일치 → apply R
 
 // ── Finding 3: LINKED discovery extraIssue·ambiguity write barrier ─────────────
 
-test('LINKED LDAREG 즉시적용: 비적용 placeholder extraIssue를 apply RPC 입력으로 전달한다', async () => {
+test('LINKED LDAREG 즉시적용: 비적용 placeholder 정확히 1행은 issue 없이 제외한다', async () => {
     const spy = emptySpy();
     const deps = makeDeps({
         resolver: linked(MEMBER),
@@ -947,7 +1646,6 @@ test('LINKED LDAREG 즉시적용: 비적용 placeholder extraIssue를 apply RPC 
             data: {
                 outcome: 'NO_DATA',
                 issues: [
-                    { code: 'RATIO_PARSE_FAILED', targetPnu: ANCHOR }, // discovery extraIssue 와 동일
                     { code: 'STALE_SCAN_REJECTED', targetPnu: ANCHOR }, // RPC 고유 issue
                 ],
             },
@@ -963,6 +1661,58 @@ test('LINKED LDAREG 즉시적용: 비적용 placeholder extraIssue를 apply RPC 
     };
     assert.deepEqual(
         params.p_result_summary.extraIssues.map((issue) => issue.code),
+        []
+    );
+});
+
+test('LINKED LDAREG: 비적용 placeholder가 2행이면 component 전체를 차단하고 apply RPC를 호출하지 않는다', async () => {
+    const spy = emptySpy();
+    const deps = makeDeps({
+        resolver: linked(MEMBER),
+        scans: {
+            scanTitle: async () => titleComplete(MULTIPLEX),
+            scanLdareg: async () => ({
+                state: 'COMPLETE',
+                rows: [
+                    { pnu: ANCHOR, agbldgSn: '1', ldaQotaRate: '10/100.5', clsSeCode: '0', clsSeCodeNm: '현재', buldDongNm: '101', buldFloorNm: '3', buldHoNm: '301' },
+                    { pnu: ANCHOR, agbldgSn: '2', ldaQotaRate: '', clsSeCode: '0', clsSeCodeNm: '현재', buldDongNm: '0000', buldFloorNm: '0000', buldHoNm: '0000', buldRoomNm: '0000' },
+                    { pnu: ANCHOR, agbldgSn: '3', ldaQotaRate: '', clsSeCode: '0', clsSeCodeNm: '현재', buldDongNm: '0000', buldFloorNm: '0000', buldHoNm: '0000', buldRoomNm: '0000' },
+                ],
+                totalCount: 3,
+                pagesFetched: 1,
+            }),
+        },
+        propertyUnits: [
+            {
+                id: PROP_ID,
+                unionId: 'union-1',
+                buildingUnitId: null,
+                pnu: ANCHOR,
+                isDeleted: false,
+                dong: '101',
+                ho: '301',
+            },
+        ],
+        spy,
+    });
+
+    await runLandAreaSyncJob({
+        jobId: 'job-1',
+        unionId: 'union-1',
+        deps,
+    });
+
+    assert.equal(spy.applyCalls, 0);
+    assert.equal(spy.freezeCalls, 0);
+    assert.deepEqual(spy.terminalCalls, [
+        {
+            status: 'COMPLETED',
+            scopeState: 'REVIEW_REQUIRED',
+            outcome: 'REVIEW_REQUIRED',
+        },
+    ]);
+    assert.deepEqual(
+        spy.terminalIssues[0].map((issue) => issue.code),
         ['RATIO_PARSE_FAILED']
     );
 });

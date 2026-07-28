@@ -12,7 +12,7 @@ on:
           - mia-seven-representative-20260725
           - mia-seven-auto-76-20260725
           - mia-seven-parcel-singleton-196-20260725
-
+          - mia-seven-full-295-components-api-readonly-20260728
 permissions:
   contents: read
 
@@ -21,7 +21,7 @@ jobs:
     name: Run repository-approved development targets
     runs-on: ubuntu-latest
     environment: land-area-sync-development-write
-    timeout-minutes: 65
+    timeout-minutes: 420
     steps:
       - name: Require approved main revision
         shell: bash
@@ -71,6 +71,7 @@ jobs:
           MANIFEST_NAME: ${{ inputs.manifest }}
         run: |
           set -euo pipefail
+          full_refresh_mode="0"
           case "${MANIFEST_NAME}" in
             mia-seven-representative-20260725)
               target_path="development-land-area-sync-manifests/mia-seven-representative-target-20260725.json"
@@ -87,16 +88,23 @@ jobs:
               db_approval_path="development-land-area-sync-manifests/mia-seven-parcel-singleton-196-db-approval-20260725.json"
               evidence_path="development-land-area-sync-manifests/mia-seven-parcel-singleton-196-evidence-20260725.json"
               ;;
+            mia-seven-full-295-components-api-readonly-20260728)
+              target_path="development-land-area-sync-manifests/mia-seven-full-295-components-api-readonly-target-20260728.json"
+              db_approval_path=""
+              evidence_path=""
+              full_refresh_mode="1"
+              ;;
             *)
               echo "::error::Manifest bundle is not repository-approved."
               exit 1
               ;;
           esac
 
-          for candidate in \
-            "${target_path}" \
-            "${db_approval_path}" \
-            "${evidence_path}"
+          candidates=("${target_path}")
+          if [[ "${full_refresh_mode}" == "0" ]]; then
+            candidates+=("${db_approval_path}" "${evidence_path}")
+          fi
+          for candidate in "${candidates[@]}"
           do
             if [[ ! -f "${candidate}" || -L "${candidate}" ]]; then
               echo "::error::Approved manifest must be a regular non-symlink file."
@@ -109,9 +117,10 @@ jobs:
             fi
           done
 
-          node - "${target_path}" "${db_approval_path}" "${evidence_path}" <<'NODE'
+          node - "${target_path}" "${db_approval_path}" "${evidence_path}" "${full_refresh_mode}" <<'NODE'
           const fs = require("node:fs");
           const {
+            developmentFullRefreshMarkerForTarget,
             parseDevelopmentTargetManifest,
             parseDevelopmentDbApprovalManifest,
             parseDevelopmentEvidenceManifest,
@@ -119,15 +128,20 @@ jobs:
           } = require("./dist/operations/development-land-area-sync-runner.js");
           const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
           const target = parseDevelopmentTargetManifest(read(process.argv[2]));
-          const approval = parseDevelopmentDbApprovalManifest(read(process.argv[3]));
-          const evidence = parseDevelopmentEvidenceManifest(read(process.argv[4]));
-          validateDevelopmentRunnerManifests(target, approval, evidence);
+          if (process.argv[5] === "1") {
+            if (!developmentFullRefreshMarkerForTarget(target)) process.exit(1);
+          } else {
+            const approval = parseDevelopmentDbApprovalManifest(read(process.argv[3]));
+            const evidence = parseDevelopmentEvidenceManifest(read(process.argv[4]));
+            validateDevelopmentRunnerManifests(target, approval, evidence);
+          }
           NODE
 
           {
             echo "target_path=${target_path}"
             echo "db_approval_path=${db_approval_path}"
             echo "evidence_path=${evidence_path}"
+            echo "full_refresh_mode=${full_refresh_mode}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Configure pinned EC2 SSH identity
@@ -198,6 +212,7 @@ jobs:
           TARGET_PATH: ${{ steps.manifest.outputs.target_path }}
           DB_APPROVAL_PATH: ${{ steps.manifest.outputs.db_approval_path }}
           EVIDENCE_PATH: ${{ steps.manifest.outputs.evidence_path }}
+          FULL_REFRESH_MODE: ${{ steps.manifest.outputs.full_refresh_mode }}
           GUARDIAN_PATH: scripts/development-land-area-sync-remote-guardian.sh
           ACTOR_AUTH_USER_ID: ${{ secrets.DEV_GIS_SYSTEM_ADMIN_AUTH_UUID }}
           RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -207,6 +222,10 @@ jobs:
           set -Eeuo pipefail
           if [[ ! "${RUN_KEY}" =~ ^[0-9]+-[0-9]+$ ]]; then
             echo "::error::Invalid workflow run key."
+            exit 1
+          fi
+          if [[ "${FULL_REFRESH_MODE}" != "0" && "${FULL_REFRESH_MODE}" != "1" ]]; then
+            echo "::error::Invalid full-refresh mode."
             exit 1
           fi
           if [[ ! "${ACTOR_AUTH_USER_ID}" =~ ^[0-9a-f-]{36}$ ]]; then
@@ -309,24 +328,30 @@ jobs:
 
           scp "${ssh_options[@]}" "${TARGET_PATH}" \
             "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/target.json"
-          scp "${ssh_options[@]}" "${DB_APPROVAL_PATH}" \
-            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/db-approval.json"
-          scp "${ssh_options[@]}" "${EVIDENCE_PATH}" \
-            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/evidence.json"
+          if [[ "${FULL_REFRESH_MODE}" == "0" ]]; then
+            scp "${ssh_options[@]}" "${DB_APPROVAL_PATH}" \
+              "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/db-approval.json"
+            scp "${ssh_options[@]}" "${EVIDENCE_PATH}" \
+              "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/evidence.json"
+          fi
           scp "${ssh_options[@]}" "${GUARDIAN_PATH}" \
             "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/guardian.sh"
 
           ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
-            "RUN_KEY='${RUN_KEY}' ACTOR_AUTH_USER_ID='${ACTOR_AUTH_USER_ID}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' EXPECTED_IMAGE_TAG='${EXPECTED_IMAGE_TAG}' bash -s" <<'REMOTE_START'
+            "RUN_KEY='${RUN_KEY}' FULL_REFRESH_MODE='${FULL_REFRESH_MODE}' ACTOR_AUTH_USER_ID='${ACTOR_AUTH_USER_ID}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' EXPECTED_IMAGE_TAG='${EXPECTED_IMAGE_TAG}' bash -s" <<'REMOTE_START'
           set -euo pipefail
           run_root="${HOME}/alimtalk-proxy/.development-land-area-sync-workflow/${RUN_KEY}"
           guardian="${run_root}/guardian.sh"
           guardian_log="${run_root}/guardian.log"
           guardian_pid_file="${run_root}/guardian.pid"
-          for candidate in \
-            "${run_root}/target.json" \
-            "${run_root}/db-approval.json" \
-            "${run_root}/evidence.json"
+          candidates=("${run_root}/target.json")
+          if [[ "${FULL_REFRESH_MODE}" == "0" ]]; then
+            candidates+=(
+              "${run_root}/db-approval.json"
+              "${run_root}/evidence.json"
+            )
+          fi
+          for candidate in "${candidates[@]}"
           do
             test -f "${candidate}"
             test ! -L "${candidate}"
@@ -340,6 +365,7 @@ jobs:
           install -m 600 /dev/null "${guardian_log}"
           nohup setsid env \
             "RUN_KEY=${RUN_KEY}" \
+            "FULL_REFRESH_MODE=${FULL_REFRESH_MODE}" \
             "ACTOR_AUTH_USER_ID=${ACTOR_AUTH_USER_ID}" \
             "EXPECTED_GIT_SHA=${EXPECTED_GIT_SHA}" \
             "EXPECTED_IMAGE_TAG=${EXPECTED_IMAGE_TAG}" \

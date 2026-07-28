@@ -8,7 +8,9 @@ import {
     parseDevelopmentEvidenceManifest,
     parseDevelopmentTargetManifest,
     runDevelopmentLandAreaSync,
+    developmentTargetAllowedScopePnus,
     validateDevelopmentRunnerEnvironment,
+    type DevelopmentRelationGisInvariantRows,
 } from '../operations/development-land-area-sync-runner';
 
 const PRIVATE_DIRECTORY = '.development-land-area-sync';
@@ -154,6 +156,110 @@ async function main(): Promise<void> {
             },
         }
     );
+    type JsonRow = Record<string, unknown>;
+    const pageSize = 500;
+    const maxInvariantRows = 10_000;
+    const readExactPaged = async (
+        code: string,
+        fetchPage: (
+            from: number,
+            to: number
+        ) => PromiseLike<{
+            data: unknown;
+            error: unknown;
+            count: number | null;
+        }>
+    ): Promise<JsonRow[]> => {
+        const rows: JsonRow[] = [];
+        let expectedCount: number | null = null;
+        while (true) {
+            const result = await fetchPage(
+                rows.length,
+                rows.length + pageSize - 1
+            );
+            if (
+                result.error ||
+                !Array.isArray(result.data) ||
+                !Number.isSafeInteger(result.count) ||
+                (result.count as number) < 0 ||
+                (expectedCount !== null &&
+                    result.count !== expectedCount)
+            ) {
+                throw new Error(`${code}_READ_FAILED`);
+            }
+            const pageCount = result.count as number;
+            expectedCount = pageCount;
+            for (const row of result.data) {
+                if (
+                    row === null ||
+                    typeof row !== 'object' ||
+                    Array.isArray(row)
+                ) {
+                    throw new Error(`${code}_ROW_INVALID`);
+                }
+                rows.push(row as JsonRow);
+            }
+            if (
+                rows.length > maxInvariantRows ||
+                rows.length > pageCount
+            ) {
+                throw new Error(`${code}_COUNT_INVALID`);
+            }
+            if (rows.length === pageCount) return rows;
+            if (result.data.length === 0) {
+                throw new Error(`${code}_TRUNCATED`);
+            }
+        }
+    };
+    const chunks = <T>(values: T[], size = 100): T[][] => {
+        const result: T[][] = [];
+        for (let offset = 0; offset < values.length; offset += size) {
+            result.push(values.slice(offset, offset + size));
+        }
+        return result;
+    };
+    const readChunked = async (
+        code: string,
+        values: string[],
+        fetchChunk: (
+            chunk: string[],
+            from: number,
+            to: number
+        ) => PromiseLike<{
+            data: unknown;
+            error: unknown;
+            count: number | null;
+        }>
+    ): Promise<JsonRow[]> => {
+        const rows: JsonRow[] = [];
+        for (const chunk of chunks(values)) {
+            rows.push(
+                ...(await readExactPaged(
+                    code,
+                    (from, to) =>
+                        fetchChunk(chunk, from, to)
+                ))
+            );
+        }
+        if (rows.length > maxInvariantRows) {
+            throw new Error(`${code}_COUNT_INVALID`);
+        }
+        return rows;
+    };
+    const dedupeById = (
+        code: string,
+        rows: JsonRow[]
+    ): JsonRow[] => {
+        const byId = new Map<string, JsonRow>();
+        for (const row of rows) {
+            const id = String(row.id ?? '').toLowerCase();
+            if (!UUID_RE.test(id)) {
+                throw new Error(`${code}_ROW_INVALID`);
+            }
+            byId.set(id, row);
+        }
+        return [...byId.values()];
+    };
     const artifact = await runDevelopmentLandAreaSync({
         target,
         dbApproval,
@@ -235,6 +341,312 @@ async function main(): Promise<void> {
                         row.land_area_sync_job_id ?? ''
                     ),
                 }));
+            },
+            async readRelationGisInvariantRows(input) {
+                const scopePnus = [...new Set(input.scopePnus)].sort();
+                const expectedScopePnus = [
+                    ...developmentTargetAllowedScopePnus(target),
+                ].sort();
+                const scopeSet = new Set(scopePnus);
+                if (
+                    input.unionId !== target.unionId ||
+                    scopePnus.length !==
+                        expectedScopePnus.length ||
+                    scopePnus.some(
+                        (pnu, index) =>
+                            pnu !== expectedScopePnus[index]
+                    )
+                ) {
+                    throw new Error(
+                        'DEVELOPMENT_RELATION_GIS_SCOPE_INVALID'
+                    );
+                }
+                const landLots = await readChunked(
+                    'DEVELOPMENT_LAND_LOTS_INVARIANT',
+                    scopePnus,
+                    (chunk, from, to) =>
+                        developmentDatabase
+                            .from('land_lots')
+                            .select('*', { count: 'exact' })
+                            .eq('union_id', input.unionId)
+                            .in('pnu', chunk)
+                            .order('pnu', { ascending: true })
+                            .range(from, to)
+                );
+                if (
+                    landLots.length !== scopePnus.length ||
+                    landLots.some(
+                        (row) =>
+                            row.union_id !== input.unionId ||
+                            typeof row.pnu !== 'string' ||
+                            !scopeSet.has(row.pnu)
+                    ) ||
+                    new Set(landLots.map((row) => row.pnu)).size !==
+                        scopePnus.length
+                ) {
+                    throw new Error(
+                        'DEVELOPMENT_LAND_LOTS_INVARIANT_SCOPE_INVALID'
+                    );
+                }
+
+                const buildingLandLots = dedupeById(
+                    'DEVELOPMENT_BUILDING_LAND_LOTS_INVARIANT',
+                    await readChunked(
+                        'DEVELOPMENT_BUILDING_LAND_LOTS_INVARIANT',
+                        scopePnus,
+                        (chunk, from, to) =>
+                            developmentDatabase
+                                .from('building_land_lots')
+                                .select('*', { count: 'exact' })
+                                .in('pnu', chunk)
+                                .order('id', {
+                                    ascending: true,
+                                })
+                                .range(from, to)
+                    )
+                );
+                if (
+                    buildingLandLots.some(
+                        (row) =>
+                            typeof row.pnu !== 'string' ||
+                            !scopeSet.has(row.pnu) ||
+                            typeof row.building_id !== 'string' ||
+                            !UUID_RE.test(row.building_id)
+                    )
+                ) {
+                    throw new Error(
+                        'DEVELOPMENT_BUILDING_LAND_LOTS_INVARIANT_SCOPE_INVALID'
+                    );
+                }
+                const buildingIds = [
+                    ...new Set(
+                        buildingLandLots.map((row) =>
+                            String(
+                                row.building_id
+                            ).toLowerCase()
+                        )
+                    ),
+                ].sort();
+                const buildings = dedupeById(
+                    'DEVELOPMENT_BUILDINGS_INVARIANT',
+                    await readChunked(
+                        'DEVELOPMENT_BUILDINGS_INVARIANT',
+                        buildingIds,
+                        (chunk, from, to) =>
+                            developmentDatabase
+                                .from('buildings')
+                                .select('*', { count: 'exact' })
+                                .in('id', chunk)
+                                .order('id', {
+                                    ascending: true,
+                                })
+                                .range(from, to)
+                    )
+                );
+                if (
+                    buildings.length !== buildingIds.length ||
+                    buildings.some(
+                        (row) =>
+                            typeof row.id !== 'string' ||
+                            !buildingIds.includes(
+                                row.id.toLowerCase()
+                            )
+                    )
+                ) {
+                    throw new Error(
+                        'DEVELOPMENT_BUILDINGS_INVARIANT_SCOPE_INVALID'
+                    );
+                }
+                const buildingIdSet = new Set(buildingIds);
+                const buildingUnits = dedupeById(
+                    'DEVELOPMENT_BUILDING_UNITS_INVARIANT',
+                    await readChunked(
+                        'DEVELOPMENT_BUILDING_UNITS_INVARIANT',
+                        buildingIds,
+                        (chunk, from, to) =>
+                            developmentDatabase
+                                .from('building_units')
+                                .select('*', { count: 'exact' })
+                                .in('building_id', chunk)
+                                .order('id', {
+                                    ascending: true,
+                                })
+                                .range(from, to)
+                    )
+                );
+                if (
+                    buildingUnits.some(
+                        (row) =>
+                            typeof row.building_id !== 'string' ||
+                            !buildingIdSet.has(
+                                row.building_id.toLowerCase()
+                            )
+                    )
+                ) {
+                    throw new Error(
+                        'DEVELOPMENT_BUILDING_UNITS_INVARIANT_SCOPE_INVALID'
+                    );
+                }
+                const externalRefs = dedupeById(
+                    'DEVELOPMENT_BUILDING_EXTERNAL_REFS_INVARIANT',
+                    [
+                        ...(await readChunked(
+                            'DEVELOPMENT_BUILDING_EXTERNAL_REFS_INVARIANT',
+                            buildingIds,
+                            (chunk, from, to) =>
+                                developmentDatabase
+                                    .from(
+                                        'building_external_refs'
+                                    )
+                                    .select('*', {
+                                        count: 'exact',
+                                    })
+                                    .in('building_id', chunk)
+                                    .order('id', {
+                                        ascending: true,
+                                    })
+                                    .range(from, to)
+                        )),
+                        ...(await readChunked(
+                            'DEVELOPMENT_BUILDING_EXTERNAL_REFS_INVARIANT',
+                            scopePnus,
+                            (chunk, from, to) =>
+                                developmentDatabase
+                                    .from(
+                                        'building_external_refs'
+                                    )
+                                    .select('*', {
+                                        count: 'exact',
+                                    })
+                                    .in('pnu', chunk)
+                                    .order('id', {
+                                        ascending: true,
+                                    })
+                                    .range(from, to)
+                        )),
+                    ]
+                );
+                if (
+                    externalRefs.some(
+                        (row) =>
+                            (typeof row.building_id !== 'string' ||
+                                !buildingIdSet.has(
+                                    row.building_id.toLowerCase()
+                                )) &&
+                            (typeof row.pnu !== 'string' ||
+                                !scopeSet.has(row.pnu))
+                    )
+                ) {
+                    throw new Error(
+                        'DEVELOPMENT_BUILDING_EXTERNAL_REFS_INVARIANT_SCOPE_INVALID'
+                    );
+                }
+                const unionRelations = await readExactPaged(
+                    'DEVELOPMENT_BUILDING_REGISTRY_RELATIONS_INVARIANT',
+                    (from, to) =>
+                        developmentDatabase
+                            .from(
+                                'building_registry_land_lot_relations'
+                            )
+                            .select('*', { count: 'exact' })
+                            .eq('union_id', input.unionId)
+                            .order('id', { ascending: true })
+                            .range(from, to)
+                );
+                const relations = unionRelations.filter(
+                    (row) =>
+                        (typeof row.base_pnu === 'string' &&
+                            scopeSet.has(row.base_pnu)) ||
+                        (typeof row.attached_pnu === 'string' &&
+                            scopeSet.has(row.attached_pnu))
+                );
+                if (
+                    relations.some(
+                        (row) =>
+                            row.union_id !== input.unionId ||
+                            typeof row.base_pnu !== 'string' ||
+                            typeof row.attached_pnu !== 'string'
+                    )
+                ) {
+                    throw new Error(
+                        'DEVELOPMENT_BUILDING_REGISTRY_RELATIONS_INVARIANT_SCOPE_INVALID'
+                    );
+                }
+                const unionManualOverrides = await readExactPaged(
+                    'DEVELOPMENT_BUILDING_MANUAL_OVERRIDES_INVARIANT',
+                    (from, to) =>
+                        developmentDatabase
+                            .from(
+                                'building_land_lot_manual_overrides'
+                            )
+                            .select('*', { count: 'exact' })
+                            .eq('union_id', input.unionId)
+                            .order('id', { ascending: true })
+                            .range(from, to)
+                );
+                const manualOverrides =
+                    unionManualOverrides.filter(
+                        (row) =>
+                            (typeof row.base_pnu === 'string' &&
+                                scopeSet.has(row.base_pnu)) ||
+                            (typeof row.attached_pnu === 'string' &&
+                                scopeSet.has(row.attached_pnu))
+                    );
+                if (
+                    manualOverrides.some(
+                        (row) =>
+                            row.union_id !== input.unionId ||
+                            typeof row.base_pnu !== 'string' ||
+                            typeof row.attached_pnu !== 'string'
+                    )
+                ) {
+                    throw new Error(
+                        'DEVELOPMENT_BUILDING_MANUAL_OVERRIDES_INVARIANT_SCOPE_INVALID'
+                    );
+                }
+                return {
+                    land_lots: landLots,
+                    building_land_lots: buildingLandLots,
+                    buildings,
+                    building_units: buildingUnits,
+                    building_external_refs: externalRefs,
+                    building_registry_land_lot_relations:
+                        relations,
+                    building_land_lot_manual_overrides:
+                        manualOverrides,
+                } satisfies DevelopmentRelationGisInvariantRows;
+            },
+            async readPropertyUnitLandRights(unionId) {
+                if (unionId !== target.unionId) {
+                    throw new Error(
+                        'DEVELOPMENT_LAND_RIGHT_SCOPE_INVALID'
+                    );
+                }
+                const rows = await readExactPaged(
+                    'DEVELOPMENT_LAND_RIGHT',
+                    (from, to) =>
+                        developmentDatabase
+                            .from('property_unit_land_rights')
+                            .select('*', { count: 'exact' })
+                            .eq('union_id', unionId)
+                            .order('property_unit_id', {
+                                ascending: true,
+                            })
+                            .order('target_pnu', {
+                                ascending: true,
+                            })
+                            .range(from, to)
+                );
+                if (
+                    rows.some(
+                        (row) => row.union_id !== unionId
+                    )
+                ) {
+                    throw new Error(
+                        'DEVELOPMENT_LAND_RIGHT_SCOPE_INVALID'
+                    );
+                }
+                return rows;
             },
         },
     });

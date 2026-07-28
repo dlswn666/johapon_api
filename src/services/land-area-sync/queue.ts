@@ -14,6 +14,11 @@ import { env } from '../../config/env';
 import type { DatabaseTarget } from '../../types/database.types';
 import { assertLandAreaSyncEnabled } from '../../security/land-area-sync-execution-policy';
 import {
+    assertDevelopmentLandAreaFullRefreshAllowed,
+    developmentLandAreaFullRefreshMarkersEqual,
+    parseDevelopmentLandAreaFullRefreshMarker,
+} from '../../security/development-land-area-full-refresh-policy';
+import {
     assertLandAreaSyncCanaryAllowed,
     assertLandAreaSyncScopeAllowed,
 } from '../../security/land-area-sync-canary-policy';
@@ -45,17 +50,24 @@ import {
     markScopedFailed,
     writeDiscoveryTerminal,
 } from './finalizer';
+import {
+    ensureTimedOutJobHasDurableTerminal,
+} from './queue-timeout-terminal';
 import type {
     LandAreaSyncDiscoveryRequest,
     LandAreaSyncJobInfo,
 } from '../../types/land-area-sync-job.types';
 
 const logger = createLogger('LAND-AREA-SYNC-QUEUE');
+export const LAND_AREA_SYNC_ADMISSION_WALL_TIMEOUT_MS =
+    10 * 60_000;
 
 interface JobHandle {
     unionId: string;
     databaseTarget: DatabaseTarget;
-    controller: AbortController;
+    workerController: AbortController;
+    queuedController: AbortController;
+    deadlineTimer: ReturnType<typeof setTimeout>;
 }
 
 class LandAreaSyncQueueService {
@@ -64,7 +76,11 @@ class LandAreaSyncQueueService {
     private readonly adapter: LandAreaSyncAdapter;
 
     constructor(adapter?: LandAreaSyncAdapter) {
-        this.queue = new PQueue({ concurrency: 2, timeout: 600000 });
+        // p-queue timeout은 task 시작 뒤 wrapper만 종료하며 underlying worker를
+        // 취소하지 않는다. admission 시점 wall timer + AbortSignal로 queue 대기와
+        // 실행을 함께 제한하고, underlying Promise 자체가 끝날 때까지 queue slot을
+        // 유지한다.
+        this.queue = new PQueue({ concurrency: 2 });
         this.jobs = new Map();
         this.adapter =
             adapter ??
@@ -84,6 +100,17 @@ class LandAreaSyncQueueService {
      */
     async addDiscoveryJob(request: LandAreaSyncDiscoveryRequest): Promise<LandAreaSyncJobInfo> {
         assertLandAreaSyncEnabled(env.LAND_AREA_SYNC_ENABLED);
+        const developmentFullRefresh =
+            parseDevelopmentLandAreaFullRefreshMarker(
+                request.developmentFullRefresh
+            );
+        if (developmentFullRefresh) {
+            assertDevelopmentLandAreaFullRefreshAllowed({
+                databaseTarget: request.databaseTarget,
+                unionId: request.unionId,
+                marker: developmentFullRefresh,
+            });
+        }
         assertLandAreaSyncCanaryAllowed(
             env.LAND_AREA_SYNC_ALLOWED_TARGETS,
             request.databaseTarget,
@@ -103,6 +130,9 @@ class LandAreaSyncQueueService {
                     unionId: request.unionId,
                     anchorPnu: request.anchorPnu,
                     actorUserId: request.actorUserId,
+                    ...(developmentFullRefresh
+                        ? { developmentFullRefresh }
+                        : {}),
                 })
             );
         } catch (error) {
@@ -118,7 +148,11 @@ class LandAreaSyncQueueService {
                 !existing ||
                 land?.admissionKey !== request.admissionKey ||
                 land.anchorPnu !== request.anchorPnu ||
-                land.sourceDiscoveryJobId !== null
+                land.sourceDiscoveryJobId !== null ||
+                !developmentLandAreaFullRefreshMarkersEqual(
+                    land.developmentFullRefresh,
+                    developmentFullRefresh
+                )
             ) {
                 throw error;
             }
@@ -173,30 +207,84 @@ class LandAreaSyncQueueService {
     }
 
     private admit(jobId: string, unionId: string, databaseTarget: DatabaseTarget): boolean {
-        const controller = new AbortController();
+        const workerController = new AbortController();
+        const queuedController = new AbortController();
+        let started = false;
+        let timedOut = false;
         const key = this.key(databaseTarget, jobId);
         if (this.jobs.has(key)) {
             return false;
         }
-        this.jobs.set(key, { unionId, databaseTarget, controller });
+        const deadlineTimer = setTimeout(
+            () => {
+                timedOut = true;
+                workerController.abort();
+                if (!started) queuedController.abort();
+            },
+            LAND_AREA_SYNC_ADMISSION_WALL_TIMEOUT_MS
+        );
+        deadlineTimer.unref?.();
+        this.jobs.set(key, {
+            unionId,
+            databaseTarget,
+            workerController,
+            queuedController,
+            deadlineTimer,
+        });
 
         this.queue
             .add(async () => {
+                // queue wrapper signal과 worker signal을 분리한다. 실행 시작 뒤에는
+                // queuedController를 abort하지 않아 PQueue Promise가 underlying
+                // worker/RPC 종료 전에 reject되는 race를 막는다.
+                started = true;
                 try {
                     await runLandAreaSyncJob({
                         jobId,
                         unionId,
                         deps: this.buildDeps(databaseTarget),
-                        signal: controller.signal,
+                        signal: workerController.signal,
                     });
+                    if (timedOut) {
+                        // abort를 관찰한 worker는 예외 없이 조기 return할 수 있다. underlying
+                        // Promise가 완전히 drain된 뒤 durable terminal을 재확인하고,
+                        // PROCESSING이 남아 있을 때만 조건부 FAILED finalizer를 호출한다.
+                        // apply RPC가 이미 APPLIED를 commit했다면 terminal/receipt 검사가
+                        // 이를 보존하며, 동시 terminal race도 DB finalizer의 상태 조건이 막는다.
+                        const database =
+                            getSupabaseService(databaseTarget);
+                        await ensureTimedOutJobHasDurableTerminal({
+                            readJob: () =>
+                                getScopedJob(
+                                    database.getClient(),
+                                    jobId,
+                                    unionId
+                                ),
+                            markFailed: () =>
+                                markScopedFailed(
+                                    database,
+                                    jobId,
+                                    unionId,
+                                    'queue admission wall timeout으로 작업을 중단했습니다.'
+                                ),
+                        });
+                    }
                 } finally {
                     // terminal 도달 후 늦은 callback 이 apply 하지 못하도록 abort 한다.
-                    controller.abort();
+                    clearTimeout(deadlineTimer);
+                    workerController.abort();
                     this.jobs.delete(key);
                 }
+            }, {
+                // queue 대기 중 deadline abort면 task를 제거한다. 실행 중이면 같은
+                // signal이 scan과 apply 직전 barrier까지 전달되고 underlying worker
+                // 완료를 기다린 뒤에만 이 Promise가 settle한다.
+                signal: queuedController.signal,
             })
             .catch(async (err: unknown) => {
-                controller.abort();
+                clearTimeout(deadlineTimer);
+                workerController.abort();
+                queuedController.abort();
                 this.jobs.delete(key);
                 const message = err instanceof Error ? err.message : 'LAND_AREA_SYNC 워커 오류';
                 logger.error(`LAND_AREA_SYNC job ${jobId} fatal error: ${message}`);
@@ -215,6 +303,7 @@ class LandAreaSyncQueueService {
         const vworldAuth = vworldAuthFromEnv();
 
         return {
+            databaseTarget,
             now: () => new Date(),
             assertCanaryScopeAllowed: (unionId, scannedPnus) =>
                 assertLandAreaSyncScopeAllowed(

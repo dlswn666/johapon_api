@@ -12,6 +12,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
     LAND_AREA_SYNC_JOB_TYPE,
     LAND_AREA_SYNC_SCHEMA_VERSION,
+    type LandAreaSyncDevelopmentFullRefresh,
     type LandAreaSyncPreview,
 } from '../../types/land-area-sync-job.types';
 
@@ -42,6 +43,7 @@ export interface InsertDiscoveryJobInput {
     unionId: string;
     anchorPnu: string;
     actorUserId: string;
+    developmentFullRefresh?: LandAreaSyncDevelopmentFullRefresh;
 }
 
 /**
@@ -69,6 +71,12 @@ export async function insertDiscoveryJob(
                     anchorPnu: input.anchorPnu,
                     sourceDiscoveryJobId: null,
                     admissionKey: jobId,
+                    ...(input.developmentFullRefresh
+                        ? {
+                              developmentFullRefresh:
+                                  input.developmentFullRefresh,
+                          }
+                        : {}),
                 },
             },
         })

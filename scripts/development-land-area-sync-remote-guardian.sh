@@ -10,6 +10,7 @@ uuid_pattern='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 sha_pattern='^[0-9a-f]{40}$'
 if [[
   ! "${RUN_KEY:-}" =~ ^[0-9]+-[0-9]+$
+  || ( "${FULL_REFRESH_MODE:-}" != "0" && "${FULL_REFRESH_MODE:-}" != "1" )
   || ! "${ACTOR_AUTH_USER_ID:-}" =~ ${uuid_pattern}
   || ! "${EXPECTED_GIT_SHA:-}" =~ ${sha_pattern}
   || "${EXPECTED_IMAGE_TAG:-}" != "ghcr.io/dlswn666/alimtalk-proxy:${EXPECTED_GIT_SHA}"
@@ -33,7 +34,15 @@ container_target="${container_root}/target-${RUN_KEY}.json"
 container_db_approval="${container_root}/db-approval-${RUN_KEY}.json"
 container_evidence="${container_root}/evidence-${RUN_KEY}.json"
 container_artifact="${container_root}/artifact-${RUN_KEY}.json"
+container_capture_root="/app/.development-land-area-evidence-capture"
+container_capture_target="${container_capture_root}/target-${RUN_KEY}.json"
+container_capture_evidence="${container_capture_root}/evidence-${RUN_KEY}.json"
+container_capture_audit="${container_capture_root}/audit-${RUN_KEY}.json"
 validation_sentinel="LAND_AREA_DEVELOPMENT_RUN_ARTIFACT_VALIDATED"
+capture_timeout_seconds=3600
+runner_timeout_seconds=18000
+post_timeout_quarantine_seconds=720
+host_self_cleanup_delay_seconds=1200
 target_container=""
 cleanup_complete=0
 final_status=90
@@ -76,7 +85,10 @@ cleanup_container_inputs() {
       "${container_target}" \
       "${container_db_approval}" \
       "${container_evidence}" \
-      "${container_artifact}"
+      "${container_artifact}" \
+      "${container_capture_target}" \
+      "${container_capture_evidence}" \
+      "${container_capture_audit}"
   then
     cleanup_status=1
   fi
@@ -85,7 +97,10 @@ cleanup_container_inputs() {
     "${container_target}" \
     "${container_db_approval}" \
     "${container_evidence}" \
-    "${container_artifact}"
+    "${container_artifact}" \
+    "${container_capture_target}" \
+    "${container_capture_evidence}" \
+    "${container_capture_audit}"
   do
     if ! docker exec "${target_container}" test ! -e "${candidate}"; then
       cleanup_status=1
@@ -113,6 +128,36 @@ cleanup_host_inputs() {
   return "${cleanup_status}"
 }
 
+schedule_host_self_cleanup() {
+  (
+    # 부모 guardian의 operation lock FD를 상속한 채 sleep하지 않는다.
+    exec 8>&-
+    trap '' HUP
+    trap - INT TERM
+    sleep "${host_self_cleanup_delay_seconds}"
+    if [[ ! -e "${host_root}" && ! -L "${host_root}" ]]; then
+      exit 0
+    fi
+    test -d "${host_root}"
+    test ! -L "${host_root}"
+    test "$(stat -c '%u' "${host_root}")" = "$(id -u)"
+    exec 9>>"${operation_lock_path}"
+    flock -w 30 9
+    rm -f -- \
+      "${host_root}/target.json" \
+      "${host_root}/db-approval.json" \
+      "${host_root}/evidence.json" \
+      "${host_root}/guardian.sh" \
+      "${host_root}/guardian.log" \
+      "${host_root}/guardian.pid" \
+      "${host_root}/guardian-started" \
+      "${host_root}/artifact.json" \
+      "${host_root}/status" \
+      "${host_root}/validated"
+    rmdir -- "${host_root}"
+  ) </dev/null >/dev/null 2>&1 &
+}
+
 finish_guardian() {
   local prior_status="$?"
   trap - EXIT
@@ -137,6 +182,9 @@ finish_guardian() {
   if [[ "${status_write_status}" -ne 0 ]]; then
     exit 91
   fi
+  # workflow가 GitHub hard timeout/취소로 remote cleanup을 호출하지 못해도 raw
+  # artifact/status/log가 host에 영구 잔존하지 않게 exact run directory를 만료한다.
+  schedule_host_self_cleanup
   exit 0
 }
 
@@ -161,7 +209,7 @@ if [[ ! -f "${operation_lock_path}" || -L "${operation_lock_path}" ]] \
   exit 65
 fi
 exec 8>>"${operation_lock_path}"
-if ! flock -w 900 8; then
+if ! flock -w 300 8; then
   exit 66
 fi
 
@@ -169,10 +217,11 @@ test -d "${host_root}"
 test ! -L "${host_root}"
 test "$(stat -c '%u' "${host_root}")" = "$(id -u)"
 test "$(stat -c '%a' "${host_root}")" = "700"
-for candidate in \
-  "${host_target}" \
-  "${host_db_approval}" \
-  "${host_evidence}"
+candidates=("${host_target}")
+if [[ "${FULL_REFRESH_MODE}" == "0" ]]; then
+  candidates+=("${host_db_approval}" "${host_evidence}")
+fi
+for candidate in "${candidates[@]}"
 do
   test -f "${candidate}"
   test ! -L "${candidate}"
@@ -269,11 +318,78 @@ stream_file() {
 
 verify_health
 stream_file "${host_target}" "${container_target}"
-stream_file "${host_db_approval}" "${container_db_approval}"
-stream_file "${host_evidence}" "${container_evidence}"
+if [[ "${FULL_REFRESH_MODE}" == "0" ]]; then
+  stream_file "${host_db_approval}" "${container_db_approval}"
+  stream_file "${host_evidence}" "${container_evidence}"
+else
+  docker exec "${target_container}" \
+    install -d -m 700 "${container_capture_root}"
+  docker exec "${target_container}" \
+    cp -- "${container_target}" "${container_capture_target}"
+  docker exec "${target_container}" \
+    chmod 600 "${container_capture_target}"
+  capture_run_id="${RUN_KEY//-/}"
+  timeout --foreground --kill-after=30s "${capture_timeout_seconds}" \
+  docker exec -w /app \
+    -e LAND_AREA_SYNC_ENABLED= \
+    "${target_container}" \
+    node dist/cli/development-land-area-evidence-capture.js \
+    --target ".development-land-area-evidence-capture/target-${RUN_KEY}.json" \
+    --capture-run-id "${capture_run_id}" \
+    --evidence-out ".development-land-area-evidence-capture/evidence-${RUN_KEY}.json" \
+    --audit-out ".development-land-area-evidence-capture/audit-${RUN_KEY}.json"
+  docker exec -w /app \
+    -e "FULL_REFRESH_TARGET=${container_capture_target}" \
+    -e "FULL_REFRESH_EVIDENCE=${container_capture_evidence}" \
+    -e "FULL_REFRESH_AUDIT=${container_capture_audit}" \
+    -e "RUNNER_EVIDENCE=${container_evidence}" \
+    -e "RUNNER_APPROVAL=${container_db_approval}" \
+    "${target_container}" \
+    node -e '
+      const fs = require("node:fs");
+      const runner = require("./dist/operations/development-land-area-sync-runner.js");
+      const read = (name) => JSON.parse(fs.readFileSync(process.env[name], "utf8"));
+      const target = runner.parseDevelopmentTargetManifest(read("FULL_REFRESH_TARGET"));
+      const evidence = runner.parseDevelopmentEvidenceManifest(read("FULL_REFRESH_EVIDENCE"));
+      const audit = read("FULL_REFRESH_AUDIT");
+      const marker = runner.developmentFullRefreshMarkerForTarget(target);
+      if (
+        !marker
+        || audit?.gate?.status !== "PASS"
+        || audit?.promotionGate?.status !== "PASS"
+        || audit?.promotionGate?.writeEligible !== true
+        || audit?.readOnlyGuards?.durableSyncJobWrites !== 0
+        || audit?.readOnlyGuards?.propertyUnitWriteRpcCalls !== 0
+        || audit?.resolvedComponentCount !== target.targetCount
+        || audit?.sameRunOfficialComponentCount !== target.targetCount
+        || evidence.manifestDigest !== target.manifestDigest
+      ) process.exit(1);
+      const approval = {
+        version: "land-area-development-db-approval-manifest@1",
+        databaseTarget: "development",
+        unionId: target.unionId,
+        pnus: target.allowedScopePnus,
+        targetCount: target.allowedScopePnus.length,
+        manifestDigest: target.scopeDigest,
+        enabled: true,
+      };
+      runner.validateDevelopmentRunnerManifests(target, approval, evidence);
+      fs.writeFileSync(
+        process.env.RUNNER_EVIDENCE,
+        `${JSON.stringify(evidence, null, 2)}\n`,
+        { flag: "wx", mode: 0o600 }
+      );
+      fs.writeFileSync(
+        process.env.RUNNER_APPROVAL,
+        `${JSON.stringify(approval, null, 2)}\n`,
+        { flag: "wx", mode: 0o600 }
+      );
+    '
+fi
 write_private_line "${host_started}" "$$"
 
 set +e
+timeout --foreground --kill-after=30s "${runner_timeout_seconds}" \
 docker exec -w /app "${target_container}" \
   node dist/cli/development-land-area-sync-runner.js \
   --target ".development-land-area-sync/target-${RUN_KEY}.json" \
@@ -284,6 +400,13 @@ docker exec -w /app "${target_container}" \
 runner_status="$?"
 set -e
 final_status="${runner_status}"
+
+# hard timeout은 runner의 225분 신규-anchor cutoff와 admission wall timer/terminal
+# drain보다 긴 비상 상한이다. timeout 뒤에도 DB approval의 1시간 remaining gate와
+# 겹치는 quarantine 동안 operation lock을 유지한다.
+if [[ "${runner_status}" -eq 124 || "${runner_status}" -eq 137 ]]; then
+  sleep "${post_timeout_quarantine_seconds}"
+fi
 
 if [[ "${runner_status}" -eq 0 || "${runner_status}" -eq 1 ]]; then
   validation_output="$(
@@ -316,5 +439,6 @@ cleanup_container_inputs
 cleanup_host_inputs
 cleanup_complete=1
 write_private_line "${host_status}" "${final_status}"
+schedule_host_self_cleanup
 trap - EXIT
 exit 0

@@ -2,14 +2,16 @@
 
 ## 목적과 범위
 
-이 runner는 미아7구역 개발 DB의 활성 물건지 `429/429`가 검증된
-`LADFRL`/`LDAREG` 대지권 면적을 갖게 하는 단계적 실행 도구다. 운영 DB는 대상이 아니며
-production target, production JWT, 외부 API origin을 입력으로 받을 수 없다.
+이 runner는 미아7구역 개발 DB의 활성 물건지 `429/429`를 공식 API로 전부 다시 조회하고
+검증된 `LADFRL`/`LDAREG` 대지권 면적과 자동 출처를 적용하는 도구다. 운영 DB는 대상이
+아니며 production target, production JWT, 외부 API origin을 입력으로 받을 수 없다.
 
-현재 저장소 승인 bundle은 대표 LADFRL PNU
-`1130510100107912166` 한 건만 포함한다. 이 bundle의 PASS는 `1/1` canary PASS이지
-미아7 전체 완료가 아니다. 전체 완료는 아래 단계별 manifest/evidence를 추가하고 마지막
-postflight가 활성 물건 `429`, 고유 PNU `299`, 양수 면적 `429`를 확인해야 한다.
+과거의 대표 PNU canary와 7개 건물 특수 백필은 전체 완료 경로가 아니다. 전체 완료의
+source of truth는
+[`2026-07-28-mia7-development-land-area-full-refresh.md`](./2026-07-28-mia7-development-land-area-full-refresh.md)
+및 repo-pinned `land-area-development-target-manifest@3`이다. 적용 단위는 특정 호실이나
+기존 관계 행이 아니라 `295`개 공식 컴포넌트이며, 실행 전후 활성 물건 `429`, 활성 PNU
+`299`, 허용 scan PNU `300`을 exact 검증한다.
 
 ## acceptance checklist
 
@@ -53,10 +55,12 @@ development:<lowercase-union-uuid>:<19-digit-pnu>
 
 대표 PNU canonical digest는
 `423d4b2ef2df290fa1d168acf31c8ea38eb9816f2319fb34f4e11a23af48ff23`이다.
-현재 확인된 전체 299 PNU digest는
-`638977eb11e2e09afdb949179fe59e7944c2ed4c973fe2695bf0628239a2e219`이지만,
-전체 exact PNU 배열과 429개 property evidence가 저장소 bundle로 승인되기 전에는 이
-digest만으로 전체 실행을 허용하지 않는다.
+legacy v1 canonical 방식으로 계산한 전체 299 PNU digest
+`638977eb11e2e09afdb949179fe59e7944c2ed4c973fe2695bf0628239a2e219`은 과거
+read-only 분류 기록으로만 보존한다. v3 전체 갱신은 DB target과 union을 포함한 별도
+active-PNU commitment
+`db754ce378896d45bb09b66ffe1174577a805fa74d264ed59ed17c9d97a78cbc` 및 exact 배열을
+요구하며 legacy digest만으로 실행을 허용하지 않는다.
 
 DB approval JSON은 실행 의도를 exact 대조하는 두 번째 입력이다. 실제 DB의 private
 approval manifest 활성 여부와 scanned PNU 포함 여부는 confirmation/apply RPC가 같은
@@ -102,6 +106,49 @@ artifact는 `manifestDigest`에 결합한다. 따라서 같은 대표·부속 al
 
 이 target은 read-only evidence workflow에만 등록한다. live evidence와 별도 DB approval
 bundle이 저장소에 승인되기 전에는 write workflow 선택지로 승격하지 않는다.
+
+### v3 미아7 전체 공식 API 재조회 계약
+
+전체 재조회 target은
+`development-land-area-sync-manifests/mia-seven-full-295-components-api-readonly-target-20260728.json`
+하나로 고정한다.
+
+- union: `00f48b95-e9bc-4c92-a0e5-6b9a57adcfb9`
+- 공식 컴포넌트 anchor: `295`
+- 실행 시 활성 PNU exact 집합: `299`
+- 공식 API scan 허용 PNU exact 집합: `300`
+- 활성 property unit exact 집합: `429`
+- active PNU digest:
+  `db754ce378896d45bb09b66ffe1174577a805fa74d264ed59ed17c9d97a78cbc`
+- scope digest:
+  `8c87b46f17416cd5aad9aaa242f09ff04aefb4186f74b72370ebb9c1407caa73`
+- manifest digest:
+  `02bf999d970a9f0228a0bc683cc630fb157e5f4becb8576d0f4aa5b4dec1d3db`
+
+이 exact target만
+`DEVELOPMENT_FULL_REFRESH_API_REQUERY_V1` 표식을 받을 수 있다. 같은 형식의 임의 v3
+manifest, 다른 union, 다른 digest, production database target은 API admission 전에
+fail-closed한다.
+
+보호 write workflow는 과거 capture의 raw evidence나 DB approval 파일을 GitHub artifact로
+가져오지 않는다. 같은 보호 실행 안에서 먼저 공식 API read-only capture를 새로 수행하고
+`429/299/300/295`, read-only write counter `0`, promotion gate `PASS`를 확인한다. 그
+evidence는 비공개 임시 파일로만 유지한다. 이어지는 discovery와 apply도 공식 API를 다시
+조회하며, evidence의 `officialComponentDigest`와 새 discovery snapshot을 exact 대조한다.
+실행이 끝나면 raw evidence와 임시 approval을 삭제한다.
+
+DB relation/GIS 데이터는 scope 선정 입력으로 사용하지 않고 변경하지 않는다. 기존 DB
+scope hash와 property membership은 동시성·비대상 변경 감지에만 사용한다. 적용 중
+`land_lots`, `building_land_lots`, `buildings`, `building_units`,
+`building_external_refs`, `building_registry_land_lot_relations`,
+`building_land_lot_manual_overrides` 7개 relation/GIS 테이블의 pre/post exact count와
+content digest가 같아야 한다. `property_unit_land_rights`는 이 불변 집합과 분리해
+LDAREG target/current-writer 귀속 및 비대상 digest 불변을 검증한다.
+
+기존 `MANUAL` 값은 API 분자·분모·매칭·fallback에 사용하지 않는다. 현재
+`land_area/source/synced_at/job_id` tuple은 동시성 guard로만 사용한다. 공식 API 값이 기존
+숫자와 같더라도 적용 성공 시 `land_area_source`를 `LADFRL` 또는 `LDAREG`로 바꾸고
+`land_area_synced_at`과 `land_area_sync_job_id`를 현재 apply job provenance로 갱신한다.
 
 ### `791-2280 → 791-2281` 공식 관계 채택 runner
 
@@ -270,24 +317,46 @@ artifact는 저장소 validator로 다시 검증하고 최종 PASS/FAIL gate를 
 그 검증 뒤 exact-key public artifact를 별도로 만들며, GitHub upload에는 이 공개 파일만
 지정한다.
 
-40분을 넘는 전체 작업은 evidence가 완결된 repository-approved wave로 나눈다.
-각 wave는 terminal artifact를 남기고, 다음 wave는 최신 job과 read-only prestate를
-다시 검증한다.
+v3 전체 갱신은 7키 또는 호실별 wave로 나누지 않는다. repo-pinned `295`개 컴포넌트를
+한 보호 실행에서 직렬 처리한다. workflow 관찰 timeout은 `420`분, guardian runner
+비상 timeout은 `300`분, 신규 anchor admission cutoff는 `225`분,
+선행 read-only capture timeout은 `60`분,
+hard-timeout 뒤 operation-lock quarantine은 `12`분이다. timeout이
+나면 새 admission을 만들지 않고 lock을 유지한 채 terminal/cleanup 경계를 지킨다.
+기존 v1/v2 승인 bundle은 별도 canary 호환 경로로만 유지한다.
+
+GitHub job이 hard timeout 또는 취소되어 remote cleanup을 호출하지 못한 경우에도
+guardian은 container/host 민감 입력을 먼저 삭제한다. status를 쓴 뒤 `20`분 지연
+self-cleanup janitor가 operation lock을 다시 얻어 exact run directory의 raw
+artifact/status/log까지 삭제한다. 정상 workflow cleanup이 먼저 끝났으면 janitor는
+대상이 없음을 확인하고 종료한다.
+
+DB owner approval은 이 workflow가 만들지 않는다. 먼저 approval disabled 상태의
+standalone read-only capture PASS를 확인하고, live DEV manifest가 exact `300` PNU,
+위 v3 scope digest, enabled, 미만료 상태임을 owner 경로에서 실행 직전 확인해야 한다.
+approval은 실행 직전에 발급한 최대 6시간의 non-null expiry로 제한하고 각
+confirmation/apply 시점에 1시간 초과 잔여를 요구한다. workflow `420`분은 관찰
+상한이며 write window가 아니다. guardian 종료 후 성공·실패·취소와
+무관하게 finally disable한다. 현재 `196/disabled` manifest를 그대로 둔 실행은 apply
+RPC에서 정상적으로 실패해야 한다. protected workflow는 owner 승인 뒤에도 같은 revision의
+embedded fresh capture를 반복해 stale evidence 재사용을 막는다.
 
 ## 완료 판정
 
-대표 bundle PASS만으로 전체 완료라고 보고하지 않는다. 최종 PASS는 적어도 다음을 모두
+대표 bundle 또는 일부 호실 PASS만으로 전체 완료라고 보고하지 않는다. 최종 PASS는 적어도 다음을 모두
 만족해야 한다.
 
-1. 전체 승인 PNU manifest digest가 `638977...e219`와 exact 일치
-2. per-PNU evidence의 고유 property unit 수가 429
-3. pre/post active property unit `429`, active PNU `299`
-4. postflight positive land area `429`
+1. v3 manifest/scope/active-PNU digest가 위 repo-pinned 값과 exact 일치
+2. 공식 컴포넌트 `295`, scanned PNU `300`, active PNU `299`
+3. pre/post active property unit exact 집합 `429`
+4. postflight positive land area `429`, source `MANUAL` 잔여 `0`
 5. target source가 evidence strategy와 exact 일치
 6. FAILED/REVIEW_REQUIRED/NO_DATA/PARTIAL 잔여 0
    - terminal issues가 `issuesTruncated=false`이고 `issuesTotal===issues.length`
 7. property identity digest 불변
 8. non-target 4-field tuple digest 불변, writer-job attribution scope exact
-9. guardian terminal drain 및 host/container/local cleanup PASS
-10. 개발 feature flag와 allowlist를 후속 disable workflow로 원복
-11. 운영 DB write 0
+9. relation/GIS 7개 테이블 pre/post row-count/content digest 동일(DML `0`)
+10. LDAREG rights 변경 target/current-writer 귀속 및 비대상 rights digest 불변
+11. guardian terminal drain 및 host/container/local cleanup PASS
+12. 개발 feature flag와 allowlist를 후속 disable workflow로 원복
+13. 운영 DB write `0`

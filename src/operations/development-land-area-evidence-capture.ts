@@ -3,9 +3,13 @@ import {
     DEVELOPMENT_EVIDENCE_MANIFEST_VERSION,
     DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2,
     DEVELOPMENT_TARGET_MANIFEST_VERSION,
+    DEVELOPMENT_TARGET_MANIFEST_VERSION_V3,
+    computeDevelopmentActivePnuDigest,
+    developmentFullRefreshMarkerForTarget,
     developmentTargetAllowedScopePnus,
     developmentTargetAllowsManualOverwrite,
     developmentTargetExecutionAnchors,
+    developmentTargetExpectedActivePnus,
     type DevelopmentEvidenceEntry,
     type DevelopmentEvidenceManifest,
     type DevelopmentTargetManifest,
@@ -19,12 +23,13 @@ import {
 } from '../services/land-area-sync/service';
 import type { LandAreaSyncJobRow } from '../services/land-area-sync/repository';
 import type {
+    LandAreaSyncDevelopmentFullRefresh,
     LandAreaSyncScopeSnapshot,
     LandAreaSyncStrategy,
 } from '../types/land-area-sync-job.types';
 
 export const DEVELOPMENT_EVIDENCE_CAPTURE_AUDIT_VERSION =
-    'land-area-development-evidence-capture-audit@1' as const;
+    'land-area-development-evidence-capture-audit@2' as const;
 
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -64,6 +69,10 @@ export interface DevelopmentEvidenceCaptureAuditEntry {
     terminalIssueCodes: string[];
     terminalIssuesTotal: number;
     terminalIssuesTruncated: boolean;
+    scopeResolutionSource:
+        | 'DB_RESOLVER'
+        | 'SAME_RUN_OFFICIAL_READ_ONLY'
+        | 'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH';
 }
 
 export interface DevelopmentEvidenceCaptureRedactedAggregate {
@@ -84,6 +93,14 @@ export interface DevelopmentEvidenceCaptureAudit {
     unionId: string;
     targetCount: number;
     expectedPropertyUnitCount: number;
+    activePnuCount: number;
+    activePnuDigest: string;
+    initialActivePropertyIdentityDigest: string;
+    finalActivePropertyIdentityDigest: string;
+    activePropertyIdentityStable: boolean;
+    resolvedComponentCount: number;
+    scannedPnuCount: number;
+    sameRunOfficialComponentCount: number;
     manifestDigest: string;
     captureRunId: string;
     capturedAt: string;
@@ -110,6 +127,11 @@ export interface DevelopmentEvidenceCaptureAudit {
         status: 'PASS' | 'FAIL';
         failureCodes: string[];
     };
+    promotionGate: {
+        status: 'PASS' | 'BLOCKED';
+        writeEligible: boolean;
+        failureCodes: string[];
+    };
 }
 
 export interface DevelopmentEvidenceCaptureResult {
@@ -131,6 +153,24 @@ interface CaptureOneResult {
     entry: DevelopmentEvidenceEntry | null;
     audit: DevelopmentEvidenceCaptureAuditEntry;
     state: CaptureState;
+}
+
+export interface DevelopmentActivePropertyIdentitySnapshot {
+    rows: Array<{ id: string; pnu: string }>;
+    pnus: string[];
+    pnuDigest: string;
+    propertyIdentityDigest: string;
+}
+
+export function hasStableDevelopmentActivePropertyIdentity(
+    initial: DevelopmentActivePropertyIdentitySnapshot,
+    final: DevelopmentActivePropertyIdentitySnapshot | null
+): boolean {
+    return (
+        final !== null &&
+        final.propertyIdentityDigest ===
+            initial.propertyIdentityDigest
+    );
 }
 
 function sha256(value: string): string {
@@ -178,8 +218,19 @@ function sortedUnique(values: string[]): string[] {
 export function assertDevelopmentEvidenceCaptureActiveIdentity(input: {
     target: DevelopmentTargetManifest;
     rows: readonly { id: string; pnu: string }[];
-}): void {
+}): DevelopmentActivePropertyIdentitySnapshot {
     const { target, rows } = input;
+    const canonicalRows = rows
+        .map((row) => ({
+            id: row.id.toLowerCase(),
+            pnu: row.pnu,
+        }))
+        .sort((left, right) => {
+            const idOrder = left.id.localeCompare(right.id);
+            return idOrder !== 0
+                ? idOrder
+                : left.pnu.localeCompare(right.pnu);
+        });
     if (
         rows.length !== target.expectedUnionActivePropertyUnitCount ||
         rows.some(
@@ -187,25 +238,67 @@ export function assertDevelopmentEvidenceCaptureActiveIdentity(input: {
                 !UUID_RE.test(row.id) ||
                 !PNU_RE.test(row.pnu)
         ) ||
-        new Set(rows.map((row) => row.id)).size !== rows.length
+        new Set(canonicalRows.map((row) => row.id)).size !==
+            canonicalRows.length
     ) {
         throw new Error('CAPTURE_UNION_ACTIVE_PROPERTY_SET_MISMATCH');
     }
-    const activePnus = sortedUnique(rows.map((row) => row.pnu));
+    const activePnus = sortedUnique(
+        canonicalRows.map((row) => row.pnu)
+    );
     if (activePnus.length !== target.expectedUnionActivePnuCount) {
         throw new Error('CAPTURE_UNION_ACTIVE_PNU_COUNT_MISMATCH');
     }
 
-    const anchors = developmentTargetExecutionAnchors(target);
+    const allowedScopePnuSet = new Set(
+        developmentTargetAllowedScopePnus(target)
+    );
+    const fullUnionCapture =
+        target.expectedPropertyUnitCount ===
+        target.expectedUnionActivePropertyUnitCount;
     if (
-        target.targetCount === target.expectedUnionActivePnuCount &&
-        (
-            anchors.length !== activePnus.length ||
-            anchors.some((pnu, index) => pnu !== activePnus[index])
+        fullUnionCapture &&
+        activePnus.some(
+            (pnu) => !allowedScopePnuSet.has(pnu)
         )
     ) {
         throw new Error('CAPTURE_UNION_ACTIVE_PNU_SET_MISMATCH');
     }
+    const expectedActivePnus =
+        developmentTargetExpectedActivePnus(target);
+    if (
+        expectedActivePnus !== null &&
+        (expectedActivePnus.length !== activePnus.length ||
+            expectedActivePnus.some(
+                (pnu, index) => pnu !== activePnus[index]
+            ))
+    ) {
+        throw new Error('CAPTURE_UNION_ACTIVE_PNU_SET_MISMATCH');
+    }
+    const pnuDigest = computeDevelopmentActivePnuDigest(
+        target.unionId,
+        activePnus
+    );
+    if (
+        target.version === DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 &&
+        pnuDigest !== target.expectedUnionActivePnuDigest
+    ) {
+        throw new Error('CAPTURE_UNION_ACTIVE_PNU_SET_MISMATCH');
+    }
+    return {
+        rows: canonicalRows,
+        pnus: activePnus,
+        pnuDigest,
+        propertyIdentityDigest: sha256(
+            canonicalJson({
+                version:
+                    'land-area-development-active-property-identity@1',
+                databaseTarget: 'development',
+                unionId: target.unionId.toLowerCase(),
+                rows: canonicalRows,
+            })
+        ),
+    };
 }
 
 export function aggregateDevelopmentEvidenceCaptureEntries(
@@ -257,7 +350,10 @@ function createSyntheticJobRow(
     jobId: string,
     unionId: string,
     anchorPnu: string,
-    createdAt: string
+    createdAt: string,
+    developmentFullRefresh:
+        | LandAreaSyncDevelopmentFullRefresh
+        | null
 ): LandAreaSyncJobRow {
     return {
         id: jobId,
@@ -271,6 +367,9 @@ function createSyntheticJobRow(
                 anchorPnu,
                 sourceDiscoveryJobId: null,
                 admissionKey: jobId,
+                ...(developmentFullRefresh
+                    ? { developmentFullRefresh }
+                    : {}),
             },
         },
         created_at: createdAt,
@@ -303,6 +402,9 @@ export function developmentEvidenceEntryFromSnapshot(input: {
     }
 
     const expectedScannedPnus = sortedUnique(snapshot.scannedPnus);
+    const officialScopeResolution =
+        snapshot.developmentFullRefreshScopeResolution ??
+        snapshot.readOnlyScopeResolution;
     const targetPnus = new Set(
         developmentTargetAllowedScopePnus(target)
     );
@@ -410,6 +512,9 @@ export function developmentEvidenceEntryFromSnapshot(input: {
             dbScopeHash: snapshot.dbScopeHash,
             externalScopeDigest: snapshot.externalScopeDigest,
             projectionInputDigest: snapshot.projectionInputDigest,
+            officialComponentDigest:
+                officialScopeResolution?.officialComponentDigest ??
+                null,
         })
     );
     const confirmationRef =
@@ -432,11 +537,20 @@ export function developmentEvidenceEntryFromSnapshot(input: {
                   developmentObservationReferenceSha256:
                       snapshotReferenceSha256,
               }
-            : {
-                  kind: 'DEVELOPMENT_READ_ONLY_API_CAPTURE',
-                  captureRunId,
-                  snapshotReferenceSha256,
-              };
+            : officialScopeResolution
+              ? {
+                    kind:
+                        'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE',
+                    captureRunId,
+                    snapshotReferenceSha256,
+                    officialComponentDigest:
+                        officialScopeResolution.officialComponentDigest,
+                }
+              : {
+                    kind: 'DEVELOPMENT_READ_ONLY_API_CAPTURE',
+                    captureRunId,
+                    snapshotReferenceSha256,
+                };
 
     return {
         anchorPnu,
@@ -472,6 +586,9 @@ async function captureOne(input: {
     target: DevelopmentTargetManifest;
     captureRunId: string;
     anchorPnu: string;
+    developmentFullRefresh:
+        | LandAreaSyncDevelopmentFullRefresh
+        | null;
     deps: DevelopmentEvidenceCaptureReadOnlyDeps;
 }): Promise<CaptureOneResult> {
     const jobId = randomUUID();
@@ -480,7 +597,8 @@ async function captureOne(input: {
         jobId,
         input.target.unionId,
         input.anchorPnu,
-        createdAt
+        createdAt,
+        input.developmentFullRefresh
     );
     const state: CaptureState = {
         snapshot: null,
@@ -570,6 +688,7 @@ async function captureOne(input: {
         db,
         now: input.deps.now,
         executionMode: 'READ_ONLY_CAPTURE',
+        databaseTarget: 'development',
         assertCanaryScopeAllowed(_unionId, scannedPnus) {
             if (
                 scannedPnus.some(
@@ -640,6 +759,12 @@ async function captureOne(input: {
                 state.terminal?.issuesTotal ?? 0,
             terminalIssuesTruncated:
                 state.terminal?.issuesTruncated ?? false,
+            scopeResolutionSource:
+                state.snapshot
+                    ?.developmentFullRefreshScopeResolution
+                    ?.source ??
+                state.snapshot?.readOnlyScopeResolution?.source ??
+                'DB_RESOLVER',
         },
     };
 }
@@ -664,7 +789,19 @@ export async function captureDevelopmentLandAreaEvidence(input: {
 
     const executionAnchors =
         developmentTargetExecutionAnchors(input.target);
-    assertDevelopmentEvidenceCaptureActiveIdentity({
+    let developmentFullRefresh:
+        | LandAreaSyncDevelopmentFullRefresh
+        | null = null;
+    try {
+        developmentFullRefresh =
+            developmentFullRefreshMarkerForTarget(input.target);
+    } catch {
+        // repo-pinned DEV 전체 갱신 target이 아니면 기존 read-only capture로만
+        // 실행한다. promotion gate는 아래에서 write 승격을 차단한다.
+        developmentFullRefresh = null;
+    }
+    const initialActiveIdentity =
+        assertDevelopmentEvidenceCaptureActiveIdentity({
         target: input.target,
         rows: await input.deps.readActivePropertyIdentity(
             input.target.unionId
@@ -684,6 +821,7 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 target: input.target,
                 captureRunId: input.captureRunId,
                 anchorPnu: executionAnchors[index],
+                developmentFullRefresh,
                 deps: input.deps,
             });
             completed += 1;
@@ -709,11 +847,33 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 entry !== null
         );
     const capturedPropertyUnitIds = entries.flatMap(
-        (entry) => entry.expectedPropertyUnitIds
+        (entry) =>
+            entry.expectedPropertyUnitIds.map((id) =>
+                id.toLowerCase()
+            )
     );
     const uniquePropertyUnitIds = new Set(
         capturedPropertyUnitIds
     );
+    const initialActivePropertyUnitIds =
+        initialActiveIdentity.rows.map((row) => row.id);
+    const initialPnuByPropertyUnitId = new Map(
+        initialActiveIdentity.rows.map((row) => [
+            row.id,
+            row.pnu,
+        ])
+    );
+    const capturedPropertyUnitIdsSorted = [
+        ...uniquePropertyUnitIds,
+    ].sort();
+    const capturedScannedPnus = entries.flatMap(
+        (entry) => entry.expectedScannedPnus
+    );
+    const uniqueScannedPnus = new Set(capturedScannedPnus);
+    const sameRunOfficialComponentCount = results.filter(
+        (result) =>
+            result.audit.scopeResolutionSource !== 'DB_RESOLVER'
+    ).length;
     if (entries.length !== input.target.targetCount) {
         failureCodes.push('CAPTURE_TARGET_COVERAGE_MISMATCH');
     }
@@ -733,13 +893,41 @@ export async function captureDevelopmentLandAreaEvidence(input: {
             'CAPTURE_PROPERTY_UNIT_ID_OVERLAP'
         );
     }
+    const capturedIdentityOutsideInitialSnapshot = entries.some(
+        (entry) => {
+            const scannedPnus = new Set(
+                entry.expectedScannedPnus
+            );
+            return entry.expectedPropertyUnitIds.some(
+                (propertyUnitId) => {
+                    const initialPnu =
+                        initialPnuByPropertyUnitId.get(
+                            propertyUnitId.toLowerCase()
+                        );
+                    return (
+                        initialPnu === undefined ||
+                        !scannedPnus.has(initialPnu)
+                    );
+                }
+            );
+        }
+    );
+    if (capturedIdentityOutsideInitialSnapshot) {
+        failureCodes.push(
+            'CAPTURE_PROPERTY_UNIT_IDENTITY_MISMATCH'
+        );
+    }
+    if (
+        input.target.expectedPropertyUnitCount ===
+            input.target.expectedUnionActivePropertyUnitCount &&
+        JSON.stringify(capturedPropertyUnitIdsSorted) !==
+            JSON.stringify(initialActivePropertyUnitIds)
+    ) {
+        failureCodes.push(
+            'CAPTURE_PROPERTY_UNIT_SET_MISMATCH'
+        );
+    }
     if (input.target.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION) {
-        const capturedScannedPnus = entries.flatMap(
-            (entry) => entry.expectedScannedPnus
-        );
-        const uniqueScannedPnus = new Set(
-            capturedScannedPnus
-        );
         const allowedScopePnus =
             developmentTargetAllowedScopePnus(input.target);
         if (
@@ -760,6 +948,36 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 'CAPTURE_SCANNED_PNU_COVERAGE_MISMATCH'
             );
         }
+    }
+
+    let finalActiveIdentity:
+        | DevelopmentActivePropertyIdentitySnapshot
+        | null = null;
+    try {
+        finalActiveIdentity =
+            assertDevelopmentEvidenceCaptureActiveIdentity({
+                target: input.target,
+                rows: await input.deps.readActivePropertyIdentity(
+                    input.target.unionId
+                ),
+            });
+    } catch (error) {
+        failureCodes.push(
+            error instanceof Error &&
+                /^[A-Z0-9_]{1,100}$/.test(error.message)
+                ? error.message
+                : 'CAPTURE_FINAL_ACTIVE_IDENTITY_READ_FAILED'
+        );
+    }
+    const activePropertyIdentityStable =
+        hasStableDevelopmentActivePropertyIdentity(
+            initialActiveIdentity,
+            finalActiveIdentity
+        );
+    if (!activePropertyIdentityStable) {
+        failureCodes.push(
+            'CAPTURE_UNION_ACTIVE_PROPERTY_SET_CHANGED'
+        );
     }
 
     const capturedEvidence = {
@@ -783,6 +1001,13 @@ export async function captureDevelopmentLandAreaEvidence(input: {
     const evidenceManifestSha256 = evidence
         ? sha256(`${JSON.stringify(evidence, null, 2)}\n`)
         : null;
+    const fullRefreshWriteEligible =
+        developmentFullRefresh !== null;
+    const sameRunOfficialWriteEligible =
+        fullRefreshWriteEligible
+            ? sameRunOfficialComponentCount ===
+              input.target.targetCount
+            : sameRunOfficialComponentCount === 0;
 
     return {
         evidence,
@@ -793,6 +1018,19 @@ export async function captureDevelopmentLandAreaEvidence(input: {
             targetCount: input.target.targetCount,
             expectedPropertyUnitCount:
                 input.target.expectedPropertyUnitCount,
+            activePnuCount:
+                input.target.expectedUnionActivePnuCount,
+            activePnuDigest: initialActiveIdentity.pnuDigest,
+            initialActivePropertyIdentityDigest:
+                initialActiveIdentity.propertyIdentityDigest,
+            finalActivePropertyIdentityDigest:
+                finalActiveIdentity?.propertyIdentityDigest ??
+                '0'.repeat(64),
+            activePropertyIdentityStable,
+            resolvedComponentCount:
+                input.target.targetCount,
+            scannedPnuCount: uniqueScannedPnus.size,
+            sameRunOfficialComponentCount,
             manifestDigest: input.target.manifestDigest,
             captureRunId: input.captureRunId,
             capturedAt: input.deps.now().toISOString(),
@@ -836,6 +1074,26 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 status:
                     failureCodes.length === 0 ? 'PASS' : 'FAIL',
                 failureCodes: sortedUnique(failureCodes),
+            },
+            promotionGate: {
+                status:
+                    sameRunOfficialWriteEligible
+                        ? 'PASS'
+                        : 'BLOCKED',
+                writeEligible:
+                    sameRunOfficialWriteEligible,
+                failureCodes:
+                    sameRunOfficialWriteEligible
+                        ? []
+                        : fullRefreshWriteEligible
+                          ? [
+                                'SAME_RUN_OFFICIAL_COMPONENT_COVERAGE_MISMATCH',
+                            ]
+                          : sameRunOfficialComponentCount > 0
+                            ? [
+                                  'SAME_RUN_OFFICIAL_SCOPE_NOT_DB_REVALIDATABLE',
+                              ]
+                            : [],
             },
         },
     };
