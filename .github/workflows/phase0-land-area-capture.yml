@@ -391,17 +391,36 @@ jobs:
             scan.state === "COMPLETE" || scan.state === "COMPLETE_ZERO"
               ? scan.rows
               : [];
-          const allowedExactTokens = new Set([
-            "B",
-            "b",
-            "비",
-            "지",
-            "지층",
-            "지하",
-            "반지하",
-            "옥탑",
-            "옥탑층",
+          const exactTokenShapes = new Map([
+            ["B", "LATIN_B_TOKEN"],
+            ["b", "LATIN_B_TOKEN"],
+            ["비", "KOREAN_B_TOKEN"],
+            ["지", "JI_TOKEN"],
+            ["지층", "JI_FLOOR_TOKEN"],
+            ["지하", "BASEMENT_TOKEN"],
+            ["반지하", "SEMI_BASEMENT_TOKEN"],
+            ["옥탑", "ROOFTOP_TOKEN"],
+            ["옥탑층", "ROOFTOP_FLOOR_TOKEN"],
           ]);
+          const structuredShapes = [
+            [/^\d+$/u, "DIGITS"],
+            [/^\d+층$/u, "DIGITS_FLOOR_SUFFIX"],
+            [/^\d+호$/u, "DIGITS_HO_SUFFIX"],
+            [/^지상\d+$/u, "ABOVE_PREFIX_DIGITS"],
+            [/^지상\d+층$/u, "ABOVE_PREFIX_DIGITS_FLOOR_SUFFIX"],
+            [/^지하\d+$/u, "BASEMENT_PREFIX_DIGITS"],
+            [/^지하\d+층$/u, "BASEMENT_PREFIX_DIGITS_FLOOR_SUFFIX"],
+            [/^지\d+$/u, "JI_PREFIX_DIGITS"],
+            [/^지\d+층$/u, "JI_PREFIX_DIGITS_FLOOR_SUFFIX"],
+            [/^[Bb]\d+$/u, "LATIN_B_DIGITS"],
+            [/^[Bb]\d+층$/u, "LATIN_B_DIGITS_FLOOR_SUFFIX"],
+            [/^[Bb]\d+호$/u, "LATIN_B_DIGITS_HO_SUFFIX"],
+            [/^비\d+$/u, "KOREAN_B_DIGITS"],
+            [/^비\d+층$/u, "KOREAN_B_DIGITS_FLOOR_SUFFIX"],
+            [/^비\d+호$/u, "KOREAN_B_DIGITS_HO_SUFFIX"],
+            [/^-\d+$/u, "NEGATIVE_DIGITS"],
+            [/^-\d+층$/u, "NEGATIVE_DIGITS_FLOOR_SUFFIX"],
+          ];
           const shape = (value) => {
             if (
               typeof value !== "string"
@@ -411,16 +430,14 @@ jobs:
               .normalize("NFKC")
               .replace(/\s+/gu, "");
             if (!compact) return "EMPTY";
+            if (compact.length > 32) return "OTHER";
             if (/^0+$/u.test(compact)) return `ZERO_${compact.length}`;
-            const redacted = compact.replace(/\d+/gu, "#");
+            const exact = exactTokenShapes.get(compact);
+            if (exact) return exact;
             return (
-              redacted.length <= 32
-              && /^[\p{L}#()+._-]+$/u.test(redacted)
-              && (
-                redacted.includes("#")
-                || allowedExactTokens.has(redacted)
-              )
-            ) ? redacted : "OTHER";
+              structuredShapes.find(([pattern]) => pattern.test(compact))
+              ?? [null, "OTHER"]
+            )[1];
           };
           const ratio = (value) => {
             const compact = typeof value === "string" ? value.trim() : "";
