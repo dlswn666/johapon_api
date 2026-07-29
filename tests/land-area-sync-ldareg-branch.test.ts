@@ -1225,6 +1225,98 @@ test('791-2188 provider bridge는 1~3자리 positive 지하 suffix의 0-padding�
     );
 });
 
+test('미아7 실측: LDAREG 지/지층 층과 비0N·B0N 호가 EXPOS B0N과 같은 witness로 접힌다', () => {
+    // 2026-07-28 phase0 capture(run 30389054533) 실측.
+    // EXPOS는 지하 호를 flrGbCd=10 / flrNo=1 / hoNm=B0N 한 가지로만 주는데,
+    // LDAREG는 같은 호를 791-2155·2267에서 지/비0N, 791-2282에서 지/B0N으로 준다.
+    const expos = providerUnitShapeWitness('EXPOS_UNIT', {
+        flrGbCd: '10',
+        flrNo: 1,
+        hoNm: 'B01',
+    });
+    assert.deepEqual(expos, {
+        kind: 'PROVIDER_BASEMENT_B_HO',
+        token: 'BASEMENT_B_HO:1',
+        canonicalFloor: '1',
+        canonicalHo: 'B1',
+    });
+
+    for (const buldFloorNm of ['지하', '지', '지층']) {
+        for (const buldHoNm of ['비01', '비1', 'B01', 'B1']) {
+            assert.deepEqual(
+                providerUnitShapeWitness('LDAREG_UNIT', {
+                    buldFloorNm,
+                    buldHoNm,
+                }),
+                expos,
+                `${buldFloorNm}/${buldHoNm}`
+            );
+        }
+    }
+
+    // suffix가 다르면 같은 호가 아니다.
+    assert.notEqual(
+        providerUnitShapeWitness('LDAREG_UNIT', {
+            buldFloorNm: '지',
+            buldHoNm: 'B02',
+        })?.token,
+        expos?.token
+    );
+});
+
+test('LDAREG 지하 witness는 지하1층 exact 표기와 positive suffix만 인정한다', () => {
+    for (const [buldFloorNm, buldHoNm] of [
+        // 지하 2층 이하는 EXPOS 지하1층 witness와 대응시키지 않는다.
+        ['지하2', '비01'],
+        ['지2', 'B01'],
+        ['B2', 'B01'],
+        // 791-2320·2343의 지하 층 원문이 확인되기 전까지는 정규화가 B1이 되는
+        // 표기들을 인정하지 않는다(정규화 역상이 9가지라 특정 불가).
+        ['지하1', '비01'],
+        ['지하01', 'B01'],
+        ['지1', '비01'],
+        ['지01', 'B01'],
+        ['B1', 'B01'],
+        ['B01', '비01'],
+        // 원문 공백·전각·접미사는 접지 않는다.
+        [' 지 ', '비01'],
+        ['지 하', '비01'],
+        ['지', ' 비01 '],
+        ['지', '비 01'],
+        ['지', '비01층'],
+        ['지', '비０１'],
+        // suffix 0 및 4자리 이상은 거부한다.
+        ['지', '비000'],
+        ['지', 'B0001'],
+        // 지하가 아닌 층 표기는 이 경로로 들어오지 않는다.
+        ['1', 'B01'],
+        ['지상1', 'B01'],
+    ] as const) {
+        assert.equal(
+            providerUnitShapeWitness('LDAREG_UNIT', {
+                buldFloorNm,
+                buldHoNm,
+            }),
+            null,
+            `${buldFloorNm}/${buldHoNm}`
+        );
+    }
+
+    // 기존 791-2191 지층 경로(지/0000)는 그대로 유지된다.
+    assert.deepEqual(
+        providerUnitShapeWitness('LDAREG_UNIT', {
+            buldFloorNm: '지',
+            buldHoNm: '0000',
+        }),
+        {
+            kind: 'FLOOR_AS_UNIT_BASEMENT',
+            token: 'FLOOR_AS_UNIT_BASEMENT:1',
+            canonicalFloor: '1',
+            canonicalHo: '지층',
+        }
+    );
+});
+
 test('runtime 791-2191: LDAREG 숫자/0000 및 지/0000을 EXPOS N층·지층 exact tuple로 바꿔 기존 building link를 해소한다', () => {
     const units = [
         {
