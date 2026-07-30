@@ -1210,3 +1210,118 @@ test('단일 root anchor에 선택 root를 주면 partition 없이 기존 경로
     assert.equal(res.landRightRootIdentity, null);
     assert.deepEqual(res.excludedLandRightRootIdentities, []);
 });
+
+// ── §9.1 개정: component 단일성 가드를 선택 root 기준으로 좁힌다 ──────────
+
+test('DEV 전체 갱신 singleton component는 선택 root가 있으면 복수 표제부 root를 허용한다', () => {
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.notEqual(component, null);
+    assert.equal(component?.managementPk, AGGREGATE_ROOT);
+    assert.deepEqual(component?.memberPnus, [MIA_ANCHOR]);
+    assert.equal(component?.pairCount, 0);
+});
+
+test('DEV 전체 갱신 singleton component는 선택 root가 없으면 복수 root를 승격하지 않는다', () => {
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+    });
+    assert.equal(component, null);
+});
+
+test('DEV 전체 갱신 singleton component는 제외 root의 bylotCnt가 0이 아니면 승격하지 않는다', () => {
+    const scans = multiRootBaseScans();
+    scans[0].title.rows[0] = {
+        ...scans[0].title.rows[0],
+        bylotCnt: '1',
+    } as never;
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(component, null);
+});
+
+test('선택 root 귀속 표제부 행이 0건이면 승격하지 않는다', () => {
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+        // 표제부에 없는 root
+        landRightRootIdentity: '9999999999',
+    });
+    assert.equal(component, null);
+});
+
+test('선택 root의 표제부 행이 여러 개라도 같은 self PK면 dedup 후 승격한다', () => {
+    const scans = multiRootBaseScans();
+    // 집합 root 표제부 행을 한 번 더 반복한다(같은 self PK).
+    scans[0].title.rows.push({ ...scans[0].title.rows[1] } as never);
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.notEqual(component, null);
+    assert.equal(component?.managementPk, AGGREGATE_ROOT);
+});
+
+test('표제부에 invalid 관리 PK가 있으면 선택 root와 무관하게 승격하지 않는다', () => {
+    const scans = multiRootBaseScans();
+    scans[0].title.rows[0] = {
+        ...scans[0].title.rows[0],
+        mgmBldrgstPk: '',
+    } as never;
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(component, null);
+});

@@ -308,6 +308,47 @@ function partitionTitleRowsByLandRightRoot(
 }
 
 /**
+ * 단일성 판정용 표제부 self PK 집합. 선택 root가 있으면 그 파티션만 본다 (DESIGN §9.1 개정).
+ * invalid PK가 하나라도 있으면 null을 반환해 호출측이 승격을 포기하게 한다.
+ */
+function selectedTitleSelfPks(
+    titleRows: readonly BrTitleRow[],
+    landRightRootIdentity: string | null | undefined
+): string[] | null {
+    const selected = normalizeRegistryManagementPk(
+        landRightRootIdentity ?? ''
+    );
+    const pks = new Set<string>();
+    for (const row of titleRows) {
+        const self = normalizeRegistryManagementPk(row.mgmBldrgstPk);
+        if (self === null) return null;
+        if (selected !== null && self !== selected) continue;
+        pks.add(self);
+    }
+    return [...pks].sort();
+}
+
+/**
+ * expectedPks 전체가 bylot 근거를 갖고 그 값이 모두 0인지 (DESIGN §9.1 개정).
+ * 제외된 동에도 부속지번이 없어야 필지 singleton으로 승격할 수 있다.
+ */
+function allBylotCountsZero(
+    bylot: BylotResolution,
+    expectedPks: readonly string[]
+): boolean {
+    const expected = [...new Set(expectedPks)].sort();
+    const evidencePks = [
+        ...new Set(bylot.evidence.map((row) => row.mgmBldrgstPk)),
+    ].sort();
+    return (
+        expected.length > 0 &&
+        evidencePks.length === expected.length &&
+        evidencePks.every((pk, index) => pk === expected[index]) &&
+        bylot.evidence.every((row) => row.count === 0)
+    );
+}
+
+/**
  * 공통 parcel-scope completeness gate (DESIGN §11).
  *
  * 반환 상태는 5종 중 하나이나, SINGLE_PNU_CONFIRMED는 이 함수가 스스로 발급하지 않는다
@@ -587,19 +628,23 @@ function resolveStrictSameRunOfficialAttachedComponent(
         return null;
     }
 
-    const titleSelfPks = [
-        ...new Set(
-            baseScans[0].title.rows
-                .map((row) =>
-                    normalizeRegistryManagementPk(row.mgmBldrgstPk)
-                )
-                .filter((value): value is string => value !== null)
-        ),
-    ].sort();
-    if (titleSelfPks.length !== 1) return null;
+    // 단일성 판정은 선택된 대지권 대상 root 파티션에서만 한다 (DESIGN §9.1 개정).
+    // 부속지번·bylot 축은 전체 root를 그대로 유지하므로, 제외된 root에 부속지번이 있으면
+    // 아래 attached pair 검사와 bylot 검사에서 막힌다.
+    const titleSelfPks = selectedTitleSelfPks(
+        baseScans[0].title.rows,
+        input.landRightRootIdentity
+    );
+    if (titleSelfPks === null || titleSelfPks.length !== 1) return null;
+    const managementPk = titleSelfPks[0];
+    const selectedTitleRows = baseScans[0].title.rows.filter(
+        (row) =>
+            normalizeRegistryManagementPk(row.mgmBldrgstPk) ===
+            managementPk
+    );
     const titleRootPks = [
         ...new Set(
-            baseScans[0].title.rows
+            selectedTitleRows
                 .map(
                     (row) =>
                         normalizeRegistryManagementPk(
@@ -614,16 +659,24 @@ function resolveStrictSameRunOfficialAttachedComponent(
                 )
         ),
     ].sort();
-    if (titleRootPks.length !== 1) return null;
-    const managementPk = titleSelfPks[0];
+    if (
+        titleRootPks.length !== 1 ||
+        titleRootPks[0] !== managementPk
+    ) {
+        return null;
+    }
     if (
         attached.pairs.some(
             (pair) =>
                 normalizeRegistryManagementPk(pair.mgmBldrgstPk) !==
                 managementPk
         ) ||
-        normalGate.expectedPks.length !== 1 ||
-        normalGate.expectedPks[0] !== managementPk
+        !normalGate.expectedPks.includes(managementPk) ||
+        // 선택 root 밖의 관리 PK는 부속지번이 0이어야 한다.
+        normalGate.bylot.evidence.some(
+            (row) =>
+                row.mgmBldrgstPk !== managementPk && row.count !== 0
+        )
     ) {
         return null;
     }
@@ -758,27 +811,20 @@ export function resolveSameRunOfficialDevelopmentFullRefreshComponent(
     ) {
         return null;
     }
-    const titleSelfPks = [
-        ...new Set(
-            input.baseScans[0].title.rows
-                .map((row) =>
-                    normalizeRegistryManagementPk(
-                        row.mgmBldrgstPk
-                    )
-                )
-                .filter(
-                    (value): value is string => value !== null
-                )
-        ),
-    ].sort();
+    // 선택된 대지권 대상 root 파티션에서 self PK가 정확히 하나여야 한다 (DESIGN §9.1 개정).
+    // 제외된 동을 포함한 전체 expectedPks의 bylotCnt가 모두 0일 때만 필지 singleton이다.
+    const titleSelfPks = selectedTitleSelfPks(
+        input.baseScans[0].title.rows,
+        input.landRightRootIdentity
+    );
     if (
+        titleSelfPks === null ||
         titleSelfPks.length !== 1 ||
-        singletonGate.expectedPks.length !== 1 ||
-        singletonGate.expectedPks[0] !== titleSelfPks[0] ||
-        singletonGate.bylot.evidence.length !== 1 ||
-        singletonGate.bylot.evidence[0].mgmBldrgstPk !==
-            titleSelfPks[0] ||
-        singletonGate.bylot.evidence[0].count !== 0
+        !singletonGate.expectedPks.includes(titleSelfPks[0]) ||
+        !allBylotCountsZero(
+            singletonGate.bylot,
+            singletonGate.expectedPks
+        )
     ) {
         return null;
     }
