@@ -1317,6 +1317,16 @@ test('선택 root의 표제부 행이 여러 개라도 같은 self PK면 dedup �
 });
 
 test('표제부에 invalid 관리 PK가 있으면 선택 root와 무관하게 승격하지 않는다', () => {
+    // 주의: 이 테스트는 `selectedTitleSelfPks`의 `self === null` reject 분기를 단독으로
+    // 검증하지 않는다. 이 fixture는 attached.state가 'COMPLETE_ZERO'라 singleton tail로
+    // 빠지고, 거기서도 `selectedTitleSelfPks`를 호출하기 전에 같은 title 행으로
+    // `resolveParcelScopeCompleteness`(singletonGate)를 먼저 돌린다. invalid PK는
+    // `hasInvalidRequiredPk(titleRows)`에 걸려 scanFailure = 'PROVIDER_PROTOCOL_ERROR' →
+    // FAILED가 되고, classifiedSingleton/classificationConflictSingleton 둘 다 FAILED가 아닌
+    // 상태를 요구하므로 `selectedTitleSelfPks` 호출 자체에 도달하기 전에 null을 반환한다
+    // (`scope.ts`의 `selectedTitleSelfPks` 위 docblock 참고). 즉 여기서 검증하는 것은
+    // "invalid PK가 승격을 막는다"는 관찰 가능한 동작이며, 그 메커니즘은 이 공통 gate이지
+    // `selectedTitleSelfPks`의 null 분기가 아니다.
     const scans = multiRootBaseScans();
     scans[0].title.rows[0] = {
         ...scans[0].title.rows[0],
@@ -1380,7 +1390,9 @@ test('부속지번-bearing 경로: 부속지번이 선택 root가 아닌 root에
     const scans = multiRootBaseScans();
     // 제외 root(GENERAL_ROOT)의 bylotCnt를 아래 부속지번 1건과 일치시켜
     // BYLOT_ATTACHED_COUNT_MISMATCH를 피하고, "부속지번이 선택 root가 아닌 root에 걸린다"는
-    // 조건만 남긴다.
+    // 조건만 남긴다. 이 조건을 실제로 결정하는 것은 §9.1 이전부터 있던 cross-root pair 검사
+    // `attached.pairs.some(pair => normalizeRegistryManagementPk(pair.mgmBldrgstPk) !==
+    // managementPk)`다 — 아래 bylot `some(...)` 검사(§9.1 신규)에는 도달하지 않는다.
     scans[0].title.rows[0] = {
         ...scans[0].title.rows[0],
         bylotCnt: '1',

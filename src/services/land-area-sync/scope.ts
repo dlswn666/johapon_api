@@ -310,6 +310,19 @@ function partitionTitleRowsByLandRightRoot(
 /**
  * 단일성 판정용 표제부 self PK 집합. 선택 root가 있으면 그 파티션만 본다 (DESIGN §9.1 개정).
  * invalid PK가 하나라도 있으면 null을 반환해 호출측이 승격을 포기하게 한다.
+ *
+ * 방어적 defense-in-depth: 현재 두 호출부(`resolveStrictSameRunOfficialAttachedComponent`의
+ * normalGate, `resolveSameRunOfficialDevelopmentFullRefreshComponent` singleton tail의
+ * singletonGate) 모두 이 함수를 호출하기 전에 같은 title 행 집합으로
+ * `resolveParcelScopeCompleteness`를 이미 돌려 놓은 뒤다. 그 내부의
+ * `hasInvalidRequiredPk(titleRows)`가 이 함수와 동일한 정규화 함수
+ * (`normalizeRegistryManagementPk`)로 같은 필드(`row.mgmBldrgstPk`)를 검사하므로, invalid PK가
+ * 있으면 그 gate가 이미 `scanFailure ??= 'PROVIDER_PROTOCOL_ERROR'`로 FAILED를 반환한다.
+ * attached 경로는 `normalGate.state !== 'REVIEW_REQUIRED'` 조건에서, singleton 경로는
+ * classifiedSingleton/classificationConflictSingleton 두 판정(둘 다 FAILED가 아닌 상태를
+ * 요구)에서 각각 이 함수 호출 자체에 도달하기 전에 걸러진다. 즉 이 함수의 `self === null`
+ * reject 분기는 두 호출부를 통해서는 현재 도달 불가능하다 — 그렇다고 죽은 코드로 보고 지우지
+ * 말 것. 두 호출부의 gate 호출 순서나 게이팅 조건이 바뀌면 이 함수가 유일한 방어선이 된다.
  */
 function selectedTitleSelfPks(
     titleRows: readonly BrTitleRow[],
@@ -640,8 +653,12 @@ function resolveStrictSameRunOfficialAttachedComponent(
     }
 
     // 단일성 판정은 선택된 대지권 대상 root 파티션에서만 한다 (DESIGN §9.1 개정).
-    // 부속지번·bylot 축은 전체 root를 그대로 유지하므로, 제외된 root에 부속지번이 있으면
-    // 아래 attached pair 검사와 bylot 검사에서 막힌다.
+    // 부속지번·bylot 축은 전체 root를 그대로 유지하므로, 제외된 root에 실제 부속지번이 있으면
+    // 아래 attached pair 검사(`attached.pairs.some(...)`)가 막고, 제외된 root의 bylotCnt만
+    // 0이 아니고 부속지번은 없는 경우는 공통 gate(`resolveParcelScopeCompleteness`)가
+    // BYLOT_ATTACHED_COUNT_MISMATCH로 이미 REVIEW_REQUIRED를 반환해 이 함수에 도달하기 전에
+    // 걸러진다. 아래 bylot `some(...)` 검사는 이 두 메커니즘이 못 잡는 경우를 위한 defense-in-depth다
+    // — 현재 이 진입점들에서는 reject 분기의 유일한 결정자로 도달하지 않는다.
     const titleSelfPks = selectedTitleSelfPks(
         baseScans[0].title.rows,
         input.landRightRootIdentity
@@ -684,6 +701,13 @@ function resolveStrictSameRunOfficialAttachedComponent(
         ) ||
         !normalGate.expectedPks.includes(managementPk) ||
         // 선택 root 밖의 관리 PK는 부속지번이 0이어야 한다.
+        // 방어적 defense-in-depth: 제외 root에 실제 부속지번이 있으면 바로 위
+        // `attached.pairs.some(...)` 검사가 먼저 막고, 부속지번 없이 bylotCnt만 0이 아니면
+        // 공통 gate(`resolveParcelScopeCompleteness`)가 BYLOT_ATTACHED_COUNT_MISMATCH로 이미
+        // REVIEW_REQUIRED를 반환해 이 함수에 도달하기 전에 걸러진다(테스트: `부속지번-bearing
+        // 경로: 제외 root의 bylotCnt가 0이 아니면 승격하지 않는다`). 즉 이 reject 분기는 현재
+        // 도달 불가능하다 — 그렇다고 죽은 코드로 보고 지우지 말 것. 위 두 메커니즘의 판정
+        // 로직이 바뀌면 이 검사가 유일한 방어선이 된다.
         normalGate.bylot.evidence.some(
             (row) =>
                 row.mgmBldrgstPk !== managementPk && row.count !== 0
