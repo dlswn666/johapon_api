@@ -16,7 +16,9 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { runLandAreaSyncJob } from '../src/services/land-area-sync/service';
+import { runLandAreaSyncJob, type LandAreaSyncDeps } from '../src/services/land-area-sync/service';
+import { HOUSING_PURPOSE_ALLOWLIST } from '../src/services/land-area-sync/housing-purpose-allowlist.fixture';
+import type { StrictScan, LdaregRow } from '../src/types/land-area-sync.types';
 import {
     ANCHOR,
     SIBLING,
@@ -49,6 +51,8 @@ async function run(config: {
     propertyUnits?: unknown[];
     buildingUnits?: unknown[];
     currentLandTuples?: unknown[];
+    /** 특정 scan 을 강제로 FAILED/INCOMPLETE 로 만들기 위한 주입(경계 테스트 전용). */
+    scanOverrides?: Partial<LandAreaSyncDeps['scans']>;
     spy: Spy;
 }) {
     const { deps, calls } = buildIntegrationDeps(config);
@@ -526,4 +530,305 @@ test('전 구간에서 unit 쓰기 경로는 apply RPC 뿐 — building_unit/pro
     assert.ok(spy.reads.includes('readPropertyUnits'));
     assert.equal(spy.applyCalls, 1, 'unit write 는 apply RPC 1회로만');
     assert.equal(spy.failedCalls.length, 0);
+});
+
+// ── 8. 미아7 791-2282: 복수 root(일반 1동 + 집합 1동) end-to-end 회귀 ──────
+//
+// (DESIGN 2026-07-30 개정, docs/2026-07-30-multi-root-parcel-design-revision.md §2·§6.1)
+//
+// 실측 anchor: 표제부 self root 가 둘이다 — 일반건축물(01000 단독주택, 관리번호
+// 1010111086)과 집합건물(02000 공동주택, 관리번호 1010114204, 지상 4층/연면적 513.06㎡).
+// 부속용도 원문이 주용도와 같은 `공동주택`이라 토큰 경로가 성립하지 않고, 법정 규모
+// 기준(지상 층수 ≤4, 연면적 ≤660㎡)으로만 다세대주택 인정을 받는다(§6.2).
+//
+// 엔드포인트별 실측: TITLE 2, ATTACHED 0, EXPOS 10, LDAREG 11(전유 10 + placeholder 1),
+// DB 활성 물건지 10호(전부 anchor PNU, 호 identity 있음). BASIS 실측은 12행이지만, 두 root가
+// 모두 self-root(부속 동이 아님)라 closure 판정(buildScopeBasisRootIndex)은 기본개요 행이
+// 0건이어도 성립한다 — 이 fixture는 그 최소 형태로 basis 를 비워 둔다.
+//
+// bylotCnt 검증(Step 2): 개정안 §2·§6.1 어디에도 표제부 bylotCnt 원문 값 자체는 실려 있지
+// 않다(ATTACHED 행 수 0만 실측). Task 5의 allBylotCountsZero 요구대로 두 표제부 행 모두
+// bylotCnt='0'으로 둔다 — 이는 개정안과 상충하지 않는다(모순 문구 없음, Step 1에서 확인).
+
+const MIA7_MULTIPLEX_PK = '1010114204'; // 집합건물(광미빌라) 관리번호
+const MIA7_DETACHED_PK = '1010111086'; // 일반건축물(단독주택) 관리번호
+
+// 02000/공동주택 pair — 부속용도 토큰(MULTIPLEX_HOUSE) 없이 법정 규모 기준으로만 인정된다.
+const MIA7_MULTIPLEX_PAIR = HOUSING_PURPOSE_ALLOWLIST.find(
+    (pair) => pair.requiredOtherPurposeSignal === 'MULTIPLEX_HOUSE'
+)!;
+
+// 지상 4층 세대수 10 — 1~3층 3세대씩 + 4층 1세대.
+const MIA7_UNITS: ReadonlyArray<{ floor: string; ho: string }> = [
+    { floor: '1층', ho: '101' },
+    { floor: '1층', ho: '102' },
+    { floor: '1층', ho: '103' },
+    { floor: '2층', ho: '201' },
+    { floor: '2층', ho: '202' },
+    { floor: '2층', ho: '203' },
+    { floor: '3층', ho: '301' },
+    { floor: '3층', ho: '302' },
+    { floor: '3층', ho: '303' },
+    { floor: '4층', ho: '401' },
+];
+
+function mia7DetachedTitleRow(): Record<string, unknown> {
+    return titleRow(MIA7_DETACHED_PK, '0', DETACHED, { etcPurps: '단독주택' });
+}
+
+function mia7MultiplexTitleRow(): Record<string, unknown> {
+    // grndFlrCnt/totArea 가 법정 규모 기준(≤4층·≤660㎡)을 충족해야 다세대주택으로 인정된다.
+    return titleRow(MIA7_MULTIPLEX_PK, '0', MIA7_MULTIPLEX_PAIR, {
+        grndFlrCnt: '4',
+        totArea: '513.06',
+        // 2026-07-30 실측: 부속용도 원문 = 주용도(`공동주택`) — 토큰 경로 불성립, 규모 기준만 통과.
+        etcPurps: '공동주택',
+    });
+}
+
+// exposRow() 는 mgmUpBldrgstPk 를 받지 않는다. 복수 root 전유부는 self 가 어느 root에
+// 귀속되는지가 선출·매칭의 핵심이므로 raw literal 로 명시한다.
+function mia7MultiplexExposRows(): Array<Record<string, unknown>> {
+    return MIA7_UNITS.map((unit) => ({
+        pnu: ANCHOR,
+        mgmBldrgstPk: MIA7_MULTIPLEX_PK,
+        mgmUpBldrgstPk: null,
+        flrNoNm: unit.floor,
+        hoNm: unit.ho,
+    }));
+}
+
+function mia7DetachedExposRow(floor: string, ho: string): Record<string, unknown> {
+    return {
+        pnu: ANCHOR,
+        mgmBldrgstPk: MIA7_DETACHED_PK,
+        mgmUpBldrgstPk: null,
+        flrNoNm: floor,
+        hoNm: ho,
+    };
+}
+
+function mia7MultiplexLdaregRows(
+    units: ReadonlyArray<{ floor: string; ho: string }> = MIA7_UNITS
+): Array<Record<string, unknown>> {
+    return units.map((unit) =>
+        ldaregRow(ANCHOR, {
+            agbldgSn: '1',
+            buldNm: '광미빌라',
+            buldFloorNm: unit.floor,
+            buldHoNm: unit.ho,
+            ldaQotaRate: '26.4/264',
+            clsSeCode: '0',
+            clsSeCodeNm: '유효',
+        })
+    );
+}
+
+/** LDAREG 11행 = 전유 10 + placeholder 1(ratio 없음·동층호실 전부 0·CURRENT). */
+function mia7PlaceholderLdaregRow(): Record<string, unknown> {
+    return ldaregRow(ANCHOR, {
+        agbldgSn: '1',
+        buldNm: '광미빌라',
+        buldDongNm: '0000',
+        buldFloorNm: '0000',
+        buldHoNm: '0000',
+        buldRoomNm: '0000',
+        ldaQotaRate: '',
+        clsSeCode: '0',
+        clsSeCodeNm: '유효',
+    });
+}
+
+interface Mia7PropertyUnit {
+    id: string;
+    unionId: string;
+    buildingUnitId: null;
+    pnu: string;
+    isDeleted: boolean;
+    dong: null;
+    ho: string;
+}
+
+/** DB 활성 물건지 10호 — 전부 anchor PNU, 전부 호 identity 있음(실측과 일치). */
+function mia7PropertyUnits(): Mia7PropertyUnit[] {
+    return MIA7_UNITS.map((unit, index) => ({
+        id: `99999999-9999-4999-8999-${String(index).padStart(12, '0')}`,
+        unionId: 'union-1',
+        buildingUnitId: null,
+        pnu: ANCHOR,
+        isDeleted: false,
+        dong: null,
+        ho: unit.ho,
+    }));
+}
+
+/** scanLdareg 를 강제로 FAILED 로 만드는 주입값(테스트 4 전용, HTTP 를 통해 유도하지 않는다). */
+const MIA7_LDAREG_SCAN_FAILURE: StrictScan<LdaregRow> = {
+    state: 'FAILED',
+    issue: {
+        kind: 'HTTP_ERROR',
+        endpoint: 'ldaregList',
+        message: '선출용 LDAREG scan 강제 실패(테스트 주입)',
+        httpStatus: 503,
+    },
+};
+
+/** 선출 성공 → LDAREG 전략으로 apply 까지 도달하는 end-to-end fixture(테스트 1·5 공유). */
+function mia7ElectedConfig(spy: Spy) {
+    const propertyUnits = mia7PropertyUnits();
+    const membership = propertyUnits.map((p) => ({
+        propertyUnitId: p.id,
+        pnu: p.pnu,
+        buildingUnitId: null,
+    }));
+    return {
+        resolver: linked([ANCHOR], membership, { linkedBasePnus: [ANCHOR] }),
+        routes: {
+            getBrTitleInfo: () => hubEnv([mia7DetachedTitleRow(), mia7MultiplexTitleRow()]),
+            getBrAtchJibunInfo: () => hubEnv([]), // ATTACHED 0 — 실측과 일치
+            ldaregList: () => ldaregEnv([...mia7MultiplexLdaregRows(), mia7PlaceholderLdaregRow()]),
+            getBrExposInfo: () => hubEnv(mia7MultiplexExposRows()),
+            getBrBasisOulnInfo: () => hubEnv([]), // 두 root 모두 self-root라 closure는 basis 0건에도 성립
+            ladfrlList: () => ladfrlEnv([ladfrlRow(ANCHOR, '264')]),
+        },
+        propertyUnits,
+        applyResult: { data: { outcome: 'APPLIED', issues: [] }, error: null },
+        spy,
+    };
+}
+
+/** spy 로부터 snapshot/terminal 을 뽑아낸다. 성공 apply 경로는 discovery 쪽에서 별도
+ * REVIEW terminal 을 쓰지 않으므로(applyRpc 내부 SECURITY DEFINER 가 유일한 terminal 경로,
+ * 이 harness 는 그 내부를 mock 하지 않는다) terminal 이 null 인 것 자체가 정상이다. */
+function terminalState(spy: Spy) {
+    const t = spy.terminalCalls[0];
+    return {
+        snapshot: spy.frozenSnapshots[0]?.scopeSnapshot ?? null,
+        terminal: t ? { scopeState: t.scopeState, issues: spy.terminalIssues[0] } : null,
+    };
+}
+
+test('복수 root anchor는 LDAREG 근거 root를 선출해 LDAREG 전략으로 진행한다', async () => {
+    const spy = emptySpy();
+    await run(mia7ElectedConfig(spy));
+    const state = terminalState(spy);
+
+    assert.notEqual(state.snapshot, null);
+    assert.equal(state.snapshot?.strategy, 'LDAREG');
+    assert.equal(state.terminal?.scopeState !== 'REVIEW_REQUIRED', true);
+
+    // ELECTED 경로가 실제로 apply RPC 까지 도달했는지(단순 "에러 없음"이 아니라 양성 신호로 고정).
+    assert.equal(spy.freezeCalls, 1, '스냅샷은 정확히 1회 CAS 고정된다');
+    assert.equal(spy.applyCalls, 1, 'blocking 없이 apply RPC 까지 도달해야 한다');
+    assert.equal(spy.terminalCalls.length, 0, '성공 apply 경로는 discovery 쪽 REVIEW terminal 을 쓰지 않는다');
+});
+
+test('복수 root anchor에서 LDAREG 근거 root가 0개면 기존대로 REVIEW_REQUIRED다', async () => {
+    const spy = emptySpy();
+    // LDAREG 의 동·층·호를 전유부(floor 1~4층/ho 101~401)와 전혀 겹치지 않게 바꾼다.
+    const mismatchedUnits = MIA7_UNITS.map((_, index) => ({
+        floor: '9층',
+        ho: `9${String(index).padStart(2, '0')}`,
+    }));
+    await run({
+        resolver: linked([ANCHOR]),
+        routes: {
+            getBrTitleInfo: () => hubEnv([mia7DetachedTitleRow(), mia7MultiplexTitleRow()]),
+            getBrAtchJibunInfo: () => hubEnv([]),
+            ldaregList: () =>
+                ldaregEnv([...mia7MultiplexLdaregRows(mismatchedUnits), mia7PlaceholderLdaregRow()]),
+            getBrExposInfo: () => hubEnv(mia7MultiplexExposRows()),
+            getBrBasisOulnInfo: () => hubEnv([]),
+        },
+        spy,
+    });
+    const state = terminalState(spy);
+
+    assert.equal(state.terminal?.scopeState, 'REVIEW_REQUIRED');
+    assert.deepEqual(
+        state.terminal?.issues.map((issue) => issue.code),
+        ['BUILDING_CLASSIFICATION_CONFLICT']
+    );
+    assert.equal(spy.applyCalls, 0);
+    assert.equal(state.snapshot, null, '선출 실패 경로는 snapshot 을 고정하지 않는다');
+});
+
+test('복수 root anchor에서 LDAREG 근거 root가 2개면 기존대로 REVIEW_REQUIRED다', async () => {
+    const spy = emptySpy();
+    await run({
+        resolver: linked([ANCHOR]),
+        routes: {
+            getBrTitleInfo: () => hubEnv([mia7DetachedTitleRow(), mia7MultiplexTitleRow()]),
+            getBrAtchJibunInfo: () => hubEnv([]),
+            ldaregList: () =>
+                ldaregEnv([
+                    ...mia7MultiplexLdaregRows(),
+                    // 일반 root(단독주택) 밑에도 전유부 호실 + 대응 LDAREG 행을 붙여 근거를 2개로 만든다.
+                    ldaregRow(ANCHOR, {
+                        agbldgSn: '1',
+                        buldNm: '단독주택동',
+                        buldFloorNm: '1층',
+                        buldHoNm: '1',
+                        ldaQotaRate: '5/264',
+                        clsSeCode: '0',
+                        clsSeCodeNm: '유효',
+                    }),
+                    mia7PlaceholderLdaregRow(),
+                ]),
+            getBrExposInfo: () => hubEnv([...mia7MultiplexExposRows(), mia7DetachedExposRow('1층', '1')]),
+            getBrBasisOulnInfo: () => hubEnv([]),
+        },
+        spy,
+    });
+    const state = terminalState(spy);
+
+    assert.equal(state.terminal?.scopeState, 'REVIEW_REQUIRED');
+    assert.deepEqual(
+        state.terminal?.issues.map((issue) => issue.code),
+        ['BUILDING_CLASSIFICATION_CONFLICT']
+    );
+    assert.equal(spy.applyCalls, 0);
+});
+
+test('선출용 LDAREG scan이 실패하면 FAILED가 아니라 기존 REVIEW_REQUIRED로 닫는다', async () => {
+    const spy = emptySpy();
+    await run({
+        resolver: linked([ANCHOR]),
+        routes: {
+            getBrTitleInfo: () => hubEnv([mia7DetachedTitleRow(), mia7MultiplexTitleRow()]),
+            getBrAtchJibunInfo: () => hubEnv([]),
+        },
+        scanOverrides: {
+            scanLdareg: async () => MIA7_LDAREG_SCAN_FAILURE,
+        },
+        spy,
+    });
+    const state = terminalState(spy);
+
+    assert.equal(state.terminal?.scopeState, 'REVIEW_REQUIRED');
+    assert.deepEqual(
+        state.terminal?.issues.map((issue) => issue.code),
+        ['BUILDING_CLASSIFICATION_CONFLICT']
+    );
+    assert.equal(spy.applyCalls, 0);
+    // 선출용 scan 실패는 job 을 FAILED 로 죽이지 않는다 — INDETERMINATE 로 흡수해 기존
+    // 복수 root REVIEW 경로로 되돌아간다(FAILED 였다면 markScopedFailed 가 호출됐을 것).
+    assert.equal(spy.failedCalls.length, 0);
+});
+
+test('복수 root anchor는 선출 pre-pass 결과를 재사용해 같은 PNU를 두 번 조회하지 않는다', async () => {
+    const spy = emptySpy();
+    const { calls } = await run(mia7ElectedConfig(spy));
+
+    const ldaregCalls = calls.filter((c) => c.endpoint === 'ldaregList').map((c) => c.keyPnu);
+    const exposCalls = calls.filter((c) => c.endpoint === 'getBrExposInfo').map((c) => c.keyPnu);
+    const basisCalls = calls.filter((c) => c.endpoint === 'getBrBasisOulnInfo').map((c) => c.keyPnu);
+
+    // ldareg(VWorld)는 keyPnu 가 19자리 PNU 원문 그대로이고, expos/basis(Building HUB)는
+    // hubKey 18자리다 — endpoint 별 정확한 표현으로 anchor 가 각 1회씩만 잡혀야 한다.
+    // 재사용이 깨지면(선출 pre-pass 와 LDAREG branch 가 각자 다시 조회하면) 배열 길이가 늘어난다.
+    assert.deepEqual(ldaregCalls, [ANCHOR]);
+    assert.deepEqual(exposCalls, [hubKey(ANCHOR)]);
+    assert.deepEqual(basisCalls, [hubKey(ANCHOR)]);
+    assert.equal(spy.applyCalls, 1, '재사용 검증과 별개로 apply 까지 정상 도달해야 한다');
 });
