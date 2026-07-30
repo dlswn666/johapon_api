@@ -598,6 +598,10 @@ jobs:
             "SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON",
             "VERIFIED_NO_DATA",
           ]);
+          const retrySkippedValues = new Set([
+            "NONE",
+            "TOO_MANY_FAILURES",
+          ]);
           const optionalSafeCode = (value) =>
             value === null
             || (typeof value === "string" && safeCode.test(value));
@@ -634,6 +638,8 @@ jobs:
                 && resolutionSourceValues.has(
                   entry.scopeResolutionSource
                 )
+                && Number.isSafeInteger(entry.attempts)
+                && entry.attempts >= 0
             );
           const issueCountsValid =
             Array.isArray(audit?.redactedIssueCounts)
@@ -709,6 +715,14 @@ jobs:
             || audit.promotionGate.failureCodes.some(
               (code) => typeof code !== "string" || !safeCode.test(code)
             )
+            || !audit.retry
+            || !Number.isSafeInteger(audit.retry.rounds)
+            || audit.retry.rounds < 0
+            || !Number.isSafeInteger(audit.retry.retriedAnchorCount)
+            || audit.retry.retriedAnchorCount < 0
+            || !Number.isSafeInteger(audit.retry.recoveredAnchorCount)
+            || audit.retry.recoveredAnchorCount < 0
+            || !retrySkippedValues.has(audit.retry.skipped)
             || !/^[0-9]+$/.test(statusText)
           ) process.exit(1);
           const classifyFailure = (entry) =>

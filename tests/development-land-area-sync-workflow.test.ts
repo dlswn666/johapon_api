@@ -259,6 +259,42 @@ test('read-only capture는 raw evidence를 업로드하지 않고 비식별 순�
         /skipped: audit\.retry\.skipped/
     );
     assert.match(publicArtifactBlock, /attempts: entry\.attempts/);
+    assert.match(
+        publicArtifactBlock,
+        /Number\.isSafeInteger\(entry\.attempts\)/
+    );
+    assert.match(publicArtifactBlock, /entry\.attempts >= 0/);
+    assert.match(
+        publicArtifactBlock,
+        /const retrySkippedValues = new Set\(/
+    );
+    assert.match(publicArtifactBlock, /"TOO_MANY_FAILURES"/);
+    assert.match(publicArtifactBlock, /!audit\.retry\b/);
+    assert.match(
+        publicArtifactBlock,
+        /Number\.isSafeInteger\(audit\.retry\.rounds\)/
+    );
+    assert.match(publicArtifactBlock, /audit\.retry\.rounds < 0/);
+    assert.match(
+        publicArtifactBlock,
+        /Number\.isSafeInteger\(audit\.retry\.retriedAnchorCount\)/
+    );
+    assert.match(
+        publicArtifactBlock,
+        /audit\.retry\.retriedAnchorCount < 0/
+    );
+    assert.match(
+        publicArtifactBlock,
+        /Number\.isSafeInteger\(audit\.retry\.recoveredAnchorCount\)/
+    );
+    assert.match(
+        publicArtifactBlock,
+        /audit\.retry\.recoveredAnchorCount < 0/
+    );
+    assert.match(
+        publicArtifactBlock,
+        /retrySkippedValues\.has\(audit\.retry\.skipped\)/
+    );
     assert.match(publicArtifactBlock, /redactedAggregate/);
     assert.match(publicArtifactBlock, /redactedIssueCounts/);
     assert.match(publicArtifactBlock, /redactedFailureDetails/);
