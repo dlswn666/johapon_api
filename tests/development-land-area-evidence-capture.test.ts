@@ -1705,3 +1705,32 @@ test('첫 라운드에서 실패한 anchor가 다음 라운드에서 판정에 �
     assert.equal(result.audit.retry.recoveredAnchorCount, 1);
     assert.notEqual(recovered.terminalScopeState, 'FAILED');
 });
+
+test('실패가 임계 비율을 넘으면 재시도를 생략하고 사유를 남긴다', async () => {
+    let titleScans = 0;
+    let slept = 0;
+    const result = await captureDevelopmentLandAreaEvidence({
+        target: retryTarget(),
+        captureRunId: '30418532695',
+        concurrency: 1,
+        sleep: async (ms) => {
+            slept += ms;
+        },
+        deps: alwaysFailingTitleDeps({
+            onScanTitle: () => {
+                titleScans += 1;
+            },
+            failFor: () => true,
+        }) as never,
+    });
+
+    assert.equal(titleScans, RETRY_PNUS.length);
+    assert.equal(slept, 0);
+    assert.equal(result.audit.retry.rounds, 0);
+    assert.equal(result.audit.retry.retriedAnchorCount, 0);
+    assert.equal(result.audit.retry.recoveredAnchorCount, 0);
+    assert.equal(result.audit.retry.skipped, 'TOO_MANY_FAILURES');
+    for (const entry of result.audit.entries) {
+        assert.equal(entry.attempts, 1);
+    }
+});

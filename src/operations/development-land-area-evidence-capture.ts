@@ -989,7 +989,11 @@ export async function captureDevelopmentLandAreaEvidence(input: {
     );
 
     let retryRounds = 0;
+    let retrySkipped: 'NONE' | 'TOO_MANY_FAILURES' = 'NONE';
     const retriedIndices = new Set<number>();
+    const retryEligibleMax = Math.floor(
+        input.target.targetCount * RETRY_ELIGIBLE_MAX_RATIO
+    );
     for (
         let attempt = 2;
         attempt <= CAPTURE_MAX_ATTEMPTS;
@@ -1002,6 +1006,12 @@ export async function captureDevelopmentLandAreaEvidence(input: {
             )
             .map(({ index }) => index);
         if (candidates.length === 0) break;
+        // 대량 실패는 외부 API 장애다. 재시도해도 무용하고 capture 예산만
+        // 태우므로 남은 라운드를 모두 포기한다.
+        if (candidates.length > retryEligibleMax) {
+            retrySkipped = 'TOO_MANY_FAILURES';
+            break;
+        }
         await sleep(CAPTURE_RETRY_DELAY_MS);
         for (const index of candidates) retriedIndices.add(index);
         retryRounds += 1;
@@ -1258,7 +1268,7 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 rounds: retryRounds,
                 retriedAnchorCount: retriedIndices.size,
                 recoveredAnchorCount,
-                skipped: 'NONE',
+                skipped: retrySkipped,
             },
             entries: results.map((result) => result.audit),
             redactedAggregate:
