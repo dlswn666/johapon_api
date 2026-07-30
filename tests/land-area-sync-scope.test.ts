@@ -1040,3 +1040,173 @@ test('callParcelScopeResolver: RPC error는 throw', async () => {
     const callResolver = async () => ({ data: null, error: { message: 'denied' } });
     await assert.rejects(() => callParcelScopeResolver({ unionId: 'u1', anchorPnu: ANCHOR, rootMgmBldrgstPks: [] }, { callResolver }));
 });
+
+// ── §9.1 개정: 선택된 대지권 대상 root 기준 분류 partition ──────────────
+
+const GENERAL_ROOT = '1010111086';
+const AGGREGATE_ROOT = '1010114204';
+const MIA_ANCHOR = '1130510300107912282';
+
+function completeScan<T>(rows: T[]) {
+    return {
+        state: 'COMPLETE' as const,
+        rows,
+        totalCount: rows.length,
+        pagesFetched: 1,
+    };
+}
+
+function zeroScan() {
+    return {
+        state: 'COMPLETE_ZERO' as const,
+        rows: [] as never[],
+        totalCount: 0 as const,
+        pagesFetched: 1,
+    };
+}
+
+/** 미아7 791-2282 실측 형상: 일반건축물 1행 + 집합건물 1행, 부속지번 0. */
+function multiRootBaseScans() {
+    return [
+        {
+            pnu: MIA_ANCHOR,
+            title: completeScan([
+                {
+                    mgmBldrgstPk: GENERAL_ROOT,
+                    bylotCnt: '0',
+                    regstrGbCd: '1',
+                    mainPurpsCd: '01000',
+                    mainPurpsCdNm: '단독주택',
+                    etcPurps: '단독주택',
+                    grndFlrCnt: '1',
+                    totArea: '88.8',
+                },
+                {
+                    mgmBldrgstPk: AGGREGATE_ROOT,
+                    bylotCnt: '0',
+                    regstrGbCd: '2',
+                    mainPurpsCd: '02000',
+                    mainPurpsCdNm: '공동주택',
+                    etcPurps: '공동주택',
+                    grndFlrCnt: '4',
+                    totArea: '513.06',
+                },
+            ]),
+            attached: zeroScan(),
+        },
+    ];
+}
+
+function multiRootDbScope() {
+    return parseDbScopeResolution({
+        dbState: 'LINKED',
+        rootBuildingIdentities: [GENERAL_ROOT, AGGREGATE_ROOT],
+        componentPnus: [MIA_ANCHOR],
+        linkedBasePnus: [MIA_ANCHOR],
+        linkedPnus: [MIA_ANCHOR],
+        linkedEvidenceKeys: [],
+        pendingEvidenceKeys: [],
+        blockingEvidence: [],
+        openUnresolvedEvidenceKeys: [],
+        componentTruncated: false,
+        propertyMembership: [],
+        dbScopeHash: 'db-scope-hash',
+    });
+}
+
+test('선택 root 없으면 복수 root는 기존대로 REVIEW_REQUIRED다', () => {
+    const res = resolveParcelScopeCompleteness({
+        dbScope: multiRootDbScope(),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+    });
+    assert.equal(res.state, 'REVIEW_REQUIRED');
+    assert.ok(res.issues.includes('BUILDING_CLASSIFICATION_CONFLICT'));
+    assert.equal(res.classification.kind, 'REVIEW_REQUIRED');
+    assert.equal(
+        res.classification.kind === 'REVIEW_REQUIRED' &&
+            res.classification.reason,
+        'MULTIPLE_ROOT_IDENTITIES'
+    );
+    assert.equal(res.landRightRootIdentity, null);
+    assert.deepEqual(res.excludedLandRightRootIdentities, []);
+});
+
+test('선택 root를 주면 그 root의 표제부 행만으로 분류하고 나머지는 제외 기록한다', () => {
+    const res = resolveParcelScopeCompleteness({
+        dbScope: multiRootDbScope(),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(res.classification.kind, 'CLASSIFIED');
+    assert.equal(
+        res.classification.kind === 'CLASSIFIED' &&
+            res.classification.family,
+        'LDAREG'
+    );
+    assert.equal(res.landRightRootIdentity, AGGREGATE_ROOT);
+    assert.deepEqual(res.excludedLandRightRootIdentities, [GENERAL_ROOT]);
+    assert.equal(res.state, 'LINKED_SCOPE_RESOLVED');
+    assert.deepEqual(res.issues, []);
+});
+
+test('선택 root partition은 bylot·attached 축을 좁히지 않는다 — expectedPks는 전체 root', () => {
+    const res = resolveParcelScopeCompleteness({
+        dbScope: multiRootDbScope(),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.deepEqual(res.expectedPks, [GENERAL_ROOT, AGGREGATE_ROOT].sort());
+    assert.equal(res.bylot.evidence.length, 2);
+});
+
+test('선택 root가 표제부에 없으면 partition하지 않고 복수 root REVIEW를 유지한다', () => {
+    const res = resolveParcelScopeCompleteness({
+        dbScope: multiRootDbScope(),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: '9999999999',
+    });
+    assert.equal(res.state, 'REVIEW_REQUIRED');
+    assert.equal(
+        res.classification.kind === 'REVIEW_REQUIRED' &&
+            res.classification.reason,
+        'MULTIPLE_ROOT_IDENTITIES'
+    );
+    assert.equal(res.landRightRootIdentity, null);
+});
+
+test('선택 root가 상위 up-PK를 가진 child면 root로 인정하지 않는다', () => {
+    const scans = multiRootBaseScans();
+    scans[0].title.rows[1] = {
+        ...scans[0].title.rows[1],
+        mgmUpBldrgstPk: '1010119999',
+    } as never;
+    const res = resolveParcelScopeCompleteness({
+        dbScope: multiRootDbScope(),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(res.state, 'REVIEW_REQUIRED');
+    assert.equal(res.landRightRootIdentity, null);
+});
+
+test('단일 root anchor에 선택 root를 주면 partition 없이 기존 경로를 유지한다', () => {
+    const scans = multiRootBaseScans();
+    scans[0].title.rows = [scans[0].title.rows[1]] as never;
+    const res = resolveParcelScopeCompleteness({
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            rootBuildingIdentities: [AGGREGATE_ROOT],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(res.classification.kind, 'CLASSIFIED');
+    assert.equal(res.landRightRootIdentity, null);
+    assert.deepEqual(res.excludedLandRightRootIdentities, []);
+});

@@ -12,6 +12,8 @@
  *    요청시각·secret·raw body 제외.
  *  - scopeHash: strategy + 정렬 candidate property + membership + land tuple + 제안면적
  *    + dbScopeHash + externalScopeDigest의 versioned SHA-256.
+ *  - 표제부 root가 여럿이면 선출된 대지권 대상 root의 표제부 행만 분류·단일성 판정에 쓴다.
+ *    bylot·attached·closure 축은 전체 root를 유지한다 (DESIGN §9.1).
  */
 
 import { createHash } from 'node:crypto';
@@ -172,6 +174,14 @@ export interface ParcelScopeInput {
     dbScope: DbScopeResolution;
     baseScans: BasePnuScan[];
     policy: BylotSourcePolicy;
+    /**
+     * 표제부 root가 여럿일 때 LDAREG 행 근거로 선출된 대지권 대상 root (DESIGN §9.1).
+     *
+     * null/미지정이면 기존 단일 root 계약 그대로다. 설정하면 **분류 축과 단일성 판정 축만**
+     * 이 root의 표제부 행으로 좁힌다. bylot·attached·BASIS/EXPOS closure 축은 전체 root를
+     * 그대로 쓴다 — 제외된 동의 부속지번·기본개요가 판정 밖으로 떨어지면 안 된다.
+     */
+    landRightRootIdentity?: string | null;
 }
 
 export interface ParcelScopeResult {
@@ -185,6 +195,13 @@ export interface ParcelScopeResult {
     scannedPnus: string[];
     dbScopeHash: string;
     externalScopeDigest: string;
+    /**
+     * 실제로 적용된 대지권 대상 root. partition이 성립하지 않으면 null이다.
+     * digest에 참여하지 않는 진단용 값이다.
+     */
+    landRightRootIdentity: string | null;
+    /** `대지권 무관 동`으로 제외한 root(정렬). partition 미성립이면 빈 배열. */
+    excludedLandRightRootIdentities: string[];
 }
 
 /**
@@ -238,6 +255,56 @@ function hasInvalidRequiredPk(rows: Array<{ mgmBldrgstPk?: unknown }>): boolean 
 
 function hasInvalidOptionalUpPk(rows: Array<{ mgmUpBldrgstPk?: unknown }>): boolean {
     return rows.some((row) => !isOptionalRegistryManagementPkValid(row.mgmUpBldrgstPk));
+}
+
+interface LandRightRootPartition {
+    selectedRootIdentity: string;
+    /** 선택 root에 귀속된 표제부 행만. */
+    selectedTitleRows: BrTitleRow[];
+    /** 대지권 대상에서 제외한 root(정렬). */
+    excludedRootIdentities: string[];
+}
+
+/**
+ * 표제부 행을 선택된 대지권 대상 root 기준으로 나눈다 (DESIGN §9.1 개정).
+ *
+ * partition 축은 LDAREG root 축과 같은 exact `mgmBldrgstPk` self다. resolver의
+ * up-preferred 축과 섞지 않는다.
+ *
+ * null을 반환하는 경우(= partition 미성립, 기존 계약 그대로 진행):
+ *  - 선택 root가 없거나 정규화되지 않는다
+ *  - 표제부에 invalid PK 행이 있다
+ *  - 선택 root 귀속 행이 0건이다
+ *  - 선택 root 귀속 행에 자기 자신이 아닌 상위 up-PK가 있다(= 실제 root가 아니다)
+ *  - 제외할 다른 root가 없다(= 단일 root라 partition이 무의미하다)
+ */
+function partitionTitleRowsByLandRightRoot(
+    titleRows: BrTitleRow[],
+    landRightRootIdentity: string | null | undefined
+): LandRightRootPartition | null {
+    const selected = normalizeRegistryManagementPk(
+        landRightRootIdentity ?? ''
+    );
+    if (selected === null) return null;
+    const selectedTitleRows: BrTitleRow[] = [];
+    const excluded = new Set<string>();
+    for (const row of titleRows) {
+        const self = normalizeRegistryManagementPk(row.mgmBldrgstPk);
+        if (self === null) return null;
+        if (self !== selected) {
+            excluded.add(self);
+            continue;
+        }
+        const up = normalizeRegistryManagementPk(row.mgmUpBldrgstPk);
+        if (up !== null && up !== selected) return null;
+        selectedTitleRows.push(row);
+    }
+    if (selectedTitleRows.length === 0 || excluded.size === 0) return null;
+    return {
+        selectedRootIdentity: selected,
+        selectedTitleRows,
+        excludedRootIdentities: [...excluded].sort(),
+    };
 }
 
 /**
@@ -298,8 +365,16 @@ export function resolveParcelScopeCompleteness(input: ParcelScopeInput): ParcelS
     }));
     const attached = assembleAttachedPnus(normalizedAttachedRows as unknown as AtchJibunRowInput[]);
     const bylot = resolveBylotCounts({ policy, titleRows, basisRows, attachedPks, basisFallbackInvoked });
+    // 표제부 root가 여럿이면 선출된 대지권 대상 root의 행만 분류 입력으로 쓴다 (DESIGN §9.1).
+    // closure·bylot·attached 축은 위에서 이미 전체 root로 계산돼 있고 그대로 둔다.
+    const landRightPartition = partitionTitleRowsByLandRightRoot(
+        titleRows,
+        input.landRightRootIdentity
+    );
+    const classificationTitleRows =
+        landRightPartition?.selectedTitleRows ?? titleRows;
     const classification = classifyHousingType({
-        titleRows: titleRows.map((r) => ({
+        titleRows: classificationTitleRows.map((r) => ({
             regstrGbCd: r.regstrGbCd,
             mainPurpsCd: r.mainPurpsCd,
             mainPurpsCdNm: r.mainPurpsCdNm,
@@ -308,7 +383,9 @@ export function resolveParcelScopeCompleteness(input: ParcelScopeInput): ParcelS
             grndFlrCnt: r.grndFlrCnt,
             totArea: r.totArea,
         })),
-        rootIdentities: dbScope.rootBuildingIdentities,
+        rootIdentities: landRightPartition
+            ? [landRightPartition.selectedRootIdentity]
+            : dbScope.rootBuildingIdentities,
     });
     const externalScopeDigest = buildExternalScopeDigest(baseScans, bylot, policy);
 
@@ -321,6 +398,10 @@ export function resolveParcelScopeCompleteness(input: ParcelScopeInput): ParcelS
         scannedPnus,
         dbScopeHash: dbScope.dbScopeHash,
         externalScopeDigest,
+        landRightRootIdentity:
+            landRightPartition?.selectedRootIdentity ?? null,
+        excludedLandRightRootIdentities:
+            landRightPartition?.excludedRootIdentities ?? [],
     });
 
     // ── 1. 최우선: 필수 provider FAILED/INCOMPLETE → FAILED (apply 0) ──
