@@ -491,7 +491,7 @@ jobs:
             || evidence.entries.length !== target.targetCount
             || new Set(evidence.entries.flatMap((entry) => entry.expectedPropertyUnitIds)).size
               !== target.expectedPropertyUnitCount
-            || audit?.version !== "land-area-development-evidence-capture-audit@2"
+            || audit?.version !== "land-area-development-evidence-capture-audit@3"
             || audit?.captureRunId !== process.argv[5]
             || audit?.gate?.status !== "PASS"
             || audit?.readOnlyGuards?.durableSyncJobWrites !== 0
@@ -653,7 +653,7 @@ jobs:
                 && row.count > 0
             );
           if (
-            audit?.version !== "land-area-development-evidence-capture-audit@2"
+            audit?.version !== "land-area-development-evidence-capture-audit@3"
             || audit?.databaseTarget !== "development"
             || typeof manifestLabel !== "string"
             || !/^[a-z0-9-]{1,100}$/.test(manifestLabel)

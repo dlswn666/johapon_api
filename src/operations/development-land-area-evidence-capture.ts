@@ -29,7 +29,17 @@ import type {
 } from '../types/land-area-sync-job.types';
 
 export const DEVELOPMENT_EVIDENCE_CAPTURE_AUDIT_VERSION =
-    'land-area-development-evidence-capture-audit@2' as const;
+    'land-area-development-evidence-capture-audit@3' as const;
+
+/** 최초 시도를 포함한 anchor 당 최대 시도 수. */
+export const CAPTURE_MAX_ATTEMPTS = 3;
+/** 재시도 라운드 사이 고정 지연. 외부 API 가 회복할 시간을 준다. */
+export const CAPTURE_RETRY_DELAY_MS = 60_000;
+/**
+ * 재시도 대상이 targetCount 의 이 비율을 넘으면 API 장애로 보고 재시도를 생략한다.
+ * 재시도해도 무용하고 capture 예산만 태우기 때문이다.
+ */
+export const RETRY_ELIGIBLE_MAX_RATIO = 0.25;
 
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -76,6 +86,8 @@ export interface DevelopmentEvidenceCaptureAuditEntry {
         | 'SAME_RUN_OFFICIAL_DEVELOPMENT_FULL_REFRESH'
         | 'SAME_RUN_OFFICIAL_DEVELOPMENT_PARCEL_SINGLETON'
         | 'VERIFIED_NO_DATA';
+    /** 이 anchor 를 실행한 총 시도 수. 최초 시도가 1 이다. */
+    attempts: number;
 }
 
 export interface DevelopmentEvidenceCaptureRedactedAggregate {
@@ -116,6 +128,15 @@ export interface DevelopmentEvidenceCaptureAudit {
         interceptedSnapshotWrites: number;
         interceptedTerminalWrites: number;
         interceptedFailureWrites: number;
+    };
+    retry: {
+        /** 실제 수행한 재시도 라운드 수. 0..CAPTURE_MAX_ATTEMPTS - 1 */
+        rounds: number;
+        /** 재시도를 1회 이상 받은 anchor 수 */
+        retriedAnchorCount: number;
+        /** 재시도로 FAILED 를 벗어난 anchor 수 */
+        recoveredAnchorCount: number;
+        skipped: 'NONE' | 'TOO_MANY_FAILURES';
     };
     entries: DevelopmentEvidenceCaptureAuditEntry[];
     /**
@@ -304,6 +325,29 @@ export function assertDevelopmentEvidenceCaptureActiveIdentity(input: {
             })
         ),
     };
+}
+
+/**
+ * 재시도 대상 판정.
+ *
+ * `audit.status` 는 REVIEW 로 끝난 anchor 에도 'FAILED' 를 넣으므로 그대로 쓰면 안 된다.
+ * aggregateDevelopmentEvidenceCaptureEntries 와 동일한 분기를 써서 집계상 FAILED 로
+ * 떨어지는 entry, 즉 판정에 도달하지 못한 anchor 만 고른다.
+ */
+export function isDevelopmentEvidenceCaptureRetryable(
+    entry: DevelopmentEvidenceCaptureAuditEntry
+): boolean {
+    if (
+        entry.status === 'VERIFIED_NO_DATA' ||
+        entry.status === 'CAPTURED'
+    ) {
+        return false;
+    }
+    if (entry.terminalOutcome === 'NO_DATA') return false;
+    return !(
+        entry.terminalOutcome === 'REVIEW_REQUIRED' ||
+        entry.terminalScopeState === 'REVIEW_REQUIRED'
+    );
 }
 
 export function aggregateDevelopmentEvidenceCaptureEntries(
@@ -667,6 +711,7 @@ async function captureOne(input: {
         | LandAreaSyncDevelopmentFullRefresh
         | null;
     deps: DevelopmentEvidenceCaptureReadOnlyDeps;
+    attempt: number;
 }): Promise<CaptureOneResult> {
     const jobId = randomUUID();
     const createdAt = input.deps.now().toISOString();
@@ -851,6 +896,7 @@ async function captureOne(input: {
                     ?.source ??
                 state.snapshot?.readOnlyScopeResolution?.source ??
                 'DB_RESOLVER',
+            attempts: input.attempt,
         },
     };
 }
@@ -909,6 +955,7 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 anchorPnu: executionAnchors[index],
                 developmentFullRefresh,
                 deps: input.deps,
+                attempt: 1,
             });
             completed += 1;
             input.onProgress?.(completed, executionAnchors.length);
@@ -1159,6 +1206,12 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                         sum + result.state.failureWrites,
                     0
                 ),
+            },
+            retry: {
+                rounds: 0,
+                retriedAnchorCount: 0,
+                recoveredAnchorCount: 0,
+                skipped: 'NONE',
             },
             entries: results.map((result) => result.audit),
             redactedAggregate:

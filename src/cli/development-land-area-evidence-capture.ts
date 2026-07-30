@@ -182,7 +182,7 @@ function failureAudit(
     failureCode: string = 'CAPTURE_SETUP_REJECTED'
 ): DevelopmentEvidenceCaptureAudit {
     return {
-        version: 'land-area-development-evidence-capture-audit@2',
+        version: 'land-area-development-evidence-capture-audit@3',
         databaseTarget: 'development',
         unionId: '00000000-0000-0000-0000-000000000000',
         targetCount: 0,
@@ -207,6 +207,12 @@ function failureAudit(
             interceptedSnapshotWrites: 0,
             interceptedTerminalWrites: 0,
             interceptedFailureWrites: 0,
+        },
+        retry: {
+            rounds: 0,
+            retriedAnchorCount: 0,
+            recoveredAnchorCount: 0,
+            skipped: 'NONE',
         },
         entries: [],
         redactedAggregate: {

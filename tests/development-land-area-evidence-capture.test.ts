@@ -18,6 +18,9 @@ import {
     type DevelopmentTargetManifest,
 } from '../src/operations/development-land-area-sync-runner';
 import {
+    CAPTURE_MAX_ATTEMPTS,
+    CAPTURE_RETRY_DELAY_MS,
+    RETRY_ELIGIBLE_MAX_RATIO,
     aggregateDevelopmentEvidenceCaptureIssueCodes,
     aggregateDevelopmentEvidenceCaptureEntries,
     assertDevelopmentEvidenceCaptureActiveIdentity,
@@ -25,7 +28,9 @@ import {
     developmentEvidenceEntryFromSnapshot,
     hasStableDevelopmentActivePropertyIdentity,
     isDevelopmentEvidenceCapturePromotionEligible,
+    isDevelopmentEvidenceCaptureRetryable,
 } from '../src/operations/development-land-area-evidence-capture';
+import type { DevelopmentEvidenceCaptureAuditEntry } from '../src/operations/development-land-area-evidence-capture';
 import type { LandAreaSyncScopeSnapshot } from '../src/types/land-area-sync-job.types';
 
 const UNION_ID = '00f48b95-e9bc-4c92-a0e5-6b9a57adcfb9';
@@ -875,6 +880,7 @@ test('read-only audit 집계는 식별자 없이 CAPTURED/NO_DATA/REVIEW/FAILED�
         terminalIssuesTotal: 0,
         terminalIssuesTruncated: false,
         scopeResolutionSource: 'DB_RESOLVER',
+        attempts: 1,
     } as const;
     const aggregate = aggregateDevelopmentEvidenceCaptureEntries([
         { ...base, status: 'CAPTURED' },
@@ -930,6 +936,7 @@ test('read-only 공개 진단은 개별 PNU를 가리키지 않는 issue code별
         terminalIssuesTotal: 0,
         terminalIssuesTruncated: false,
         scopeResolutionSource: 'DB_RESOLVER',
+        attempts: 1,
     } as const;
     const issueCounts =
         aggregateDevelopmentEvidenceCaptureIssueCodes([
@@ -1375,4 +1382,88 @@ test('resolved scope가 승인 target을 벗어나면 capture 단계에서 중�
             }),
         /CAPTURE_SCOPE_OUTSIDE_TARGET/
     );
+});
+
+test('재시도가 없는 실행은 attempts 1과 빈 retry 집계를 남긴다', () => {
+    const entry: DevelopmentEvidenceCaptureAuditEntry = {
+        anchorPnu: PNU,
+        status: 'CAPTURED',
+        strategy: 'LADFRL',
+        scannedPnuCount: 1,
+        propertyUnitCount: 1,
+        snapshotReferenceSha256: '0'.repeat(64),
+        applyRpcBlocked: true,
+        failureCode: null,
+        terminalScopeState: 'RESOLVED',
+        terminalOutcome: 'APPLIED',
+        terminalIssueCodes: [],
+        terminalIssuesTotal: 0,
+        terminalIssuesTruncated: false,
+        scopeResolutionSource: 'DB_RESOLVER',
+        attempts: 1,
+    };
+    assert.equal(isDevelopmentEvidenceCaptureRetryable(entry), false);
+});
+
+test('재시도 술어는 REVIEW·NO_DATA·CAPTURED를 제외하고 판정 미도달만 고른다', () => {
+    const base: DevelopmentEvidenceCaptureAuditEntry = {
+        anchorPnu: PNU,
+        status: 'FAILED',
+        strategy: null,
+        scannedPnuCount: 0,
+        propertyUnitCount: 0,
+        snapshotReferenceSha256: null,
+        applyRpcBlocked: false,
+        failureCode: 'CAPTURE_DISCOVERY_FAILED',
+        terminalScopeState: 'FAILED',
+        terminalOutcome: 'FAILED',
+        terminalIssueCodes: ['PROVIDER_PROTOCOL_ERROR'],
+        terminalIssuesTotal: 1,
+        terminalIssuesTruncated: false,
+        scopeResolutionSource: 'DB_RESOLVER',
+        attempts: 1,
+    };
+
+    assert.equal(isDevelopmentEvidenceCaptureRetryable(base), true);
+    assert.equal(
+        isDevelopmentEvidenceCaptureRetryable({
+            ...base,
+            status: 'CAPTURED',
+        }),
+        false
+    );
+    assert.equal(
+        isDevelopmentEvidenceCaptureRetryable({
+            ...base,
+            status: 'VERIFIED_NO_DATA',
+        }),
+        false
+    );
+    assert.equal(
+        isDevelopmentEvidenceCaptureRetryable({
+            ...base,
+            terminalOutcome: 'NO_DATA',
+        }),
+        false
+    );
+    assert.equal(
+        isDevelopmentEvidenceCaptureRetryable({
+            ...base,
+            terminalOutcome: 'REVIEW_REQUIRED',
+        }),
+        false
+    );
+    assert.equal(
+        isDevelopmentEvidenceCaptureRetryable({
+            ...base,
+            terminalScopeState: 'REVIEW_REQUIRED',
+        }),
+        false
+    );
+});
+
+test('capture 재시도 상수는 설계값으로 고정된다', () => {
+    assert.equal(CAPTURE_MAX_ATTEMPTS, 3);
+    assert.equal(CAPTURE_RETRY_DELAY_MS, 60_000);
+    assert.equal(RETRY_ELIGIBLE_MAX_RATIO, 0.25);
 });
