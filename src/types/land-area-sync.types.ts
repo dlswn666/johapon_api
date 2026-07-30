@@ -228,6 +228,10 @@ export interface BrTitleRow {
     mainPurpsCd?: string;
     /** 주용도 명 */
     mainPurpsCdNm?: string;
+    /** 지상 층수 (DESIGN §9.2 규모 기준 — 아파트 배제용) */
+    grndFlrCnt?: string | number;
+    /** 연면적 ㎡ (DESIGN §9.2 규모 기준 — 연립주택 배제용) */
+    totArea?: string | number;
     [key: string]: unknown;
 }
 

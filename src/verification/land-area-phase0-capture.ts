@@ -2161,6 +2161,8 @@ function phase0HousingFamilyFromTitleRows(
                 typeof row.etcPurps === 'string'
                     ? row.etcPurps
                     : undefined,
+            grndFlrCnt: row.grndFlrCnt,
+            totArea: row.totArea,
         })),
         rootIdentities,
     });

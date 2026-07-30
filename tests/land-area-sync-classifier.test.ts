@@ -80,9 +80,11 @@ test('기타용도 lookalike substring은 다세대주택 신호로 분류하지
         })
     );
     assert.equal(r.kind, 'REVIEW_REQUIRED');
+    // 02000 pair는 규모 기준 대체 경로를 가지므로, 토큰 lookalike + 규모 값 부재는
+    // 규모 근거 부재 사유로 닫힌다. issue code는 BUILDING_CLASSIFICATION_CONFLICT 그대로다.
     assert.equal(
         r.kind === 'REVIEW_REQUIRED' && r.reason,
-        'REQUIRED_OTHER_PURPOSE_SIGNAL_MISSING'
+        'HOUSING_SCALE_EVIDENCE_MISSING'
     );
 });
 
@@ -170,4 +172,205 @@ test('title row 없음(TITLE_COMPLETE_ZERO)은 REVIEW_REQUIRED', () => {
 test('substring 분류 금지: mainPurpsCdNm에 "주택" 포함되어도 allowlist 아니면 미분류', () => {
     const r = classifyHousingType(input({ titleRows: [row({ regstrGbCd: '1', mainPurpsCd: '01000', mainPurpsCdNm: '단독주택형 기타' })] }));
     assert.equal(r.kind, 'REVIEW_REQUIRED');
+});
+
+// ── §6 법정 규모 기준 (건축법 시행령 별표1) ────────────────────────────
+
+test('02000 공동주택 pair는 토큰이 없어도 지상 4층·연면적 660㎡ 이하면 다세대로 인정한다', () => {
+    const r = classifyHousingType(
+        input({
+            titleRows: [
+                {
+                    ...row({ ...LIVE_MULTIPLEX, etcPurps: '공동주택' }),
+                    grndFlrCnt: '4',
+                    totArea: '513.06',
+                },
+            ],
+        })
+    );
+    assert.equal(r.kind, 'CLASSIFIED');
+    assert.equal(r.kind === 'CLASSIFIED' && r.family, 'LDAREG');
+    assert.equal(r.kind === 'CLASSIFIED' && r.category, 'MULTIPLEX');
+    assert.equal(r.kind === 'CLASSIFIED' && r.regstrGbCd, '2');
+});
+
+test('02000 공동주택 pair는 지상 5층 이상이면 아파트 배제로 REVIEW_REQUIRED', () => {
+    const r = classifyHousingType(
+        input({
+            titleRows: [
+                {
+                    ...row({ ...LIVE_MULTIPLEX, etcPurps: '공동주택' }),
+                    grndFlrCnt: '5',
+                    totArea: '513.06',
+                },
+            ],
+        })
+    );
+    assert.equal(r.kind, 'REVIEW_REQUIRED');
+    assert.equal(
+        r.kind === 'REVIEW_REQUIRED' && r.reason,
+        'HOUSING_SCALE_EXCEEDS_MULTIPLEX_LIMIT'
+    );
+    assert.equal(
+        r.kind === 'REVIEW_REQUIRED' && r.issue,
+        'BUILDING_CLASSIFICATION_CONFLICT'
+    );
+});
+
+test('02000 공동주택 pair는 연면적 660㎡ 초과면 연립주택 배제로 REVIEW_REQUIRED', () => {
+    const r = classifyHousingType(
+        input({
+            titleRows: [
+                {
+                    ...row({ ...LIVE_MULTIPLEX, etcPurps: '공동주택' }),
+                    grndFlrCnt: '4',
+                    totArea: '660.01',
+                },
+            ],
+        })
+    );
+    assert.equal(r.kind, 'REVIEW_REQUIRED');
+    assert.equal(
+        r.kind === 'REVIEW_REQUIRED' && r.reason,
+        'HOUSING_SCALE_EXCEEDS_MULTIPLEX_LIMIT'
+    );
+});
+
+test('02000 공동주택 pair는 규모 경계값(4층·정확히 660㎡)을 이하로 인정한다', () => {
+    const r = classifyHousingType(
+        input({
+            titleRows: [
+                {
+                    ...row({ ...LIVE_MULTIPLEX, etcPurps: '공동주택' }),
+                    grndFlrCnt: 4,
+                    totArea: 660,
+                },
+            ],
+        })
+    );
+    assert.equal(r.kind, 'CLASSIFIED');
+});
+
+test('02000 공동주택 pair는 규모 값 누락·비숫자·음수를 0으로 보정하지 않고 REVIEW_REQUIRED', () => {
+    const cases: Array<Record<string, unknown>> = [
+        {},
+        { grndFlrCnt: '4' },
+        { totArea: '513.06' },
+        { grndFlrCnt: '', totArea: '513.06' },
+        { grndFlrCnt: '4', totArea: '' },
+        { grndFlrCnt: '4층', totArea: '513.06' },
+        { grndFlrCnt: '4', totArea: '513.06㎡' },
+        { grndFlrCnt: '-1', totArea: '513.06' },
+        { grndFlrCnt: '4', totArea: '-1' },
+        { grndFlrCnt: '4', totArea: '0' },
+        { grndFlrCnt: '4.5', totArea: '513.06' },
+        { grndFlrCnt: null, totArea: null },
+    ];
+    for (const scale of cases) {
+        const r = classifyHousingType(
+            input({
+                titleRows: [
+                    {
+                        ...row({ ...LIVE_MULTIPLEX, etcPurps: '공동주택' }),
+                        ...scale,
+                    },
+                ],
+            })
+        );
+        assert.equal(
+            r.kind,
+            'REVIEW_REQUIRED',
+            `규모 값 ${JSON.stringify(scale)} 은 인정하지 않는다`
+        );
+        assert.equal(
+            r.kind === 'REVIEW_REQUIRED' && r.reason,
+            'HOUSING_SCALE_EVIDENCE_MISSING',
+            `규모 값 ${JSON.stringify(scale)} 사유`
+        );
+    }
+});
+
+test('규모 기준은 모순 신호를 덮지 않는다 — 아파트 토큰은 규모가 맞아도 차단', () => {
+    const r = classifyHousingType(
+        input({
+            titleRows: [
+                {
+                    ...row({
+                        ...LIVE_MULTIPLEX,
+                        etcPurps: '공동주택(아파트)',
+                    }),
+                    grndFlrCnt: '4',
+                    totArea: '513.06',
+                },
+            ],
+        })
+    );
+    assert.equal(r.kind, 'REVIEW_REQUIRED');
+    assert.equal(
+        r.kind === 'REVIEW_REQUIRED' && r.reason,
+        'CONTRADICTORY_OTHER_PURPOSE_SIGNAL'
+    );
+});
+
+test('부속용도 다세대주택 토큰 경로는 규모 값이 없어도 그대로 인정한다(§6.5)', () => {
+    const r = classifyHousingType(
+        input({
+            titleRows: [
+                row({
+                    ...LIVE_MULTIPLEX,
+                    etcPurps: '공동주택(다세대주택)',
+                }),
+            ],
+        })
+    );
+    assert.equal(r.kind, 'CLASSIFIED');
+    assert.equal(r.kind === 'CLASSIFIED' && r.family, 'LDAREG');
+});
+
+test('02003 다세대주택 pair는 규모 검사 없이 통과한다(§6.4)', () => {
+    const r = classifyHousingType(
+        input({ titleRows: [row(MULTIPLEX)] })
+    );
+    assert.equal(r.kind, 'CLASSIFIED');
+    assert.equal(r.kind === 'CLASSIFIED' && r.category, 'MULTIPLEX');
+});
+
+test('규모 기준은 02000 pair 외 다른 pair 판정에 관여하지 않는다(§6.4)', () => {
+    const r = classifyHousingType(
+        input({
+            titleRows: [
+                {
+                    ...row(DETACHED),
+                    grndFlrCnt: '99',
+                    totArea: '99999',
+                },
+            ],
+        })
+    );
+    assert.equal(r.kind, 'CLASSIFIED');
+    assert.equal(r.kind === 'CLASSIFIED' && r.family, 'LADFRL');
+});
+
+test('여러 표제부 행 중 하나라도 규모 상한을 넘으면 인정하지 않는다', () => {
+    const r = classifyHousingType(
+        input({
+            titleRows: [
+                {
+                    ...row({ ...LIVE_MULTIPLEX, etcPurps: '공동주택' }),
+                    grndFlrCnt: '4',
+                    totArea: '513.06',
+                },
+                {
+                    ...row({ ...LIVE_MULTIPLEX, etcPurps: '공동주택' }),
+                    grndFlrCnt: '6',
+                    totArea: '513.06',
+                },
+            ],
+        })
+    );
+    assert.equal(r.kind, 'REVIEW_REQUIRED');
+    assert.equal(
+        r.kind === 'REVIEW_REQUIRED' && r.reason,
+        'HOUSING_SCALE_EXCEEDS_MULTIPLEX_LIMIT'
+    );
 });

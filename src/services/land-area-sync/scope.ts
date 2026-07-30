@@ -305,6 +305,8 @@ export function resolveParcelScopeCompleteness(input: ParcelScopeInput): ParcelS
             mainPurpsCdNm: r.mainPurpsCdNm,
             etcPurps:
                 typeof r.etcPurps === 'string' ? r.etcPurps : undefined,
+            grndFlrCnt: r.grndFlrCnt,
+            totArea: r.totArea,
         })),
         rootIdentities: dbScope.rootBuildingIdentities,
     });
