@@ -2,7 +2,8 @@
 
 대상: `docs/2026-07-23-land-area-sync-design.md` §9.1 · §9.2 · §10.4 · §12.3 · §12.4
 계기: 미아7 791-2282(anchor ordinal 108) 보류
-상태: **승인됨 (2026-07-30). 코드 변경은 아직 없음 — 구현 계획 작성 단계.**
+상태: **구현됨 (2026-07-30). 원 설계 §9.1·§9.2·§10.4·§12.3·§12.4 에 반영 완료.**
+구현 계획: [`2026-07-30-multi-root-land-right-root-election-implementation-plan.md`](./2026-07-30-multi-root-land-right-root-election-implementation-plan.md)
 
 ## 1. 배경
 
@@ -238,6 +239,15 @@ regstrGbCd, mainPurpsCd, mainPurpsCdNm, etcPurps   (현행)
 `buildBasisRootIndex`는 이미 복수 root 입력을 받도록 만들어져 있고 phase0 캡처가 그 경로로
 실행된다(`src/verification/land-area-phase0-capture.ts:2295-2301`). 신규 개념이 아니라 런타임
 경로에 같은 형태를 적용하는 것이다.
+
+구현 중 확정한 사항 두 가지:
+
+- **선출 시점.** 선출에는 LDAREG·EXPOS·BASIS 응답이 필요하고 그 조회는 원래 LDAREG 분기에서
+  일어난다. 따라서 표제부 root가 여럿일 때만 공통 gate **앞에** base PNU 한정 선출 pre-pass를
+  넣고, 그 결과 scan을 LDAREG 분기에서 재사용한다. 같은 endpoint를 두 번 조회하지 않는다.
+- **선출 실패는 FAILED가 아니다.** 선출용 scan 실패·불완전·근거 불확정은 모두 기존 복수 root
+  `REVIEW_REQUIRED` 경로로 닫는다. 새 `FAILED` terminal을 만들면 278-anchor 게이트의 기대값이
+  움직인다.
 
 ### 매니페스트·게이트
 

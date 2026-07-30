@@ -544,7 +544,16 @@ flowchart TD
 - gate 전에 검증을 마친 scope 내 Building HUB 표제부 전 페이지
 - 집합건축물은 scope 내 전유부 전 페이지
 - 현재 유효 행만 사용
-- 모든 행이 같은 root 관리번호 계열인지 확인
+- 표제부 root 관리번호가 여럿이면, 그 중 **대지권등록부(LDAREG)에 행 근거를 가진 root가
+  정확히 하나**일 때만 그 root를 대지권 대상으로 삼는다. 나머지 root는 `대지권 무관 동`으로
+  기록하고 물건지 투영 대상에서 제외한다. LDAREG 근거 root가 0개이거나 2개 이상이면
+  `REVIEW_REQUIRED`다.
+- 분류·매칭은 선택된 대지권 대상 root의 표제부 행만으로 수행한다. 제외된 root의 표제부
+  행은 분류 입력에 넣지 않는다.
+- 기본개요(BASIS)·전유부(EXPOS) closure 판정은 **전체 root 집합**을 accepted root로 삼는다.
+  제외된 동의 BASIS 행이 closure 밖으로 떨어져 전체가 차단되지 않게 하기 위해서다.
+- `bylotCnt`·부속지번 축도 **전체 root 집합**을 유지한다. 제외된 동의 부속지번이 판정 밖으로
+  빠지지 않는다.
 - `regstrGbCd`, `mainPurpsCd`, `mainPurpsCdNm` 공식 pair를 확인
 
 공식 codebook에서 확인한 pair만 frozen fixture로 허용한다. substring `includes('주택')`로 분류하지 않는다.
@@ -565,9 +574,21 @@ flowchart TD
 | 연립주택·아파트·다중주택 | 없음 | `REVIEW_REQUIRED` |
 | 비주거·복합용도 | 없음 | `REVIEW_REQUIRED` |
 | 빈 코드·명칭, code/name 불일치 | 없음 | `REVIEW_REQUIRED` |
-| root 관리번호 여러 개 | 없음 | `REVIEW_REQUIRED` |
-| 일반·집합 또는 purpose pair 혼재 | 없음 | `REVIEW_REQUIRED` |
+| root 관리번호 여러 개, LDAREG 근거 root 0개 또는 2개 이상 | 없음 | `REVIEW_REQUIRED` |
+| root 관리번호 여러 개, LDAREG 근거 root 정확히 1개, 그 root의 표제부 행이 공식 다세대 pair | `LDAREG` | 선택 root의 물건지×PNU 대지권 합계. 나머지 root는 `대지권 무관 동`으로 제외 |
+| 단일 root에서 일반·집합 또는 purpose pair 혼재 | 없음 | `REVIEW_REQUIRED` |
+| 공식 `2 / 02000 / 공동주택` pair, 부속용도 `다세대주택` 토큰 없음, 지상 층수 ≤ 4 이고 연면적 ≤ 660㎡ | `LDAREG` | 다세대주택으로 인정 |
+| 공식 `2 / 02000 / 공동주택` pair, 토큰 없고 지상 층수 ≥ 5 또는 연면적 > 660㎡ 또는 두 값 결측·파싱 실패 | 없음 | `REVIEW_REQUIRED` |
 | 필수 Building HUB scan 실패·불완전 | 없음 | `FAILED` |
+
+복수 root에서 대장 구분이 갈리는 것은 정상적인 물리 상태이므로 혼재로 보지 않는다. 기존
+"혼재 → REVIEW" 규칙은 **단일 root 안에서의 혼재**로 범위를 좁혀 그대로 유지한다.
+
+`02000 공동주택` 규모 기준의 두 대용값은 모두 보수적인 방향이다. `totArea`(연면적)는 지하·비주거를
+포함하므로 주택 바닥면적 합계 이상이고, `grndFlrCnt`(지상 층수)는 주택으로 쓰는 층수 이상이다.
+따라서 연립주택(660㎡ 초과)과 아파트(5개 층 이상)는 이 경로를 통과할 수 없으며, 위 표의
+`연립주택·아파트·다중주택 → REVIEW_REQUIRED` 행과 충돌하지 않는다. 부속용도 `다세대주택` 토큰이
+있는 건물은 규모 검사 없이 그대로 통과한다 — 규모 기준은 토큰을 대체하지 않고 보완한다.
 
 ## 10. strict API adapter
 
@@ -622,8 +643,11 @@ type StrictScan<T> =
   parent와 exact 일치해야 하며 invalid raw up, 복수 parent, closure 밖 parent는 보강하지
   않고 전체를 차단한다. root 판정 근거(`SELF`, `RAW_UP`, `BASIS_UNIQUE`)와 self/root
   identity는 immutable scope digest에 포함한다.
-- LDAREG 호실 매칭의 root 축은 연결된 모든 base title의 exact
-  `mgmBldrgstPk` self 집합이다. 이 집합이 정확히 하나가 아니면 적용하지 않는다.
+- LDAREG 호실 매칭의 root 축은 연결된 모든 base title의 exact `mgmBldrgstPk` self 집합에서
+  **LDAREG 행 근거를 가진 root만 남긴 부분집합**이다. 이 부분집합이 정확히 하나가 아니면
+  적용하지 않는다. 근거 판정은 같은 실행의 LDAREG 응답과 EXPOS 전유부의 root 귀속으로만
+  하며, 행 수·비율값·건물명 유사도로 추정하지 않는다. BASIS/EXPOS closure의 accepted root는
+  이 부분집합이 아니라 self 집합 전체다.
   scope resolver seed의 `mgmUpBldrgstPk ?? mgmBldrgstPk` 계열 축은 관계 탐색용이며,
   LDAREG의 title-root self 축과 섞지 않는다.
 - LDAREG 런타임과 Phase 0은 기준·부속 전체 scope PNU마다 basis를 strict하게 정확히
@@ -923,7 +947,7 @@ canonical identity 13/13과 ratio 9/9가 완전히 같았다. query PNU별 응�
 `층+호` multiset이 각각
 중복 없이 1:1로 일치하고 aggregate building/building-name 충돌이 없을 때만
 `층+호` 보조 상관을 허용한다. 이는 건물명 label을 임의 제거하는 규칙이 아니며,
-서로 다른 동/건물명, 복수 root, 같은 `층+호` 중복, valid와 ratio-missing 행의
+서로 다른 동/건물명, 선택된 대지권 대상 root 밖의 root 근거, 같은 `층+호` 중복, valid와 ratio-missing 행의
 `층+호` 겹침이 하나라도 있으면 축약형을 사용하지 않고 전체를 차단한다.
 
 ### 12.4 매칭 순서
@@ -931,7 +955,7 @@ canonical identity 13/13과 ratio 9/9가 완전히 같았다. query PNU별 응�
 1. LDAREG ↔ complete Building HUB 전유부의 동·층·호 exact match. exact 후보가
    없을 때만 §12.3의 단일 root·단일 dong label·양쪽 `층+호` 1:1 무충돌 근거가
    완전한 경우 제한적으로 층·호 보조 상관 허용
-2. 전유부 root identity와 scope root identity 일치
+2. 전유부 root identity가 **선택된 대지권 대상 root**와 일치
 3. `registry_external_id`로 기존 `building_unit` exact match
 4. 외부 ID가 없을 때만 같은 root 범위에서 normalized tuple exact match
 4a. source↔EXPOS 층·호 exact와 root가 이미 입증됐지만 legacy `building_unit.floor`
