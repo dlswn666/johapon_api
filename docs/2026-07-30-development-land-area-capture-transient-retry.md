@@ -42,11 +42,34 @@ anchor 를 그대로 죽인다. anchor 하나가 죽으면 278 게이트가 깨�
 | # | 결정 | 근거 |
 |---|---|---|
 | D1 | 실행 내 재시도만 | same-run official 근거 계약과 매니페스트·digest·승인 절차를 건드리지 않는다 |
-| D2 | `status === 'FAILED'` 인 anchor만 재시도 | 기존 열거형을 그대로 쓴다. REVIEW = 판정 도달, FAILED = 판정 미도달 |
+| D2 | 집계 분류가 `FAILED` 인 anchor만 재시도 | 기존 분류를 그대로 쓴다. REVIEW = 판정 도달, FAILED = 판정 미도달 |
 | D3 | 고정 3라운드 + 고정 지연 | 감사 기록이 법적 증거로 쓰이는 파이프라인이라 재현성을 우선한다 |
 | D4 | 오케스트레이터 라운드 루프 | 한 곳만 수정하고 guardian write 경로에도 자동 적용된다 |
 | D5 | 공개 artifact `@4` 까지 노출 | audit/evidence 는 실행 후 삭제되므로 공개 artifact 외에는 사후 확인 수단이 없다 |
 | D6 | 실패 비율 가드 포함 | 대량 실패는 API 장애이므로 재시도해도 무용하고 예산만 태운다 |
+
+### D2 의 판정 기준
+
+`DevelopmentEvidenceCaptureAuditEntry.status` 를 그대로 쓰면 안 된다. 이 필드는
+`entry ? ... : 'FAILED'`(`development-land-area-evidence-capture.ts:819-823`)라서 REVIEW 로
+끝난 anchor 에도 `'FAILED'` 가 들어간다. REVIEW/FAILED 구분은
+`aggregateDevelopmentEvidenceCaptureEntries`(`:318-332`)가 `terminalOutcome` 과
+`terminalScopeState` 로 수행한다.
+
+재시도 대상은 그 분류에서 `FAILED` 로 떨어지는 entry 다. 즉 아래를 모두 만족하는 경우다.
+
+```
+status !== 'CAPTURED'
+status !== 'VERIFIED_NO_DATA'
+terminalOutcome !== 'NO_DATA'
+terminalOutcome !== 'REVIEW_REQUIRED'
+terminalScopeState !== 'REVIEW_REQUIRED'
+```
+
+이 술어를 `isDevelopmentEvidenceCaptureRetryable(entry)` 로 모듈에 두고
+`aggregateDevelopmentEvidenceCaptureEntries` 와 같은 분기를 공유한다. 워크플로 YAML 의
+`classifyFailure` 는 인라인 JS 라 import 할 수 없으므로 기존 중복을 유지한다(이미 테스트로
+고정돼 있다).
 
 `PROVIDER_PROTOCOL_ERROR` 를 재시도 판정 기준으로 쓰지 않는 이유는 이 코드가 두 의미로
 쓰이기 때문이다 — 스캔 전송 실패(`service.ts:1342`)와, 스캔은 성공했으나 응답 행의
@@ -172,7 +195,10 @@ redactedFailureDetails[].attempts
   `CAPTURE_UNION_ACTIVE_PROPERTY_SET_CHANGED` 가 잡는다.
 - `readOnlyGuards` 불변. 재시도도 in-memory 경로이므로 `durableSyncJobWrites` 와
   `propertyUnitWriteRpcCalls` 는 0 을 유지한다.
-- 라운드 간 지연은 기존 AbortSignal 을 확인해 취소에 응답한다.
+- 라운드 간 지연은 `captureDevelopmentLandAreaEvidence` 의 선택 의존성 `sleep` 으로 주입
+  가능하게 둔다. 이 오케스트레이터 입력에는 AbortSignal 이 없으므로(현재 시그니처는
+  `target` / `captureRunId` / `deps` / `concurrency?` / `onProgress?` 뿐) 취소 연동은 범위
+  밖이다. 실행 취소는 기존대로 guardian 의 `timeout` 이 프로세스를 죽여 처리한다.
 
 ## 테스트 계획 (TDD)
 
