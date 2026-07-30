@@ -1186,6 +1186,13 @@ test('791-2188 provider bridge는 1~3자리 positive 지하 suffix의 0-padding�
         'Ｂ０１',
         'B 01',
         'B01층',
+        '지하000',
+        '지하0001',
+        ' 지하01 ',
+        '지하 01',
+        '지하01호',
+        '지01',
+        '비01',
     ]) {
         assert.equal(expos(invalidExpos), null, invalidExpos);
     }
@@ -1243,6 +1250,29 @@ test('미아7 실측: LDAREG 지하1층 층·호 표기 변형이 EXPOS B0N과 �
         canonicalFloor: '1',
         canonicalHo: 'B1',
     });
+
+    // EXPOS 쪽도 지번마다 호 표기가 다르다. 2026-07-30 원문 확인:
+    //   791-2343  →  flrGbCd '10', flrNo 1, hoNm 'B01'
+    //   791-2320  →  flrGbCd '10', flrNo 1, hoNm '지하01' / '지하02'
+    for (const hoNm of ['B01', 'B1', '지하01', '지하1']) {
+        assert.deepEqual(
+            providerUnitShapeWitness('EXPOS_UNIT', {
+                flrGbCd: '10',
+                flrNo: 1,
+                hoNm,
+            }),
+            expos,
+            `EXPOS ${hoNm}`
+        );
+    }
+    assert.notEqual(
+        providerUnitShapeWitness('EXPOS_UNIT', {
+            flrGbCd: '10',
+            flrNo: 1,
+            hoNm: '지하02',
+        })?.token,
+        expos?.token
+    );
 
     for (const buldFloorNm of ['지하', '지', '지층', '지1', '지하1']) {
         for (const buldHoNm of [

@@ -152,6 +152,11 @@ function exposWitness(
     // 791-2188 실측: EXPOS 지하(10) floor=1 + ho=B0N. provider는
     // B01/B02처럼 0-padding할 수 있고, 대응 identity는 LDAREG 비0N과의
     // positive suffix equality다.
+    //
+    // 2026-07-30 원문 확인: 호 접두사도 지번마다 다르다.
+    //   791-2343  →  flrGbCd '10', flrNo 1, hoNm 'B01'
+    //   791-2320  →  flrGbCd '10', flrNo 1, hoNm '지하01' / '지하02'
+    // 두 접두사를 함께 인정한다. `비` 는 EXPOS 쪽에서 관측된 적이 없어 넣지 않는다.
     const strictFloorType = strictAliasScalar(row, ['flrGbCd']);
     const strictRawFloor = strictAliasScalar(row, [
         'flrNoNm',
@@ -164,7 +169,7 @@ function exposWitness(
     ]);
     const latinBasement = strictRawHo === null
         ? null
-        : /^B(\d{1,3})$/u.exec(strictRawHo);
+        : /^(?:B|지하)(\d{1,3})$/u.exec(strictRawHo);
     const latinBasementSuffix =
         latinBasement === null
             ? null
