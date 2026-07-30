@@ -82,8 +82,17 @@ export interface LdaregBranchInput {
     unionId: string;
     /** scope 내 정렬 대상 PNU 전체(각 property 의 expected coverage 이자 apply scanned scope). */
     scannedPnus: string[];
-    /** 단일 root 관리번호(전유부 root identity 비교 기준). */
+    /**
+     * 선택된 대지권 대상 root 관리번호. 전유부 root identity 비교(매칭 축)의 유일한 기준이다
+     * (DESIGN §10.4·§12.4 개정). 표제부 root가 하나면 그 root와 같다.
+     */
     rootIdentity: string;
+    /**
+     * BASIS/EXPOS closure accepted root 집합 (DESIGN §9.1 개정). 표제부 root **전체**를 넣는다.
+     * 제외된 동의 기본개요 행이 closure 밖으로 떨어져 전체가 차단되는 것을 막는다.
+     * 생략하면 `[rootIdentity]`로 취급해 기존 단일 root 동작을 그대로 유지한다.
+     */
+    closureRootIdentities?: string[];
     perPnu: LdaregPnuScan[];
     /** 정렬된 distinct scope PNU별 same-run LADFRL 양수면적. */
     scopeLadfrlAreas: ScopeLadfrlArea[];
@@ -1399,7 +1408,18 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         input.canonicalSourcePnu
     );
     const canonicalScan = perPnu.find((scan) => scan.pnu === input.canonicalSourcePnu);
-    const basisRootIndex = buildScopeBasisRootIndex(perPnu, [rootIdentity]);
+    // closure는 전체 표제부 root로 닫고, 매칭 축은 선택된 rootIdentity 하나로 좁힌다.
+    // 두 축을 섞지 않는 것이 §9.1 개정의 핵심이다.
+    const closureRootIdentities = [
+        ...new Set([
+            rootIdentity,
+            ...(input.closureRootIdentities ?? []),
+        ]),
+    ].sort();
+    const basisRootIndex = buildScopeBasisRootIndex(
+        perPnu,
+        closureRootIdentities
+    );
     const scopeExpos =
         basisRootIndex === null
             ? { ok: false as const }

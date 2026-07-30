@@ -3984,3 +3984,48 @@ test('EXPOS 행의 root를 basis closure로 해소할 수 없으면 선출하지
         'EXPOS_ROOT_UNRESOLVED'
     );
 });
+
+// ── §9.1/§12.4 개정: closure root 축을 선택 root와 분리 ──────────────────
+
+test('closureRootIdentities를 주면 제외된 root의 기본개요 행이 closure를 막지 않는다', () => {
+    const fx = electionFixture();
+    const result = assembleLdaregApply({
+        unionId: 'u1',
+        scannedPnus: [ELECT_PNU],
+        rootIdentity: ELECT_AGGREGATE_ROOT,
+        closureRootIdentities: [
+            ELECT_GENERAL_ROOT,
+            ELECT_AGGREGATE_ROOT,
+        ],
+        perPnu: fx.perPnu as never,
+        scopeLadfrlAreas: [{ pnu: ELECT_PNU, area: '264' }] as never,
+        scopeLadfrlTotal: '264',
+        canonicalSourcePnu: ELECT_PNU,
+        buildingUnits: [],
+        propertyUnits: [],
+    });
+    // 물건지 후보가 없어 apply item은 0이지만, closure 자체는 열려야 한다.
+    // closure가 막히면 LDAREG_IDENTITY_CONFLICT 하나로 즉시 닫히고 replicationEvidence가 null이다.
+    assert.notEqual(result.replicationEvidence, null);
+});
+
+test('closureRootIdentities가 없으면 제외 root 기본개요 행에 막혀 기존대로 닫힌다', () => {
+    const fx = electionFixture();
+    const result = assembleLdaregApply({
+        unionId: 'u1',
+        scannedPnus: [ELECT_PNU],
+        rootIdentity: ELECT_AGGREGATE_ROOT,
+        perPnu: fx.perPnu as never,
+        scopeLadfrlAreas: [{ pnu: ELECT_PNU, area: '264' }] as never,
+        scopeLadfrlTotal: '264',
+        canonicalSourcePnu: ELECT_PNU,
+        buildingUnits: [],
+        propertyUnits: [],
+    });
+    assert.equal(result.blocking, true);
+    assert.equal(result.replicationEvidence, null);
+    assert.deepEqual(
+        result.issues.map((issue) => issue.code),
+        ['LDAREG_IDENTITY_CONFLICT']
+    );
+});

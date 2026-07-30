@@ -330,8 +330,9 @@ export function matchLdaregUnit(input: MatchInput): MatchDecision {
         }
     }
 
-    // 2) 전유부 root identity == scope root identity
-    // scopeRootIdentity는 전 base title self exactly-one, expos.rootIdentity는
+    // 2) 전유부 root identity == 선택된 대지권 대상 root identity
+    // scopeRootIdentity는 표제부 root가 하나면 그 root, 여럿이면 LDAREG 행 근거로 선출된
+    // 단일 root다(DESIGN §12.4 개정). expos.rootIdentity는 전체 root를 accepted로 삼은
     // title-bound basis closure로 해소된 effective root다. resolver의 up-preferred 축과 섞지 않는다.
     if (nonEmpty(expos.rootIdentity) !== nonEmpty(scopeRootIdentity) || nonEmpty(scopeRootIdentity) === '') {
         return noChange('ROOT_IDENTITY', 'ROOT_MISMATCH', 'LDAREG_IDENTITY_CONFLICT');

@@ -43,6 +43,9 @@ export type ExposRootIdentityResult =
 /**
  * basis child self-PK별 title-bound parent를 만든다.
  *
+ * accepted root는 표제부 root **전체 집합**이다(DESIGN §9.1 개정). 대지권 대상 root 선택은
+ * 상위 계층의 판단이고, closure는 제외될 동까지 포함해 닫아야 전체가 차단되지 않는다.
+ *
  * - title root와 self가 같은 basis row의 별도 up-PK는 상위 집계 lineage일 수 있어
  *   child mapping으로 사용하지 않는다.
  * - child는 valid up-PK가 정확히 한 accepted title root를 가리켜야 한다.
