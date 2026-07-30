@@ -173,6 +173,28 @@ test('inspect: 요청 파라미터의 key/serviceKey는 마스킹된다', async 
     }
 });
 
+test('inspect: 건축물대장 스텝은 land-area-sync 어댑터와 같은 파라미터로 전 행을 요청한다', async () => {
+    // 2026-07-30 실측: 인스펙터 전유부 응답이 numOfRows "1" / totalCount "5" 로
+    // 와서 7행 중 1행만 보였다. 실제로 동작하는 scanBuildingHub 는 platGbCd 와
+    // pageNo 를 함께 보낸다(adapter.ts:365-372, :541). 같은 파라미터를 보낸다.
+    const { GisInspectService } = await serviceModule;
+    const { httpGet, calls } = createStubHttpGet();
+    await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
+
+    for (const endpoint of ['getBrTitleInfo', 'getBrExposInfo']) {
+        const call = calls.find((c) => c.url.includes(endpoint));
+        assert.ok(call, `${endpoint} 호출 없음`);
+        // PNU 1168010100107360024 → 대지구분 '1' → platGbCd '0'
+        assert.equal(call.params.platGbCd, '0', endpoint);
+        assert.equal(call.params.pageNo, 1, endpoint);
+        assert.equal(call.params.numOfRows, 1000, endpoint);
+        assert.equal(call.params.sigunguCd, '11680', endpoint);
+        assert.equal(call.params.bjdongCd, '10100', endpoint);
+        assert.equal(call.params.bun, '0736', endpoint);
+        assert.equal(call.params.ji, '0024', endpoint);
+    }
+});
+
 test('inspect: 특정 API 실패는 해당 스텝만 ERROR, 나머지는 SUCCESS', async () => {
     const { GisInspectService } = await serviceModule;
     const { httpGet } = createStubHttpGet({ failUrls: ['ladfrlList'] });

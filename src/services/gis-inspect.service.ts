@@ -271,20 +271,36 @@ export class GisInspectService {
             const bjdongCd = pnu.substring(5, 10);
             const bun = pnu.substring(11, 15);
             const ji = pnu.substring(15, 19);
+            // 건축물대장 공통 파라미터. land-area-sync 의 scanBuildingHub 와 동일하게
+            // 맞춘다 — platGbCd·pageNo 를 빼면 전유부 응답이 numOfRows "1" 로 와서
+            // 한 행만 돌아온다(2026-07-30 791-2155 실측: totalCount 5, item 1건).
+            const bldRgstParams = {
+                serviceKey: env.DATA_PORTAL_API_KEY,
+                sigunguCd,
+                bjdongCd,
+                platGbCd: pnu.substring(10, 11) === '2' ? '1' : '0',
+                bun,
+                ji,
+                numOfRows: 1000,
+                pageNo: 1,
+                _type: 'json',
+            };
 
             // data.go.kr 3종은 병렬 (레이트리밋 없음)
             const dataPortalPromise = Promise.all([
                 this.callStep('boundary_dataportal', DATA_PORTAL_BOUNDARY_URL, {
                     serviceKey: env.DATA_PORTAL_API_KEY, pnu, format: 'json', numOfRows: 1, pageNo: 1,
                 }),
-                this.callStep('building_title', `${DATA_PORTAL_BLDRGST_BASE}/getBrTitleInfo`, {
-                    serviceKey: env.DATA_PORTAL_API_KEY, sigunguCd, bjdongCd, bun, ji,
-                    numOfRows: 100, _type: 'json',
-                }),
-                this.callStep('building_units', `${DATA_PORTAL_BLDRGST_BASE}/getBrExposInfo`, {
-                    serviceKey: env.DATA_PORTAL_API_KEY, sigunguCd, bjdongCd, bun, ji,
-                    numOfRows: 1000, _type: 'json',
-                }),
+                this.callStep(
+                    'building_title',
+                    `${DATA_PORTAL_BLDRGST_BASE}/getBrTitleInfo`,
+                    { ...bldRgstParams }
+                ),
+                this.callStep(
+                    'building_units',
+                    `${DATA_PORTAL_BLDRGST_BASE}/getBrExposInfo`,
+                    { ...bldRgstParams }
+                ),
             ]);
 
             // VWorld는 순차 (NED 호출 전 interval 준수)
