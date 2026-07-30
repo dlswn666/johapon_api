@@ -331,6 +331,17 @@ function selectedTitleSelfPks(
 /**
  * expectedPks 전체가 bylot 근거를 갖고 그 값이 모두 0인지 (DESIGN §9.1 개정).
  * 제외된 동에도 부속지번이 없어야 필지 singleton으로 승격할 수 있다.
+ *
+ * 방어적 defense-in-depth: 현재 유일한 호출부(`resolveSameRunOfficialDevelopmentFullRefreshComponent`의
+ * singleton tail)에서는 이 함수가 호출되는 시점에 이미 `classifiedSingleton` /
+ * `classificationConflictSingleton` 판정이 `singletonGate.issues`에 `BYLOT_ATTACHED_COUNT_MISMATCH`가
+ * 없음을 강제한 뒤다 — 그 경로는 항상 `attached.state === 'COMPLETE_ZERO'`(distinct attached count
+ * 0 고정)이므로, evidence.count가 0이 아닌 PK가 하나라도 있으면 `resolveParcelScopeCompleteness`가
+ * 이미 그 issue로 REVIEW_REQUIRED를 반환해 호출측이 이 함수에 도달하기 전에 걸러진다. PK 집합
+ * 불일치도 `resolveBylotCounts`가 evidence를 `expectedPks`와 1:1로 만들어내므로 발생하지 않는다.
+ * 즉 이 함수의 reject 분기는 이 경로를 통해서는 현재 도달 불가능하다 — 그렇다고 죽은 코드로 보고
+ * 지우지 말 것. 위 호출부의 내부 판정 로직이 바뀌면(예: classifiedSingleton 조건 완화) 이 함수가
+ * 유일한 방어선이 된다.
  */
 function allBylotCountsZero(
     bylot: BylotResolution,
