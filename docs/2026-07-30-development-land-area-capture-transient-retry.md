@@ -135,10 +135,40 @@ guardian 은 capture 를 `capture_timeout_seconds=3600`
 
 ```
 round 1        ≈ 28분
-round 2, 3     ≈ 2 × (69/278 × 28분) ≈ 14분
+round 2, 3     ≈ 2 × (69/278 × 28분) ≈ 14분   ← 아래 경고 참조
 지연           2 × 1분 = 2분
 합계           ≈ 44분  <  60분 (3600초)
 ```
+
+> ⚠️ **이 계산은 낙관적이다. 실측 전까지 확정으로 다루지 마라.**
+>
+> 위 선형 추정은 재시도 라운드에 평균 anchor 단가(28분 / 278 ≈ 6초)를 그대로
+> 곱했다. 그런데 재시도 라운드의 모집단은 정의상 100% 실패 anchor 이고, 실패
+> anchor 는 어댑터 백오프 때문에 성공 anchor 보다 느리다
+> (`adapter.ts:41,45,51` — `STRICT_SCAN_MAX_ATTEMPTS=3` ×
+> `REQUEST_TIMEOUT_MS=15_000` + backoff 500/1000ms 이므로 timeout 계열 실패는
+> 페이지당 최대 46.5초, anchor 당 스캔은 6종). 같은 절 앞에서 이 감속을 명시해
+> 놓고 가드 적용 후 계산에는 적용하지 않은 것이 이 문서의 오류였다.
+>
+> 손익분기는 재시도 라운드가 각각 15분을 넘는 지점이다. 선형 추정이 7분이므로
+> **실패 anchor 가 평균 대비 2.1배만 느려도 3600초 여유가 사라진다.**
+>
+> 초과 시 손상은 없지만 관측성이 나빠진다. guardian 의
+> `timeout --kill-after=30s` 가 CLI 를 죽이는데 CLI 는 audit.json 과
+> evidence.json 을 마지막에 쓰므로, 진단 artifact 가 아예 남지 않는다. 현재의
+> 실패 실행은 최소한 공개 artifact 를 남긴다.
+>
+> **따라서 write 경로는 실측 전까지 이 동작을 물려받지 않는다.** read-only
+> capture 워크플로는 `timeout-minutes: 90` 이라 여유가 있으므로, 재시도가 실제로
+> 발생한 read-only 실행에서 wall-clock 경과를 3600초와 대조해 실측치를 얻는다.
+> 그 수치를 보기 전에는 write run(`development-land-area-sync-run.yml`)을
+> dispatch 하지 않는다. 이 워크플로는 지금까지 한 번도 실행된 적이 없으므로
+> 운영 규율만으로 지킬 수 있고 코드 변경이 필요하지 않다.
+>
+> 실측이 여유 부족을 보이면 선택지는 둘이다. (a) `RETRY_ELIGIBLE_MAX_RATIO` 를
+> 0.15 로 낮춰 후보를 41건으로 묶는다(실측된 40건 장애는 그대로 커버된다).
+> (b) 각 재시도 라운드 직전에 경과 시간 가드를 넣는다 — 새 `skipped` 열거값이
+> 필요하므로 공개 artifact `@5` 로 올라간다.
 
 guardian 전체 예산 단정(`tests/development-land-area-sync-workflow.test.ts:362`,
 `3600 + 18000 + 720 + 300 + 600 < 420 * 60`)은 capture 상한을 올리지 않으므로 그대로

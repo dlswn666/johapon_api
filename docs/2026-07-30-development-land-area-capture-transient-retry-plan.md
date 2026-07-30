@@ -969,6 +969,24 @@ gh run download <run-id> -D /tmp/capture-verify
 | `readOnlyGuards.durableSyncJobWrites` | 0 |
 | `readOnlyGuards.propertyUnitWriteRpcCalls` | 0 |
 | `productionWrites` | 0 |
+| `retry.rounds` | 0 이상 |
+| `retry.skipped` | `NONE` 또는 `TOO_MANY_FAILURES` |
+
+- [ ] **Step 5-a: wall-clock 경과 실측 (I1 대응)**
+
+설계 문서의 시간 예산 계산이 실패 anchor 의 백오프 감속을 반영하지 않았다. 실측으로 닫는다.
+
+```bash
+gh run view <run-id> --json startedAt,updatedAt,jobs \
+  -q '{started:.startedAt, ended:.updatedAt, jobs:[.jobs[]|{name,startedAt,completedAt}]}'
+```
+
+capture job 의 `startedAt`~`completedAt` 차이를 초로 계산해 기록한다. 판정:
+
+- `retry.rounds >= 1` 이면서 경과가 **3000초 미만**이면 여유가 확인된 것이다. 설계 문서의 경고 블록을 실측치로 갱신하고 write 경로를 열어도 된다.
+- 경과가 3000초 이상이거나 `retry.rounds === 0` 이라 재시도 구간을 측정하지 못했으면 write run 을 dispatch 하지 않는다. 설계 문서가 제시한 두 선택지(비율 0.15, wall-clock 가드) 중 하나를 별도 태스크로 진행한다.
+
+**이 측정 전에는 `development-land-area-sync-run.yml` 을 dispatch 하지 않는다.** 이 워크플로는 지금까지 한 번도 실행된 적이 없으므로 운영 규율만으로 지킬 수 있다.
 
 - [ ] **Step 6: DEV DB 무쓰기 확인**
 
