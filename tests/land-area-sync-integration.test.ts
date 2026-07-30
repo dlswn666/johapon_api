@@ -542,9 +542,13 @@ test('전 구간에서 unit 쓰기 경로는 apply RPC 뿐 — building_unit/pro
 // 기준(지상 층수 ≤4, 연면적 ≤660㎡)으로만 다세대주택 인정을 받는다(§6.2).
 //
 // 엔드포인트별 실측: TITLE 2, ATTACHED 0, EXPOS 10, LDAREG 11(전유 10 + placeholder 1),
-// DB 활성 물건지 10호(전부 anchor PNU, 호 identity 있음). BASIS 실측은 12행이지만, 두 root가
-// 모두 self-root(부속 동이 아님)라 closure 판정(buildScopeBasisRootIndex)은 기본개요 행이
-// 0건이어도 성립한다 — 이 fixture는 그 최소 형태로 basis 를 비워 둔다.
+// DB 활성 물건지 10호(전부 anchor PNU, 호 identity 있음). BASIS 실측은 12행이지만, 나머지
+// 10행(두 root 밑에 달린 자식/집계 lineage 행)은 필드값을 실측하지 않아 값을 지어내지 않고는
+// 재현할 수 없다 — 그래서 이 fixture는 실측으로 값이 자명한 두 행만 낸다: 두 root 자신의
+// 기본개요 self row(mgmBldrgstPk=root PK, mgmUpBldrgstPk=null — root는 정의상 위 lineage가
+// 없으므로 지어낸 값이 아니다). 이 두 행만으로도 closure(buildScopeBasisRootIndex)는 정상
+// 경로로 들어간다(both self → continue 분기) — 12행 전체가 아니라 의도적으로 부분 재현임을
+// 표시해 둔다. BASIS 를 완전히 비워 COMPLETE_ZERO 로 만드는 것과는 실행 경로가 다르다.
 //
 // bylotCnt 검증(Step 2): 개정안 §2·§6.1 어디에도 표제부 bylotCnt 원문 값 자체는 실려 있지
 // 않다(ATTACHED 행 수 0만 실측). Task 5의 allBylotCountsZero 요구대로 두 표제부 행 모두
@@ -586,6 +590,22 @@ function mia7MultiplexTitleRow(): Record<string, unknown> {
     });
 }
 
+/**
+ * BASIS(getBrBasisOulnInfo) self-root 행 2개 — 실측 12행 중 값이 지어낸 것 없이 확정되는
+ * 유일한 부분(§8 상단 코멘트 참고). 두 root 는 정의상 자기 자신을 가리키며 위 lineage 가
+ * 없으므로 mgmUpBldrgstPk=null 은 추정이 아니다. BASIS 를 완전히 비우면 closure 판정이
+ * loop 자체를 건너뛰는 축퇴 경로를 타므로, 실제로는 이 두 행을 소비하는 경로를 탄다.
+ * pnu 는 buildingHubRowsMatchPnu(service.ts LDAREG branch gate) 가 sigunguCd 등 지번
+ * 분해 필드 없이도 row→PNU 귀속을 확인하도록 직접 명시한다 — anchor 자신을 스캔한 결과이므로
+ * ANCHOR 로 고정하는 것은 추정이 아니다.
+ */
+function mia7BasisSelfRows(): Array<Record<string, unknown>> {
+    return [
+        { pnu: ANCHOR, mgmBldrgstPk: MIA7_DETACHED_PK, mgmUpBldrgstPk: null },
+        { pnu: ANCHOR, mgmBldrgstPk: MIA7_MULTIPLEX_PK, mgmUpBldrgstPk: null },
+    ];
+}
+
 // exposRow() 는 mgmUpBldrgstPk 를 받지 않는다. 복수 root 전유부는 self 가 어느 root에
 // 귀속되는지가 선출·매칭의 핵심이므로 raw literal 로 명시한다.
 function mia7MultiplexExposRows(): Array<Record<string, unknown>> {
@@ -617,6 +637,7 @@ function mia7MultiplexLdaregRows(
             buldNm: '광미빌라',
             buldFloorNm: unit.floor,
             buldHoNm: unit.ho,
+            // 실측이 아니라 합성값 — 10세대 균등 지분(26.4×10=264)으로 내부 정합만 맞춘 것.
             ldaQotaRate: '26.4/264',
             clsSeCode: '0',
             clsSeCodeNm: '유효',
@@ -688,7 +709,9 @@ function mia7ElectedConfig(spy: Spy) {
             getBrAtchJibunInfo: () => hubEnv([]), // ATTACHED 0 — 실측과 일치
             ldaregList: () => ldaregEnv([...mia7MultiplexLdaregRows(), mia7PlaceholderLdaregRow()]),
             getBrExposInfo: () => hubEnv(mia7MultiplexExposRows()),
-            getBrBasisOulnInfo: () => hubEnv([]), // 두 root 모두 self-root라 closure는 basis 0건에도 성립
+            getBrBasisOulnInfo: () => hubEnv(mia7BasisSelfRows()), // 실측 12행 중 값이 자명한 두 self-root 행만(mia7BasisSelfRows 참고)
+            // '264' 는 실측이 아니라 합성값 — LDAREG 세대별 지분 26.4/264(10세대 × 26.4=264)와
+            // 내부 정합을 맞추려고 고른 것이지 토지대장에서 직접 읽은 대지면적이 아니다.
             ladfrlList: () => ladfrlEnv([ladfrlRow(ANCHOR, '264')]),
         },
         propertyUnits,
@@ -704,7 +727,9 @@ function terminalState(spy: Spy) {
     const t = spy.terminalCalls[0];
     return {
         snapshot: spy.frozenSnapshots[0]?.scopeSnapshot ?? null,
-        terminal: t ? { scopeState: t.scopeState, issues: spy.terminalIssues[0] } : null,
+        terminal: t
+            ? { status: t.status, scopeState: t.scopeState, issues: spy.terminalIssues[0] }
+            : null,
     };
 }
 
@@ -738,7 +763,7 @@ test('복수 root anchor에서 LDAREG 근거 root가 0개면 기존대로 REVIEW
             ldaregList: () =>
                 ldaregEnv([...mia7MultiplexLdaregRows(mismatchedUnits), mia7PlaceholderLdaregRow()]),
             getBrExposInfo: () => hubEnv(mia7MultiplexExposRows()),
-            getBrBasisOulnInfo: () => hubEnv([]),
+            getBrBasisOulnInfo: () => hubEnv(mia7BasisSelfRows()), // 실측 12행 중 값이 자명한 두 self-root 행만
         },
         spy,
     });
@@ -776,7 +801,7 @@ test('복수 root anchor에서 LDAREG 근거 root가 2개면 기존대로 REVIEW
                     mia7PlaceholderLdaregRow(),
                 ]),
             getBrExposInfo: () => hubEnv([...mia7MultiplexExposRows(), mia7DetachedExposRow('1층', '1')]),
-            getBrBasisOulnInfo: () => hubEnv([]),
+            getBrBasisOulnInfo: () => hubEnv(mia7BasisSelfRows()), // 실측 12행 중 값이 자명한 두 self-root 행만
         },
         spy,
     });
@@ -792,6 +817,10 @@ test('복수 root anchor에서 LDAREG 근거 root가 2개면 기존대로 REVIEW
 
 test('선출용 LDAREG scan이 실패하면 FAILED가 아니라 기존 REVIEW_REQUIRED로 닫는다', async () => {
     const spy = emptySpy();
+    // 주입한 FAILED override 가 실제로 실행 경로에서 소비됐는지를 호출 횟수로 고정한다 —
+    // 그러지 않으면 override 가 배선 누락·다른 PNU 로의 라우팅 등으로 실제로는 한 번도
+    // 불리지 않았는데도 우연히 같은 terminal 이 나와 테스트가 통과할 수 있다.
+    let ldaregCalls = 0;
     await run({
         resolver: linked([ANCHOR]),
         routes: {
@@ -799,12 +828,21 @@ test('선출용 LDAREG scan이 실패하면 FAILED가 아니라 기존 REVIEW_RE
             getBrAtchJibunInfo: () => hubEnv([]),
         },
         scanOverrides: {
-            scanLdareg: async () => MIA7_LDAREG_SCAN_FAILURE,
+            scanLdareg: async () => {
+                ldaregCalls += 1;
+                return MIA7_LDAREG_SCAN_FAILURE;
+            },
         },
         spy,
     });
     const state = terminalState(spy);
 
+    assert.equal(ldaregCalls, 1, '주입한 FAILED scan 이 선출 pre-pass 에서 정확히 1회 소비돼야 한다');
+    // status='COMPLETED' 는 이 테스트 이름이 주장하는 "FAILED 가 아니라"를 job 상태 필드로
+    // 직접 검증한다 — scopeState/issues 는 REVIEW 판정의 *사유*를 고정할 뿐, writeDiscoveryTerminal
+    // 호출 자체가 status:'FAILED' 로 바뀌는 회귀(예: 선출 pre-pass 실패를 곧장 job 실패로
+    // 승격시키는 변경)는 별도로 잡아내지 못한다. status 는 그 필드를 독립적으로 고정한다.
+    assert.equal(state.terminal?.status, 'COMPLETED');
     assert.equal(state.terminal?.scopeState, 'REVIEW_REQUIRED');
     assert.deepEqual(
         state.terminal?.issues.map((issue) => issue.code),
