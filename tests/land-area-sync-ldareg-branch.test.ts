@@ -1225,10 +1225,13 @@ test('791-2188 provider bridge는 1~3자리 positive 지하 suffix의 0-padding�
     );
 });
 
-test('미아7 실측: LDAREG 지/지층 층과 비0N·B0N 호가 EXPOS B0N과 같은 witness로 접힌다', () => {
-    // 2026-07-28 phase0 capture(run 30389054533) 실측.
+test('미아7 실측: LDAREG 지하1층 층·호 표기 변형이 EXPOS B0N과 같은 witness로 접힌다', () => {
     // EXPOS는 지하 호를 flrGbCd=10 / flrNo=1 / hoNm=B0N 한 가지로만 주는데,
-    // LDAREG는 같은 호를 791-2155·2267에서 지/비0N, 791-2282에서 지/B0N으로 준다.
+    // LDAREG는 같은 호를 지번마다 다르게 준다. 2026-07-30 GIS 인스펙터로 원문 확인:
+    //   791-2155 · 2267  →  buldFloorNm '지',    buldHoNm '비01'
+    //   791-2282         →  buldFloorNm '지',    buldHoNm 'B01'
+    //   791-2320         →  buldFloorNm '지1',   buldHoNm '지하01' / '지하02'
+    //   791-2343         →  buldFloorNm '지하1', buldHoNm '비01'
     const expos = providerUnitShapeWitness('EXPOS_UNIT', {
         flrGbCd: '10',
         flrNo: 1,
@@ -1241,8 +1244,15 @@ test('미아7 실측: LDAREG 지/지층 층과 비0N·B0N 호가 EXPOS B0N과 �
         canonicalHo: 'B1',
     });
 
-    for (const buldFloorNm of ['지하', '지', '지층']) {
-        for (const buldHoNm of ['비01', '비1', 'B01', 'B1']) {
+    for (const buldFloorNm of ['지하', '지', '지층', '지1', '지하1']) {
+        for (const buldHoNm of [
+            '비01',
+            '비1',
+            'B01',
+            'B1',
+            '지하01',
+            '지하1',
+        ]) {
             assert.deepEqual(
                 providerUnitShapeWitness('LDAREG_UNIT', {
                     buldFloorNm,
@@ -1270,11 +1280,9 @@ test('LDAREG 지하 witness는 지하1층 exact 표기와 positive suffix만 인
         ['지하2', '비01'],
         ['지2', 'B01'],
         ['B2', 'B01'],
-        // 791-2320·2343의 지하 층 원문이 확인되기 전까지는 정규화가 B1이 되는
-        // 표기들을 인정하지 않는다(정규화 역상이 9가지라 특정 불가).
-        ['지하1', '비01'],
+        // 실측되지 않은 층 표기는 계속 인정하지 않는다. 2026-07-30 인스펙터로
+        // 확인된 것은 '지' / '지1' / '지하1' 세 가지뿐이다.
         ['지하01', 'B01'],
-        ['지1', '비01'],
         ['지01', 'B01'],
         ['B1', 'B01'],
         ['B01', '비01'],
@@ -1285,9 +1293,14 @@ test('LDAREG 지하 witness는 지하1층 exact 표기와 positive suffix만 인
         ['지', '비 01'],
         ['지', '비01층'],
         ['지', '비０１'],
+        ['지', ' 지하01 '],
+        ['지', '지하 01'],
+        ['지', '지하01층'],
         // suffix 0 및 4자리 이상은 거부한다.
         ['지', '비000'],
         ['지', 'B0001'],
+        ['지', '지하000'],
+        ['지', '지하0001'],
         // 지하가 아닌 층 표기는 이 경로로 들어오지 않는다.
         ['1', 'B01'],
         ['지상1', 'B01'],

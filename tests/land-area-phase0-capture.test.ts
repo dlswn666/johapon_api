@@ -1633,11 +1633,14 @@ for (const invalidCase of [
         },
     },
     {
-        name: 'LDAREG floor가 exact 지하가 아님',
+        // 원래 '지하1'을 near-miss로 썼으나, 2026-07-30 GIS 인스펙터에서
+        // 791-2343의 LDAREG 지하 행 원문이 '지하1'임이 확인돼 유효 표기가 됐다.
+        // near-miss 의도(지하1층이 아닌 층은 접지 않는다)는 지하 2층으로 유지한다.
+        name: 'LDAREG floor가 지하1층 표기가 아님',
         mutate: (rows: ReturnType<typeof mia72188ProviderShapeRows>) => {
             rows.ldareg[4] = {
                 ...rows.ldareg[4],
-                buldFloorNm: '지하1',
+                buldFloorNm: '지하2',
             };
         },
     },

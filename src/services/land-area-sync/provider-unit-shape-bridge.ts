@@ -222,14 +222,17 @@ function exposWitness(
  * LDAREG가 지하 1층을 표기하는 실측 원문 집합.
  *
  * EXPOS는 지하 호를 flrGbCd=10 + flrNo=1 한 가지로만 보내지만, LDAREG는 같은
- * 호를 다른 원문으로 보낸다. 2026-07-28 phase0 capture(run 30389054533) 실측에서
- * 791-2155·2267·2282의 지하 행은 정규화 층이 `지`였고, 그 정규화 역상은
- * `지`/`지층` 둘뿐이므로 두 원문만 추가한다.
+ * 호를 지번마다 다른 원문으로 보낸다. 2026-07-30 GIS 인스펙터로 원문을 직접
+ * 확인한 결과는 다음과 같다.
  *
- * 791-2320·2343의 지하 행은 정규화 층이 `B1`이었는데 역상이 `지하1`/`지1`/`B1`
- * 등 9가지라 원문을 특정하지 못했다. 원문 확인 전까지는 넓히지 않는다 —
- * exact witness만 인정한다는 이 모듈의 계약과 phase0 fail-closed 테스트를
- * 추측으로 무르지 않기 위해서다.
+ *   791-2155 · 2267  →  buldFloorNm '지',    buldHoNm '비01'
+ *   791-2282         →  buldFloorNm '지',    buldHoNm 'B01'
+ *   791-2320         →  buldFloorNm '지1',   buldHoNm '지하01' / '지하02'
+ *   791-2343         →  buldFloorNm '지하1', buldHoNm '비01'
+ *
+ * `지층`은 `지`와 함께 정규화 역상에 있어 같이 인정한다. 그 밖에 정규화가 B1로
+ * 접히는 표기(`지하01`/`지01`/`B1`/`B01` 등)는 실측되지 않았으므로 넣지 않는다 —
+ * exact witness만 인정한다는 이 모듈의 계약을 추측으로 무르지 않기 위해서다.
  *
  * 지하 2층 이하 표기는 EXPOS 쪽 witness가 flrNo=1만 인정하므로 넣지 않는다.
  */
@@ -237,6 +240,8 @@ const LDAREG_BASEMENT_FIRST_FLOOR_LABELS: ReadonlySet<string> = new Set([
     '지하',
     '지',
     '지층',
+    '지1',
+    '지하1',
 ]);
 
 function ldaregWitness(
@@ -266,7 +271,7 @@ function ldaregWitness(
     // 791-2188 실측: LDAREG exact floor=지하 + ho=비0N. EXPOS와 동일하게
     // 최대 3자리 positive suffix의 leading zero만 canonicalize한다.
     // 미아7 실측에서 층은 LDAREG_BASEMENT_FIRST_FLOOR_LABELS의 원문으로,
-    // 호는 비0N 외에 B0N으로도 오는 것이 확인돼 두 접두사를 함께 인정한다.
+    // 호는 비0N 외에 B0N·지하0N으로도 오는 것이 확인돼 세 접두사를 함께 인정한다.
     const strictRawFloor = strictAliasScalar(row, [
         'buldFloorNm',
         'flrNoNm',
@@ -277,7 +282,7 @@ function ldaregWitness(
     ]);
     const koreanBasement = strictRawHo === null
         ? null
-        : /^(?:비|B)(\d{1,3})$/u.exec(strictRawHo);
+        : /^(?:비|B|지하)(\d{1,3})$/u.exec(strictRawHo);
     const koreanBasementSuffix =
         koreanBasement === null
             ? null
