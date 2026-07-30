@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
     resolveDevelopmentFullRefreshLdaregPropertyMembershipMode,
     runLandAreaSyncJob,
+    selectLandRightRootIdentity,
     selectSingleLdaregRootIdentity,
     type LandAreaSyncDeps,
 } from '../src/services/land-area-sync/service';
@@ -2550,6 +2551,63 @@ test('LDAREG root selector는 전 base title self가 정확히 하나일 때만 
     );
 });
 
+test('selectLandRightRootIdentity: 단일 root면 선출값과 무관하게 그 root를 쓴다', () => {
+    const oneRoot = [
+        {
+            pnu: ANCHOR,
+            title: {
+                state: 'COMPLETE' as const,
+                rows: [{ mgmBldrgstPk: PK }],
+                totalCount: 1,
+                pagesFetched: 1,
+            },
+            attached: {
+                state: 'COMPLETE_ZERO' as const,
+                rows: [],
+                totalCount: 0 as const,
+                pagesFetched: 1,
+            },
+        },
+    ];
+    assert.equal(selectLandRightRootIdentity(oneRoot as never, null), PK);
+    assert.equal(
+        selectLandRightRootIdentity(oneRoot as never, 'OTHER-PK'),
+        PK
+    );
+});
+
+test('selectLandRightRootIdentity: 복수 root는 선출된 root가 표제부에 있을 때만 채택한다', () => {
+    const twoRoots = [
+        {
+            pnu: ANCHOR,
+            title: {
+                state: 'COMPLETE' as const,
+                rows: [
+                    { mgmBldrgstPk: '1010111086' },
+                    { mgmBldrgstPk: '1010114204' },
+                ],
+                totalCount: 2,
+                pagesFetched: 1,
+            },
+            attached: {
+                state: 'COMPLETE_ZERO' as const,
+                rows: [],
+                totalCount: 0 as const,
+                pagesFetched: 1,
+            },
+        },
+    ];
+    assert.equal(selectLandRightRootIdentity(twoRoots as never, null), null);
+    assert.equal(
+        selectLandRightRootIdentity(twoRoots as never, '1010114204'),
+        '1010114204'
+    );
+    assert.equal(
+        selectLandRightRootIdentity(twoRoots as never, '9999999999'),
+        null
+    );
+});
+
 test('같은 higher up을 공유하는 복수 title self도 REVIEW로 닫고 branch scan/apply를 하지 않는다', async () => {
     const sibling = '1168010100107360025';
     const otherRoot = '9001002003004';
@@ -2609,7 +2667,10 @@ test('같은 higher up을 공유하는 복수 title self도 REVIEW로 닫고 bra
         deps,
     });
     assert.equal(spy.applyCalls, 0);
-    assert.equal(ldaregCalls, 0);
+    // 표제부 self root가 둘이므로 선출 pre-pass(Phase 3.5)가 base PNU마다(ANCHOR, sibling)
+    // LDAREG를 조회한다(§9.1 개정) — 하지만 LDAREG 행 근거가 없어 선출은 INDETERMINATE로
+    // 끝나고, LDAREG branch의 per-PNU scan(runLdaregBranch)에는 도달하지 않는다.
+    assert.equal(ldaregCalls, 2);
     assert.equal(spy.terminalCalls[0].scopeState, 'REVIEW_REQUIRED');
 });
 
