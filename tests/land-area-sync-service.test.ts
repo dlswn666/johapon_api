@@ -2613,6 +2613,7 @@ test('같은 higher up을 공유하는 복수 title self도 REVIEW로 닫고 bra
     const otherRoot = '9001002003004';
     const spy = emptySpy();
     let ldaregCalls = 0;
+    let ladfrlCalls = 0;
     const deps = makeDeps({
         resolver: {
             dbState: 'LINKED',
@@ -2657,6 +2658,10 @@ test('같은 higher up을 공유하는 복수 title self도 REVIEW로 닫고 bra
                 ldaregCalls += 1;
                 return zero<LdaregRow>();
             },
+            scanLadfrl: async () => {
+                ladfrlCalls += 1;
+                return zero<LadfrlRow>();
+            },
         },
         spy,
     });
@@ -2668,9 +2673,11 @@ test('같은 higher up을 공유하는 복수 title self도 REVIEW로 닫고 bra
     });
     assert.equal(spy.applyCalls, 0);
     // 표제부 self root가 둘이므로 선출 pre-pass(Phase 3.5)가 base PNU마다(ANCHOR, sibling)
-    // LDAREG를 조회한다(§9.1 개정) — 하지만 LDAREG 행 근거가 없어 선출은 INDETERMINATE로
-    // 끝나고, LDAREG branch의 per-PNU scan(runLdaregBranch)에는 도달하지 않는다.
+    // LDAREG를 조회한다(§9.1 개정) — ldaregCalls=2는 pre-pass의 근거. 하지만 LDAREG 행 근거가
+    // 없어 선출은 INDETERMINATE로 끝나고, LADFRL은 호출되지 않음 (ladfrlCalls=0) 으로 per-PNU
+    // scan 분기(runLdaregBranch)에 도달하지 않음을 증명한다.
     assert.equal(ldaregCalls, 2);
+    assert.equal(ladfrlCalls, 0);
     assert.equal(spy.terminalCalls[0].scopeState, 'REVIEW_REQUIRED');
 });
 
