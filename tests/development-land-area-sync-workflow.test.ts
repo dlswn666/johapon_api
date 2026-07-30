@@ -242,8 +242,23 @@ test('read-only capture는 raw evidence를 업로드하지 않고 비식별 순�
     );
     assert.match(
         publicArtifactBlock,
-        /land-area-development-evidence-public-artifact@3/
+        /land-area-development-evidence-public-artifact@4/
     );
+    assert.match(publicArtifactBlock, /retry: \{/);
+    assert.match(publicArtifactBlock, /rounds: audit\.retry\.rounds/);
+    assert.match(
+        publicArtifactBlock,
+        /retriedAnchorCount: audit\.retry\.retriedAnchorCount/
+    );
+    assert.match(
+        publicArtifactBlock,
+        /recoveredAnchorCount: audit\.retry\.recoveredAnchorCount/
+    );
+    assert.match(
+        publicArtifactBlock,
+        /skipped: audit\.retry\.skipped/
+    );
+    assert.match(publicArtifactBlock, /attempts: entry\.attempts/);
     assert.match(publicArtifactBlock, /redactedAggregate/);
     assert.match(publicArtifactBlock, /redactedIssueCounts/);
     assert.match(publicArtifactBlock, /redactedFailureDetails/);

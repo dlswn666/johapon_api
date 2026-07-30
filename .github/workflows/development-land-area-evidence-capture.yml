@@ -737,6 +737,7 @@ jobs:
                     issuesTotal: entry.terminalIssuesTotal,
                     issuesTruncated: entry.terminalIssuesTruncated,
                     resolutionSource: entry.scopeResolutionSource,
+                    attempts: entry.attempts,
                   }]
           );
           for (const result of ["NO_DATA", "REVIEW", "FAILED"]) {
@@ -751,7 +752,7 @@ jobs:
           const optionalHex = (value) =>
             typeof value === "string" && hex64.test(value) ? value : null;
           const artifact = {
-            version: "land-area-development-evidence-public-artifact@3",
+            version: "land-area-development-evidence-public-artifact@4",
             databaseTarget: "development",
             manifestLabel,
             manifestDigest: audit.manifestDigest,
@@ -785,6 +786,12 @@ jobs:
               count: row.count,
             })),
             redactedFailureDetails,
+            retry: {
+              rounds: audit.retry.rounds,
+              retriedAnchorCount: audit.retry.retriedAnchorCount,
+              recoveredAnchorCount: audit.retry.recoveredAnchorCount,
+              skipped: audit.retry.skipped,
+            },
             readOnlyGuards: Object.fromEntries(
               guardKeys.map((key) => [key, audit.readOnlyGuards[key]])
             ),
