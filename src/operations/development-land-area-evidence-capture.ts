@@ -907,6 +907,8 @@ export async function captureDevelopmentLandAreaEvidence(input: {
     deps: DevelopmentEvidenceCaptureReadOnlyDeps;
     concurrency?: number;
     onProgress?: (completed: number, total: number) => void;
+    /** 재시도 라운드 사이 지연. 미지정 시 실제 타이머(setTimeout)를 쓴다. 테스트는 즉시 반환 함수를 주입한다. */
+    sleep?: (ms: number) => Promise<void>;
 }): Promise<DevelopmentEvidenceCaptureResult> {
     const concurrency = input.concurrency ?? 2;
     if (
@@ -942,31 +944,76 @@ export async function captureDevelopmentLandAreaEvidence(input: {
     const results = new Array<CaptureOneResult>(
         executionAnchors.length
     );
-    let nextIndex = 0;
-    let completed = 0;
-    const worker = async () => {
-        while (true) {
-            const index = nextIndex;
-            nextIndex += 1;
-            if (index >= executionAnchors.length) return;
-            results[index] = await captureOne({
-                target: input.target,
-                captureRunId: input.captureRunId,
-                anchorPnu: executionAnchors[index],
-                developmentFullRefresh,
-                deps: input.deps,
-                attempt: 1,
-            });
-            completed += 1;
-            input.onProgress?.(completed, executionAnchors.length);
-        }
+    const sleep =
+        input.sleep ??
+        ((ms: number) =>
+            new Promise<void>((resolve) =>
+                setTimeout(resolve, ms)
+            ));
+
+    const runRound = async (
+        indices: readonly number[],
+        attempt: number
+    ): Promise<void> => {
+        let cursor = 0;
+        let completed = 0;
+        const worker = async () => {
+            while (true) {
+                const slot = cursor;
+                cursor += 1;
+                if (slot >= indices.length) return;
+                const index = indices[slot];
+                results[index] = await captureOne({
+                    target: input.target,
+                    captureRunId: input.captureRunId,
+                    anchorPnu: executionAnchors[index],
+                    developmentFullRefresh,
+                    attempt,
+                    deps: input.deps,
+                });
+                completed += 1;
+                input.onProgress?.(completed, indices.length);
+            }
+        };
+        await Promise.all(
+            Array.from(
+                { length: Math.min(concurrency, indices.length) },
+                () => worker()
+            )
+        );
     };
-    await Promise.all(
-        Array.from(
-            { length: Math.min(concurrency, executionAnchors.length) },
-            () => worker()
-        )
+
+    await runRound(
+        executionAnchors.map((_unused, index) => index),
+        1
     );
+
+    let retryRounds = 0;
+    const retriedIndices = new Set<number>();
+    for (
+        let attempt = 2;
+        attempt <= CAPTURE_MAX_ATTEMPTS;
+        attempt += 1
+    ) {
+        const candidates = results
+            .map((result, index) => ({ result, index }))
+            .filter(({ result }) =>
+                isDevelopmentEvidenceCaptureRetryable(result.audit)
+            )
+            .map(({ index }) => index);
+        if (candidates.length === 0) break;
+        await sleep(CAPTURE_RETRY_DELAY_MS);
+        for (const index of candidates) retriedIndices.add(index);
+        retryRounds += 1;
+        await runRound(candidates, attempt);
+    }
+
+    const recoveredAnchorCount = [...retriedIndices].filter(
+        (index) =>
+            !isDevelopmentEvidenceCaptureRetryable(
+                results[index].audit
+            )
+    ).length;
 
     const failureCodes = sortedUnique(
         results
@@ -1208,9 +1255,9 @@ export async function captureDevelopmentLandAreaEvidence(input: {
                 ),
             },
             retry: {
-                rounds: 0,
-                retriedAnchorCount: 0,
-                recoveredAnchorCount: 0,
+                rounds: retryRounds,
+                retriedAnchorCount: retriedIndices.size,
+                recoveredAnchorCount,
                 skipped: 'NONE',
             },
             entries: results.map((result) => result.audit),

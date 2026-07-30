@@ -1467,3 +1467,241 @@ test('capture 재시도 상수는 설계값으로 고정된다', () => {
     assert.equal(CAPTURE_RETRY_DELAY_MS, 60_000);
     assert.equal(RETRY_ELIGIBLE_MAX_RATIO, 0.25);
 });
+
+const RETRY_PNUS = [
+    '1130510100107912166',
+    '1130510100107912167',
+    '1130510100107912168',
+    '1130510100107912169',
+];
+const RETRY_PROPERTY_UNIT_IDS = [
+    '5a1a4cbb-c8ad-45a3-ae40-b90665dc9001',
+    '5a1a4cbb-c8ad-45a3-ae40-b90665dc9002',
+    '5a1a4cbb-c8ad-45a3-ae40-b90665dc9003',
+    '5a1a4cbb-c8ad-45a3-ae40-b90665dc9004',
+];
+
+function retryTarget(): DevelopmentTargetManifest {
+    return {
+        version: DEVELOPMENT_TARGET_MANIFEST_VERSION,
+        databaseTarget: 'development',
+        unionId: UNION_ID,
+        pnus: RETRY_PNUS,
+        targetCount: RETRY_PNUS.length,
+        manifestDigest: computeDevelopmentTargetDigest(
+            UNION_ID,
+            RETRY_PNUS
+        ),
+        expectedPropertyUnitCount: RETRY_PNUS.length,
+        expectedUnionActivePropertyUnitCount: RETRY_PNUS.length,
+        expectedUnionActivePnuCount: RETRY_PNUS.length,
+    };
+}
+
+test('재시도 픽스처는 실패 anchor 없이 완주하고 retry 집계가 비어 있다', async () => {
+    let titleScans = 0;
+    const result = await captureDevelopmentLandAreaEvidence({
+        target: retryTarget(),
+        captureRunId: '30418532695',
+        concurrency: 1,
+        sleep: async () => {},
+        deps: alwaysFailingTitleDeps({
+            onScanTitle: () => {
+                titleScans += 1;
+            },
+            failFor: () => false,
+        }) as never,
+    });
+
+    assert.equal(titleScans, RETRY_PNUS.length);
+    assert.equal(result.audit.retry.rounds, 0);
+    assert.equal(result.audit.retry.retriedAnchorCount, 0);
+    assert.equal(result.audit.retry.skipped, 'NONE');
+    for (const entry of result.audit.entries) {
+        assert.equal(entry.attempts, 1);
+    }
+});
+
+function alwaysFailingTitleDeps(input: {
+    onScanTitle: (anchorPnu: string) => void;
+    failFor?: (anchorPnu: string) => boolean;
+}) {
+    return {
+        now: () => new Date('2026-07-30T00:00:00.000Z'),
+        async readActivePropertyIdentity() {
+            return RETRY_PNUS.map((pnu, index) => ({
+                id: RETRY_PROPERTY_UNIT_IDS[index],
+                pnu,
+            }));
+        },
+        async resolveScope() {
+            return {
+                data: {
+                    dbState: 'NO_EVIDENCE',
+                    rootBuildingIdentities: [],
+                    componentPnus: [PNU],
+                    linkedBasePnus: [],
+                    linkedPnus: [],
+                    linkedEvidenceKeys: [],
+                    pendingEvidenceKeys: [],
+                    blockingEvidence: [],
+                    openUnresolvedEvidenceKeys: [],
+                    componentTruncated: false,
+                    propertyMembership: [
+                        {
+                            propertyUnitId: PROPERTY_UNIT_ID,
+                            pnu: PNU,
+                            buildingUnitId: null,
+                        },
+                    ],
+                    dbScopeHash: 'db-scope-no-evidence',
+                },
+                error: null,
+            };
+        },
+        async readBuildingUnits() {
+            return [];
+        },
+        async readPropertyUnits() {
+            return [];
+        },
+        async readCurrentLandTuples() {
+            return [];
+        },
+        scans: {
+            async scanTitle(anchorPnu: string) {
+                input.onScanTitle(anchorPnu);
+                if (input.failFor?.(anchorPnu) ?? true) {
+                    return {
+                        state: 'FAILED' as const,
+                        issue: {
+                            kind: 'HTTP_ERROR' as const,
+                            endpoint: 'getBrTitleInfo' as const,
+                            message: 'http 500',
+                            httpStatus: 500,
+                        },
+                    };
+                }
+                return {
+                    state: 'COMPLETE_ZERO' as const,
+                    rows: [],
+                    totalCount: 0,
+                    pagesFetched: 1,
+                };
+            },
+            async scanAttached() {
+                return {
+                    state: 'COMPLETE_ZERO' as const,
+                    rows: [],
+                    totalCount: 0,
+                    pagesFetched: 1,
+                };
+            },
+            async scanBasis() {
+                return {
+                    state: 'COMPLETE_ZERO' as const,
+                    rows: [],
+                    totalCount: 0,
+                    pagesFetched: 1,
+                };
+            },
+            async scanExpos() {
+                return {
+                    state: 'COMPLETE_ZERO' as const,
+                    rows: [],
+                    totalCount: 0,
+                    pagesFetched: 1,
+                };
+            },
+            async scanLadfrl() {
+                return {
+                    state: 'COMPLETE_ZERO' as const,
+                    rows: [],
+                    totalCount: 0,
+                    pagesFetched: 1,
+                };
+            },
+            async scanLdareg() {
+                return {
+                    state: 'COMPLETE_ZERO' as const,
+                    rows: [],
+                    totalCount: 0,
+                    pagesFetched: 1,
+                };
+            },
+        },
+    };
+}
+
+test('판정 미도달 anchor는 CAPTURE_MAX_ATTEMPTS까지 재시도하고 시도 수를 기록한다', async () => {
+    let titleScans = 0;
+    let slept = 0;
+    const result = await captureDevelopmentLandAreaEvidence({
+        target: retryTarget(),
+        captureRunId: '30418532695',
+        concurrency: 1,
+        sleep: async (ms) => {
+            slept += ms;
+        },
+        deps: alwaysFailingTitleDeps({
+            onScanTitle: () => {
+                titleScans += 1;
+            },
+            failFor: (pnu) => pnu === RETRY_PNUS[0],
+        }) as never,
+    });
+
+    const failing = result.audit.entries.find(
+        (entry) => entry.anchorPnu === RETRY_PNUS[0]
+    );
+    assert.ok(failing);
+    // round1 4건 + round2 1건 + round3 1건
+    assert.equal(titleScans, RETRY_PNUS.length + 2);
+    assert.equal(failing.attempts, CAPTURE_MAX_ATTEMPTS);
+    assert.equal(failing.terminalScopeState, 'FAILED');
+    assert.equal(result.audit.retry.rounds, CAPTURE_MAX_ATTEMPTS - 1);
+    assert.equal(result.audit.retry.retriedAnchorCount, 1);
+    assert.equal(result.audit.retry.recoveredAnchorCount, 0);
+    assert.equal(result.audit.retry.skipped, 'NONE');
+    assert.equal(
+        slept,
+        CAPTURE_RETRY_DELAY_MS * (CAPTURE_MAX_ATTEMPTS - 1)
+    );
+    assert.equal(result.audit.readOnlyGuards.durableSyncJobWrites, 0);
+    assert.equal(
+        result.audit.readOnlyGuards.propertyUnitWriteRpcCalls,
+        0
+    );
+});
+
+test('첫 라운드에서 실패한 anchor가 다음 라운드에서 판정에 도달하면 회복으로 집계한다', async () => {
+    let titleScans = 0;
+    const seen = new Map<string, number>();
+    const result = await captureDevelopmentLandAreaEvidence({
+        target: retryTarget(),
+        captureRunId: '30418532695',
+        concurrency: 1,
+        sleep: async () => {},
+        deps: alwaysFailingTitleDeps({
+            onScanTitle: (pnu) => {
+                titleScans += 1;
+                seen.set(pnu, (seen.get(pnu) ?? 0) + 1);
+            },
+            // RETRY_PNUS[0] 만 첫 시도에서 실패하고 두 번째 시도부터 성공한다.
+            failFor: (pnu) =>
+                pnu === RETRY_PNUS[0] && (seen.get(pnu) ?? 0) === 1,
+        }) as never,
+    });
+
+    const recovered = result.audit.entries.find(
+        (entry) => entry.anchorPnu === RETRY_PNUS[0]
+    );
+    assert.ok(recovered);
+    // round1 4건 + round2 1건
+    assert.equal(titleScans, RETRY_PNUS.length + 1);
+    assert.equal(recovered.attempts, 2);
+    assert.equal(result.audit.retry.rounds, 1);
+    assert.equal(result.audit.retry.retriedAnchorCount, 1);
+    assert.equal(result.audit.retry.recoveredAnchorCount, 1);
+    assert.notEqual(recovered.terminalScopeState, 'FAILED');
+});
