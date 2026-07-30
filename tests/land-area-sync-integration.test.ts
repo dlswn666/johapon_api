@@ -755,7 +755,7 @@ test('복수 root anchor에서 LDAREG 근거 root가 0개면 기존대로 REVIEW
         floor: '9층',
         ho: `9${String(index).padStart(2, '0')}`,
     }));
-    await run({
+    const { calls } = await run({
         resolver: linked([ANCHOR]),
         routes: {
             getBrTitleInfo: () => hubEnv([mia7DetachedTitleRow(), mia7MultiplexTitleRow()]),
@@ -776,11 +776,16 @@ test('복수 root anchor에서 LDAREG 근거 root가 0개면 기존대로 REVIEW
     );
     assert.equal(spy.applyCalls, 0);
     assert.equal(state.snapshot, null, '선출 실패 경로는 snapshot 을 고정하지 않는다');
+    assert.equal(
+        calls.filter((c) => c.endpoint === 'ldaregList').length,
+        1,
+        '선출 pre-pass 가 실제로 LDAREG 근거를 소비했다'
+    );
 });
 
 test('복수 root anchor에서 LDAREG 근거 root가 2개면 기존대로 REVIEW_REQUIRED다', async () => {
     const spy = emptySpy();
-    await run({
+    const { calls } = await run({
         resolver: linked([ANCHOR]),
         routes: {
             getBrTitleInfo: () => hubEnv([mia7DetachedTitleRow(), mia7MultiplexTitleRow()]),
@@ -813,6 +818,11 @@ test('복수 root anchor에서 LDAREG 근거 root가 2개면 기존대로 REVIEW
         ['BUILDING_CLASSIFICATION_CONFLICT']
     );
     assert.equal(spy.applyCalls, 0);
+    assert.equal(
+        calls.filter((c) => c.endpoint === 'ldaregList').length,
+        1,
+        '선출 pre-pass 가 실제로 LDAREG 근거를 소비했다'
+    );
 });
 
 test('선출용 LDAREG scan이 실패하면 FAILED가 아니라 기존 REVIEW_REQUIRED로 닫는다', async () => {
