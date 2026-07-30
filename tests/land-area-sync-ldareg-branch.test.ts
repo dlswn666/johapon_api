@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
     LDAREG_OFFICIAL_CURRENT_SUPERSET_MODE,
     assembleLdaregApply,
+    electLandRightRootIdentity,
     selectCanonicalExposSourcePnu,
     validateLdaregReplication,
     type LdaregBranchInput,
@@ -3727,4 +3728,259 @@ test('CLOSED(명시 말소)는 retiredReason 을 가진 CLOSED component 로 만
     const c = result.items[0].components[0];
     assert.equal(c.sourceState, 'CLOSED');
     assert.ok(c.retiredReason && c.retiredReason.length > 0);
+});
+
+// ── §9.1/§10.4 개정: LDAREG 행 근거 기반 대지권 대상 root 선출 ──────────
+
+const ELECT_GENERAL_ROOT = '1010111086';
+const ELECT_AGGREGATE_ROOT = '1010114204';
+const ELECT_PNU = '1130510300107912282';
+
+/** 집합 root 10호 + 일반 root 1동. 미아7 791-2282 실측 형상. */
+function electionFixture() {
+    const hos = ['101', '102', '201', '202', '301', '302', '401', '402', '103', '203'];
+    return {
+        titleRows: [
+            { mgmBldrgstPk: ELECT_GENERAL_ROOT, regstrGbCd: '1' },
+            { mgmBldrgstPk: ELECT_AGGREGATE_ROOT, regstrGbCd: '2' },
+        ],
+        perPnu: [
+            {
+                pnu: ELECT_PNU,
+                // 전유 10행 + placeholder 1행 = 실측 11행
+                ldaregRows: [
+                    ...hos.map((ho, index) => ({
+                        pnu: ELECT_PNU,
+                        agbldgSn: '1',
+                        buldNm: '광미빌라',
+                        buldDongNm: '0',
+                        buldFloorNm: String(Math.floor(index / 2) + 1),
+                        buldHoNm: ho,
+                        buldRoomNm: '0',
+                        ldaQotaRate: '27.8/264',
+                        clsSeCode: '1',
+                        clsSeCodeNm: '현재',
+                    })),
+                    {
+                        pnu: ELECT_PNU,
+                        buldDongNm: '0',
+                        buldFloorNm: '0',
+                        buldHoNm: '0',
+                        buldRoomNm: '0',
+                        ldaQotaRate: '',
+                        clsSeCode: '1',
+                        clsSeCodeNm: '현재',
+                    },
+                ],
+                exposRows: hos.map((ho, index) => ({
+                    mgmBldrgstPk: `${ELECT_AGGREGATE_ROOT}${index}`,
+                    mgmUpBldrgstPk: ELECT_AGGREGATE_ROOT,
+                    flrNoNm: String(Math.floor(index / 2) + 1),
+                    hoNm: ho,
+                })),
+                basisRows: [
+                    { mgmBldrgstPk: ELECT_GENERAL_ROOT },
+                    { mgmBldrgstPk: ELECT_AGGREGATE_ROOT },
+                    ...hos.map((_, index) => ({
+                        mgmBldrgstPk: `${ELECT_AGGREGATE_ROOT}${index}`,
+                        mgmUpBldrgstPk: ELECT_AGGREGATE_ROOT,
+                    })),
+                ],
+            },
+        ],
+    };
+}
+
+test('단일 root면 선출을 요구하지 않는다', () => {
+    const fx = electionFixture();
+    const res = electLandRightRootIdentity({
+        titleRootIdentities: [ELECT_AGGREGATE_ROOT],
+        titleRows: fx.titleRows as never,
+        perPnu: fx.perPnu as never,
+    });
+    assert.equal(res.kind, 'NOT_REQUIRED');
+    assert.deepEqual(res.rootIdentities, [ELECT_AGGREGATE_ROOT]);
+});
+
+test('복수 root에서 LDAREG 행 근거를 가진 root가 정확히 하나면 선출한다', () => {
+    const fx = electionFixture();
+    const res = electLandRightRootIdentity({
+        titleRootIdentities: [ELECT_GENERAL_ROOT, ELECT_AGGREGATE_ROOT],
+        titleRows: fx.titleRows as never,
+        perPnu: fx.perPnu as never,
+    });
+    assert.equal(res.kind, 'ELECTED');
+    assert.equal(
+        res.kind === 'ELECTED' && res.selectedRootIdentity,
+        ELECT_AGGREGATE_ROOT
+    );
+    assert.deepEqual(
+        res.kind === 'ELECTED' && res.excludedRootIdentities,
+        [ELECT_GENERAL_ROOT]
+    );
+    // placeholder 1행은 근거로 세지 않는다.
+    assert.equal(res.kind === 'ELECTED' && res.evidenceUnitCount, 10);
+});
+
+test('LDAREG 행이 전혀 매칭되지 않으면 선출하지 않는다', () => {
+    const fx = electionFixture();
+    fx.perPnu[0].ldaregRows = fx.perPnu[0].ldaregRows.map((row) => ({
+        ...row,
+        buldHoNm: '999',
+    }));
+    const res = electLandRightRootIdentity({
+        titleRootIdentities: [ELECT_GENERAL_ROOT, ELECT_AGGREGATE_ROOT],
+        titleRows: fx.titleRows as never,
+        perPnu: fx.perPnu as never,
+    });
+    assert.equal(res.kind, 'INDETERMINATE');
+    assert.equal(
+        res.kind === 'INDETERMINATE' && res.reason,
+        'EVIDENCE_ROOT_NOT_UNIQUE'
+    );
+});
+
+test('두 root 모두 LDAREG 근거를 가지면 선출하지 않는다', () => {
+    const fx = electionFixture();
+    // 일반 root 밑에 전유 호실을 하나 붙이고 그 호실에 대응하는 LDAREG 행을 추가한다.
+    fx.perPnu[0].basisRows.push({
+        mgmBldrgstPk: `${ELECT_GENERAL_ROOT}0`,
+        mgmUpBldrgstPk: ELECT_GENERAL_ROOT,
+    } as never);
+    fx.perPnu[0].exposRows.push({
+        mgmBldrgstPk: `${ELECT_GENERAL_ROOT}0`,
+        mgmUpBldrgstPk: ELECT_GENERAL_ROOT,
+        flrNoNm: '9',
+        hoNm: '901',
+    } as never);
+    fx.perPnu[0].ldaregRows.push({
+        pnu: ELECT_PNU,
+        agbldgSn: '2',
+        buldNm: '별동',
+        buldDongNm: '0',
+        buldFloorNm: '9',
+        buldHoNm: '901',
+        buldRoomNm: '0',
+        ldaQotaRate: '10/264',
+        clsSeCode: '1',
+        clsSeCodeNm: '현재',
+    } as never);
+    const res = electLandRightRootIdentity({
+        titleRootIdentities: [ELECT_GENERAL_ROOT, ELECT_AGGREGATE_ROOT],
+        titleRows: fx.titleRows as never,
+        perPnu: fx.perPnu as never,
+    });
+    assert.equal(res.kind, 'INDETERMINATE');
+    assert.equal(
+        res.kind === 'INDETERMINATE' && res.reason,
+        'EVIDENCE_ROOT_NOT_UNIQUE'
+    );
+});
+
+test('한 LDAREG 행이 서로 다른 root의 호실에 동시 매칭되면 선출하지 않는다', () => {
+    const fx = electionFixture();
+    fx.perPnu[0].basisRows.push({
+        mgmBldrgstPk: `${ELECT_GENERAL_ROOT}0`,
+        mgmUpBldrgstPk: ELECT_GENERAL_ROOT,
+    } as never);
+    // 집합 root 101호와 같은 층·호를 일반 root 밑에도 만든다.
+    fx.perPnu[0].exposRows.push({
+        mgmBldrgstPk: `${ELECT_GENERAL_ROOT}0`,
+        mgmUpBldrgstPk: ELECT_GENERAL_ROOT,
+        flrNoNm: '1',
+        hoNm: '101',
+    } as never);
+    const res = electLandRightRootIdentity({
+        titleRootIdentities: [ELECT_GENERAL_ROOT, ELECT_AGGREGATE_ROOT],
+        titleRows: fx.titleRows as never,
+        perPnu: fx.perPnu as never,
+    });
+    assert.equal(res.kind, 'INDETERMINATE');
+    assert.equal(
+        res.kind === 'INDETERMINATE' && res.reason,
+        'LDAREG_UNIT_ROOT_AMBIGUOUS'
+    );
+});
+
+test('BASIS closure가 전체 root로 닫히지 않으면 선출하지 않는다', () => {
+    const fx = electionFixture();
+    // buildBasisRootIndex는 self가 accepted root 자신인 행은 up-PK를 보지 않고 건너뛴다
+    // (expos-root.ts의 의도된 계약 — root 자기 행의 up-PK는 상위 집계 lineage일 수
+    // 있어 closure 판정에 쓰지 않는다). 그래서 closure 미해소를 실제로 유발하려면
+    // "accepted root가 아닌" 자식 basis 행이 accepted root 밖을 가리켜야 한다.
+    fx.perPnu[0].basisRows.push({
+        mgmBldrgstPk: `${ELECT_AGGREGATE_ROOT}99`,
+        mgmUpBldrgstPk: '9999999999',
+    } as never);
+    const res = electLandRightRootIdentity({
+        titleRootIdentities: [ELECT_GENERAL_ROOT, ELECT_AGGREGATE_ROOT],
+        titleRows: fx.titleRows as never,
+        perPnu: fx.perPnu as never,
+    });
+    assert.equal(res.kind, 'INDETERMINATE');
+    assert.equal(
+        res.kind === 'INDETERMINATE' && res.reason,
+        'BASIS_CLOSURE_UNRESOLVED'
+    );
+});
+
+test('선출된 root가 상위 up-PK를 가진 child면 선출하지 않는다', () => {
+    const fx = electionFixture();
+    fx.titleRows[1] = {
+        mgmBldrgstPk: ELECT_AGGREGATE_ROOT,
+        mgmUpBldrgstPk: '1010119999',
+        regstrGbCd: '2',
+    } as never;
+    const res = electLandRightRootIdentity({
+        titleRootIdentities: [ELECT_GENERAL_ROOT, ELECT_AGGREGATE_ROOT],
+        titleRows: fx.titleRows as never,
+        perPnu: fx.perPnu as never,
+    });
+    assert.equal(res.kind, 'INDETERMINATE');
+    assert.equal(
+        res.kind === 'INDETERMINATE' && res.reason,
+        'SELECTED_ROOT_NOT_TITLE_ROOT'
+    );
+});
+
+test('선출은 행 수·비율값·건물명으로 추정하지 않는다 — 비율/건물명이 달라도 결과가 같다', () => {
+    const fx = electionFixture();
+    fx.perPnu[0].ldaregRows = fx.perPnu[0].ldaregRows.map((row, index) => ({
+        ...row,
+        ldaQotaRate: index % 2 === 0 ? '28.3/264' : '27.8/264',
+        buldNm: `이름${index}`,
+    }));
+    const res = electLandRightRootIdentity({
+        titleRootIdentities: [ELECT_GENERAL_ROOT, ELECT_AGGREGATE_ROOT],
+        titleRows: fx.titleRows as never,
+        perPnu: fx.perPnu as never,
+    });
+    assert.equal(res.kind, 'ELECTED');
+    assert.equal(
+        res.kind === 'ELECTED' && res.selectedRootIdentity,
+        ELECT_AGGREGATE_ROOT
+    );
+});
+
+// 브리프의 8개 테스트는 EXPOS_ROOT_UNRESOLVED 를 다루지 않는다. ELECTION_SCAN_INCOMPLETE를
+// 제외한 모든 INDETERMINATE 사유가 테스트로 도달 가능해야 하므로 별도로 추가한다.
+test('EXPOS 행의 root를 basis closure로 해소할 수 없으면 선출하지 않는다', () => {
+    const fx = electionFixture();
+    // basis 대응이 전혀 없는 self PK를 가진 EXPOS 행을 추가한다. closure 자체는 전체
+    // root로 닫혔지만(다른 basis 행들은 정상), 이 전유부 행만 root 귀속 근거가 없다.
+    fx.perPnu[0].exposRows.push({
+        mgmBldrgstPk: `${ELECT_AGGREGATE_ROOT}88`,
+        flrNoNm: '5',
+        hoNm: '501',
+    } as never);
+    const res = electLandRightRootIdentity({
+        titleRootIdentities: [ELECT_GENERAL_ROOT, ELECT_AGGREGATE_ROOT],
+        titleRows: fx.titleRows as never,
+        perPnu: fx.perPnu as never,
+    });
+    assert.equal(res.kind, 'INDETERMINATE');
+    assert.equal(
+        res.kind === 'INDETERMINATE' && res.reason,
+        'EXPOS_ROOT_UNRESOLVED'
+    );
 });
