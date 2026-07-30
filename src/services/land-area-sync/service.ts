@@ -35,9 +35,11 @@ import {
 import { buildScopeEvidence, buildScopeSnapshot, capIssues, sanitizeIssue, emptyCounts } from './preview';
 import {
     assembleLdaregApply,
+    electLandRightRootIdentity,
     LDAREG_OFFICIAL_CURRENT_SUPERSET_MODE,
     resolveLdaregPropertyMembershipLayout,
     selectCanonicalExposSourcePnu,
+    type LandRightRootElection,
     type LdaregPropertyMembershipMode,
     type LdaregPnuScan,
 } from './ldareg-branch';
@@ -221,6 +223,20 @@ export function resolveDevelopmentFullRefreshLdaregPropertyMembershipMode(
     );
 }
 
+/**
+ * 복수 root 선출 전용 same-run scan 묶음.
+ *
+ * gate 단계의 bylot basis scan과는 목적이 다르므로 공유하지 않는다. 반대로 LDAREG branch의
+ * root closure basis와는 목적이 같으므로 그쪽에서 재사용한다 — 같은 실행에서 같은 endpoint를
+ * 두 번 때리면 응답이 갈라져 결정론이 깨진다.
+ */
+interface LandRightRootElectionScan {
+    pnu: string;
+    ldareg: StrictScan<LdaregRow>;
+    expos: StrictScan<BrExposRow>;
+    basis: StrictScan<BrBasisOulnRow>;
+}
+
 function aborted(signal?: AbortSignal): boolean {
     return signal?.aborted === true;
 }
@@ -253,12 +269,33 @@ function deriveLdaregTitleSelfRootPks(baseScans: BasePnuScan[]): string[] {
     return [...roots].sort();
 }
 
-/** LDAREG branch가 허용하는 전 base title self root exactly-one gate. */
+/**
+ * LDAREG branch가 쓰는 대지권 대상 root를 고른다 (DESIGN §10.4 개정).
+ *
+ * 표제부 root가 하나면 그 root다. 여럿이면 상위 계층이 LDAREG 행 근거로 선출한 root가
+ * 실제 표제부 self root 집합 안에 있을 때만 채택한다. 그 외에는 null(REVIEW)이다.
+ */
+export function selectLandRightRootIdentity(
+    baseScans: BasePnuScan[],
+    landRightRootIdentity: string | null
+): string | null {
+    const roots = deriveLdaregTitleSelfRootPks(baseScans);
+    if (roots.length === 1) return roots[0];
+    if (
+        roots.length > 1 &&
+        landRightRootIdentity !== null &&
+        roots.includes(landRightRootIdentity)
+    ) {
+        return landRightRootIdentity;
+    }
+    return null;
+}
+
+/** 하위 호환: 선출 없이 단일 root만 허용하는 기존 gate. */
 export function selectSingleLdaregRootIdentity(
     baseScans: BasePnuScan[]
 ): string | null {
-    const roots = deriveLdaregTitleSelfRootPks(baseScans);
-    return roots.length === 1 ? roots[0] : null;
+    return selectLandRightRootIdentity(baseScans, null);
 }
 
 /** resolver 입력 전용: title scan 묶음에서 up-PK 우선 root를 정렬·dedup 수집한다. */
@@ -363,6 +400,56 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         if (entry) entry.basis = basis;
     }
 
+    // ── Phase 3.5: 표제부 root가 여럿일 때만 LDAREG 근거 root 선출 (DESIGN §9.1 개정) ──
+    // base PNU 집합은 Phase 3가 이미 title/attached를 조회한 그 집합이다. 새 PNU를 건드리지
+    // 않으므로 canary scope 계약이 그대로 유지된다. 선출 실패는 새 FAILED terminal을 만들지
+    // 않고 기존 복수 root REVIEW 경로로 닫는다.
+    const titleSelfRootPks = deriveLdaregTitleSelfRootPks(baseScans);
+    const landRightElectionScans: LandRightRootElectionScan[] = [];
+    let landRightRootElection: LandRightRootElection = {
+        kind: 'NOT_REQUIRED',
+        rootIdentities: titleSelfRootPks,
+    };
+    if (titleSelfRootPks.length > 1) {
+        for (const pnu of basePnus) {
+            const ldareg = await deps.scans.scanLdareg(pnu, signal);
+            if (aborted(signal)) return;
+            const expos = await deps.scans.scanExpos(pnu, signal);
+            if (aborted(signal)) return;
+            const basis = await deps.scans.scanBasis(pnu, signal);
+            if (aborted(signal)) return;
+            landRightElectionScans.push({ pnu, ldareg, expos, basis });
+        }
+        const electionScansUsable = landRightElectionScans.every(
+            (scan) =>
+                requiredScanState(scan.ldareg) === 'OK' &&
+                requiredScanState(scan.expos) === 'OK' &&
+                requiredScanState(scan.basis) === 'OK'
+        );
+        landRightRootElection = electionScansUsable
+            ? electLandRightRootIdentity({
+                  titleRootIdentities: titleSelfRootPks,
+                  titleRows: baseScans.flatMap((scan) =>
+                      rows(scan.title)
+                  ),
+                  perPnu: landRightElectionScans.map((scan) => ({
+                      pnu: scan.pnu,
+                      ldaregRows: rows(scan.ldareg),
+                      exposRows: rows(scan.expos),
+                      basisRows: rows(scan.basis),
+                  })),
+              })
+            : {
+                  kind: 'INDETERMINATE',
+                  reason: 'ELECTION_SCAN_INCOMPLETE',
+                  rootIdentities: titleSelfRootPks,
+              };
+    }
+    const landRightRootIdentity =
+        landRightRootElection.kind === 'ELECTED'
+            ? landRightRootElection.selectedRootIdentity
+            : null;
+
     // 과거 791-3568을 고정 no-data로 간주했던 예외는 live LDAREG 행으로 반증됐다.
     // 같은 실행의 일반 공식 분기에서 다시 판정하며, 고정 PNU 기반 no-op은 실행하지 않는다.
 
@@ -395,6 +482,7 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         dbScope: effectiveDbScope,
         baseScans,
         policy,
+        landRightRootIdentity,
     });
 
     // relation이 없는 공식 attached component는 READ_ONLY_CAPTURE, 또는 repo-pinned
@@ -411,12 +499,14 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
                   dbScope,
                   baseScans,
                   policy,
+                  landRightRootIdentity,
               })
             : resolveSameRunOfficialReadOnlyComponent({
                   anchorPnu,
                   dbScope,
                   baseScans,
                   policy,
+                  landRightRootIdentity,
               });
         if (component) {
             deps.assertCanaryScopeAllowed(
@@ -549,6 +639,7 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
                 dbScope: effectiveDbScope,
                 baseScans,
                 policy,
+                landRightRootIdentity,
             });
             if (gate.state === 'LINKED_SCOPE_RESOLVED') {
                 if (developmentFullRefresh) {
@@ -706,6 +797,7 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
                             dbScope,
                             baseScans,
                             policy,
+                            landRightRootIdentity,
                             parcelSingletonBasis:
                                 resolvedParcelSingletonBasis,
                         }
@@ -765,6 +857,7 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
                         dbScope: effectiveDbScope,
                         baseScans,
                         policy,
+                        landRightRootIdentity,
                     });
                     developmentFullRefreshParcelResolution =
                         parcelResolution;
@@ -854,6 +947,9 @@ export async function runLandAreaSyncJob(args: RunLandAreaSyncArgs): Promise<voi
         // resolver 호출 입력(anchor title 계열 root) — snapshot.resolverRootPks 로 고정한다(C1 계약).
         resolverRootPks: rootPks,
         baseScans,
+        landRightRootIdentity,
+        landRightClosureRootIdentities: titleSelfRootPks,
+        landRightElectionScans,
         parcelSingletonBasis,
         preloadedPropertyUnits,
         readOnlyScopeResolution,
@@ -894,6 +990,12 @@ interface BranchContext {
     /** resolver 호출에 실제 쓴 root 식별자(anchor title 계열, 정렬·dedup). snapshot 고정 대상(C1). */
     resolverRootPks: string[];
     baseScans: BasePnuScan[];
+    /** LDAREG 행 근거로 선출된 대지권 대상 root. 단일 root거나 선출 실패면 null. */
+    landRightRootIdentity: string | null;
+    /** BASIS/EXPOS closure accepted root 전체(표제부 self 축, 정렬·dedup). */
+    landRightClosureRootIdentities: string[];
+    /** 선출 pre-pass가 이미 조회한 same-run scan. 같은 PNU 재조회를 막는다. */
+    landRightElectionScans: LandRightRootElectionScan[];
     /** 분류 불확정이어도 unit identity가 전혀 없는 DB parcel singleton임을 입증한 좁은 경로. */
     parcelSingletonBasis:
         | 'CLASSIFICATION_CONFLICT_DB_PARCEL_SINGLETON'
@@ -1302,7 +1404,10 @@ async function runLadfrlBranch(ctx: BranchContext): Promise<void> {
 async function runLdaregBranch(ctx: BranchContext): Promise<void> {
     const { deps, jobId, unionId, signal } = ctx;
     const scannedPnus = [...new Set(ctx.scannedPnus)].sort();
-    const rootIdentity = selectSingleLdaregRootIdentity(ctx.baseScans);
+    const rootIdentity = selectLandRightRootIdentity(
+        ctx.baseScans,
+        ctx.landRightRootIdentity
+    );
     if (rootIdentity === null) {
         await finalizeDiscoveryTerminal(deps, jobId, unionId, {
             status: 'COMPLETED',
@@ -1313,7 +1418,13 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
         });
         return;
     }
-    const acceptedRootIdentities = [rootIdentity];
+    // closure 축은 표제부 root 전체다. 매칭 축(rootIdentity)과 섞지 않는다 (DESIGN §9.1 개정).
+    const closureRootIdentities = [
+        ...new Set([
+            rootIdentity,
+            ...ctx.landRightClosureRootIdentities,
+        ]),
+    ].sort();
 
     // 대상 PNU별 필수 scan: ldareg + ladfrl + expos + LDAREG 전용 basis.
     // gate 단계의 bylot basis scan과 공유/변형하지 않고 same-run root closure 근거로만 쓴다.
@@ -1326,14 +1437,21 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
         counts.basisRows += ldaregBasisRows;
         return counts;
     };
+    const electionScanByPnu = new Map(
+        ctx.landRightElectionScans.map((scan) => [scan.pnu, scan])
+    );
     for (const pnu of scannedPnus) {
-        const ldareg = await deps.scans.scanLdareg(pnu, signal);
+        const reused = electionScanByPnu.get(pnu);
+        const ldareg =
+            reused?.ldareg ?? (await deps.scans.scanLdareg(pnu, signal));
         if (aborted(signal)) return;
         const ladfrl = await deps.scans.scanLadfrl(pnu, signal);
         if (aborted(signal)) return;
-        const expos = await deps.scans.scanExpos(pnu, signal);
+        const expos =
+            reused?.expos ?? (await deps.scans.scanExpos(pnu, signal));
         if (aborted(signal)) return;
-        const basis = await deps.scans.scanBasis(pnu, signal);
+        const basis =
+            reused?.basis ?? (await deps.scans.scanBasis(pnu, signal));
         if (aborted(signal)) return;
         ldaregBasisRows += rows(basis).length;
 
@@ -1428,7 +1546,7 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
     const canonicalSourcePnu = selectCanonicalExposSourcePnu(
         canonicalBasePnus,
         perPnu,
-        acceptedRootIdentities,
+        closureRootIdentities,
         {
             allowComponentWideAggregateForEmptyBase:
                 ctx.developmentFullRefresh !== null &&
@@ -1455,6 +1573,7 @@ async function runLdaregBranch(ctx: BranchContext): Promise<void> {
         unionId,
         scannedPnus,
         rootIdentity,
+        closureRootIdentities,
         perPnu,
         scopeLadfrlAreas: scopeLadfrl.areas,
         scopeLadfrlTotal: scopeLadfrl.totalArea,

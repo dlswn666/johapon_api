@@ -16,6 +16,7 @@ import type {
     LdaregRow,
     BrExposRow,
     BrBasisOulnRow,
+    BrTitleRow,
     LandAreaSyncIssueCode,
 } from '../../types/land-area-sync.types';
 import { createHash } from 'node:crypto';
@@ -50,6 +51,7 @@ import {
     providerUnitShapeWitness,
     providerUnitShapeWitnessKey,
 } from './provider-unit-shape-bridge';
+import { normalizeRegistryManagementPk } from './registry-pk';
 
 /** 한 대상 PNU 의 LDAREG·전유부 raw scan 묶음. */
 export interface LdaregPnuScan {
@@ -80,8 +82,17 @@ export interface LdaregBranchInput {
     unionId: string;
     /** scope 내 정렬 대상 PNU 전체(각 property 의 expected coverage 이자 apply scanned scope). */
     scannedPnus: string[];
-    /** 단일 root 관리번호(전유부 root identity 비교 기준). */
+    /**
+     * 선택된 대지권 대상 root 관리번호. 전유부 root identity 비교(매칭 축)의 유일한 기준이다
+     * (DESIGN §10.4·§12.4 개정). 표제부 root가 하나면 그 root와 같다.
+     */
     rootIdentity: string;
+    /**
+     * BASIS/EXPOS closure accepted root 집합 (DESIGN §9.1 개정). 표제부 root **전체**를 넣는다.
+     * 제외된 동의 기본개요 행이 closure 밖으로 떨어져 전체가 차단되는 것을 막는다.
+     * 생략하면 `[rootIdentity]`로 취급해 기존 단일 root 동작을 그대로 유지한다.
+     */
+    closureRootIdentities?: string[];
     perPnu: LdaregPnuScan[];
     /** 정렬된 distinct scope PNU별 same-run LADFRL 양수면적. */
     scopeLadfrlAreas: ScopeLadfrlArea[];
@@ -562,6 +573,155 @@ function collectScopeExposUnits(
         rootEvidence: rootEvidence.sort((a, b) =>
             JSON.stringify(a).localeCompare(JSON.stringify(b))
         ),
+    };
+}
+
+export type LandRightRootElectionReason =
+    /** 선출용 same-run scan이 COMPLETE/COMPLETE_ZERO가 아니었다(호출측이 판정). */
+    | 'ELECTION_SCAN_INCOMPLETE'
+    | 'BASIS_CLOSURE_UNRESOLVED'
+    | 'EXPOS_ROOT_UNRESOLVED'
+    | 'LDAREG_UNIT_ROOT_AMBIGUOUS'
+    | 'EVIDENCE_ROOT_NOT_UNIQUE'
+    | 'SELECTED_ROOT_NOT_TITLE_ROOT';
+
+export type LandRightRootElection =
+    | { kind: 'NOT_REQUIRED'; rootIdentities: string[] }
+    | {
+          kind: 'ELECTED';
+          selectedRootIdentity: string;
+          excludedRootIdentities: string[];
+          rootIdentities: string[];
+          /** 근거로 인정된 LDAREG 행 수(placeholder 제외). 진단용. */
+          evidenceUnitCount: number;
+      }
+    | {
+          kind: 'INDETERMINATE';
+          reason: LandRightRootElectionReason;
+          rootIdentities: string[];
+      };
+
+/**
+ * 표제부 root가 여럿일 때 대지권등록부 행 근거를 가진 root를 선출한다 (DESIGN §9.1·§10.4 개정).
+ *
+ * 대지권은 집합건물 전유부에 딸린 권리다. 일반건축물 소유자는 토지를 직접 소유하므로
+ * 대지권등록부에 지분 행을 갖지 않는다. 그래서 "LDAREG 행이 EXPOS 전유부와 exact 대응하는
+ * root"가 대지권 대상이다.
+ *
+ * 근거 판정은 **같은 실행의 LDAREG 응답과 EXPOS 전유부의 root 귀속으로만** 한다.
+ * 행 수·비율값·건물명 유사도로 추정하지 않는다.
+ *
+ * BASIS/EXPOS closure는 **전체 root 집합**을 accepted root로 삼는다. 제외될 동의 기본개요
+ * 행이 closure 밖으로 떨어져 전체가 차단되는 것을 막기 위해서다.
+ *
+ * 어떤 이유로든 확정되지 않으면 `INDETERMINATE`다. 호출측은 이 경우 기존 복수 root
+ * REVIEW 경로를 그대로 유지해야 한다 — 새 FAILED terminal을 만들지 않는다.
+ */
+export function electLandRightRootIdentity(input: {
+    titleRootIdentities: readonly string[];
+    titleRows: readonly BrTitleRow[];
+    perPnu: readonly LdaregPnuScan[];
+}): LandRightRootElection {
+    const rootIdentities = [
+        ...new Set(
+            input.titleRootIdentities
+                .map((value) => normalizeRegistryManagementPk(value))
+                .filter((value): value is string => value !== null)
+        ),
+    ].sort();
+    if (rootIdentities.length <= 1) {
+        return { kind: 'NOT_REQUIRED', rootIdentities };
+    }
+    const indeterminate = (
+        reason: LandRightRootElectionReason
+    ): LandRightRootElection => ({
+        kind: 'INDETERMINATE',
+        reason,
+        rootIdentities,
+    });
+
+    // 1) closure는 전체 root 집합으로 닫는다.
+    const basisRootIndex = buildScopeBasisRootIndex(
+        [...input.perPnu],
+        rootIdentities
+    );
+    if (basisRootIndex === null) {
+        return indeterminate('BASIS_CLOSURE_UNRESOLVED');
+    }
+
+    // 2) EXPOS 호실 identity → 그 호실이 귀속된 root 집합.
+    const rootsByUnitKey = new Map<string, Set<string>>();
+    for (const scan of input.perPnu) {
+        for (const row of scan.exposRows) {
+            const candidate = toExposCandidate(row, basisRootIndex);
+            if (
+                !candidate ||
+                !candidate.selfIdentity ||
+                !candidate.rootIdentitySource
+            ) {
+                return indeterminate('EXPOS_ROOT_UNRESOLVED');
+            }
+            const key = dongFloorHoKey(candidate);
+            const roots = rootsByUnitKey.get(key) ?? new Set<string>();
+            roots.add(candidate.rootIdentity);
+            rootsByUnitKey.set(key, roots);
+        }
+    }
+
+    // 3) LDAREG 행마다 exact 동·층·호로 root 근거를 모은다.
+    const evidenceRoots = new Set<string>();
+    let evidenceUnitCount = 0;
+    for (const scan of input.perPnu) {
+        for (const row of scan.ldaregRows) {
+            if (isObservedNonApplicablePlaceholder(row)) continue;
+            const raw = row as Record<string, unknown>;
+            const key = dongFloorHoKey({
+                dong: normalizeLdaregDong(raw.buldDongNm),
+                floor:
+                    normalizeFloorLabel(str(raw.buldFloorNm)) || null,
+                ho: str(raw.buldHoNm) || null,
+            });
+            const matchedRoots = rootsByUnitKey.get(key);
+            // 대응 호실이 없으면 근거를 만들지 않는다. 추정하지 않고 그냥 넘긴다.
+            if (matchedRoots === undefined) continue;
+            if (matchedRoots.size !== 1) {
+                return indeterminate('LDAREG_UNIT_ROOT_AMBIGUOUS');
+            }
+            evidenceRoots.add([...matchedRoots][0]);
+            evidenceUnitCount += 1;
+        }
+    }
+    if (evidenceRoots.size !== 1) {
+        return indeterminate('EVIDENCE_ROOT_NOT_UNIQUE');
+    }
+    const selectedRootIdentity = [...evidenceRoots][0];
+
+    // 4) 선출된 root가 실제 표제부 root인지 확인한다(child 선택 금지).
+    const selectedTitleRows = input.titleRows.filter(
+        (row) =>
+            normalizeRegistryManagementPk(row.mgmBldrgstPk) ===
+            selectedRootIdentity
+    );
+    if (
+        selectedTitleRows.length === 0 ||
+        selectedTitleRows.some((row) => {
+            const up = normalizeRegistryManagementPk(
+                row.mgmUpBldrgstPk
+            );
+            return up !== null && up !== selectedRootIdentity;
+        })
+    ) {
+        return indeterminate('SELECTED_ROOT_NOT_TITLE_ROOT');
+    }
+
+    return {
+        kind: 'ELECTED',
+        selectedRootIdentity,
+        excludedRootIdentities: rootIdentities.filter(
+            (root) => root !== selectedRootIdentity
+        ),
+        rootIdentities,
+        evidenceUnitCount,
     };
 }
 
@@ -1248,7 +1408,18 @@ export function assembleLdaregApply(input: LdaregBranchInput): LdaregBranchResul
         input.canonicalSourcePnu
     );
     const canonicalScan = perPnu.find((scan) => scan.pnu === input.canonicalSourcePnu);
-    const basisRootIndex = buildScopeBasisRootIndex(perPnu, [rootIdentity]);
+    // closure는 전체 표제부 root로 닫고, 매칭 축은 선택된 rootIdentity 하나로 좁힌다.
+    // 두 축을 섞지 않는 것이 §9.1 개정의 핵심이다.
+    const closureRootIdentities = [
+        ...new Set([
+            rootIdentity,
+            ...(input.closureRootIdentities ?? []),
+        ]),
+    ].sort();
+    const basisRootIndex = buildScopeBasisRootIndex(
+        perPnu,
+        closureRootIdentities
+    );
     const scopeExpos =
         basisRootIndex === null
             ? { ok: false as const }

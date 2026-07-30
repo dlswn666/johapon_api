@@ -12,6 +12,8 @@
  *    요청시각·secret·raw body 제외.
  *  - scopeHash: strategy + 정렬 candidate property + membership + land tuple + 제안면적
  *    + dbScopeHash + externalScopeDigest의 versioned SHA-256.
+ *  - 표제부 root가 여럿이면 선출된 대지권 대상 root의 표제부 행만 분류·단일성 판정에 쓴다.
+ *    bylot·attached·closure 축은 전체 root를 유지한다 (DESIGN §9.1).
  */
 
 import { createHash } from 'node:crypto';
@@ -172,6 +174,14 @@ export interface ParcelScopeInput {
     dbScope: DbScopeResolution;
     baseScans: BasePnuScan[];
     policy: BylotSourcePolicy;
+    /**
+     * 표제부 root가 여럿일 때 LDAREG 행 근거로 선출된 대지권 대상 root (DESIGN §9.1).
+     *
+     * null/미지정이면 기존 단일 root 계약 그대로다. 설정하면 **분류 축과 단일성 판정 축만**
+     * 이 root의 표제부 행으로 좁힌다. bylot·attached·BASIS/EXPOS closure 축은 전체 root를
+     * 그대로 쓴다 — 제외된 동의 부속지번·기본개요가 판정 밖으로 떨어지면 안 된다.
+     */
+    landRightRootIdentity?: string | null;
 }
 
 export interface ParcelScopeResult {
@@ -185,6 +195,13 @@ export interface ParcelScopeResult {
     scannedPnus: string[];
     dbScopeHash: string;
     externalScopeDigest: string;
+    /**
+     * 실제로 적용된 대지권 대상 root. partition이 성립하지 않으면 null이다.
+     * digest에 참여하지 않는 진단용 값이다.
+     */
+    landRightRootIdentity: string | null;
+    /** `대지권 무관 동`으로 제외한 root(정렬). partition 미성립이면 빈 배열. */
+    excludedLandRightRootIdentities: string[];
 }
 
 /**
@@ -238,6 +255,121 @@ function hasInvalidRequiredPk(rows: Array<{ mgmBldrgstPk?: unknown }>): boolean 
 
 function hasInvalidOptionalUpPk(rows: Array<{ mgmUpBldrgstPk?: unknown }>): boolean {
     return rows.some((row) => !isOptionalRegistryManagementPkValid(row.mgmUpBldrgstPk));
+}
+
+interface LandRightRootPartition {
+    selectedRootIdentity: string;
+    /** 선택 root에 귀속된 표제부 행만. */
+    selectedTitleRows: BrTitleRow[];
+    /** 대지권 대상에서 제외한 root(정렬). */
+    excludedRootIdentities: string[];
+}
+
+/**
+ * 표제부 행을 선택된 대지권 대상 root 기준으로 나눈다 (DESIGN §9.1 개정).
+ *
+ * partition 축은 LDAREG root 축과 같은 exact `mgmBldrgstPk` self다. resolver의
+ * up-preferred 축과 섞지 않는다.
+ *
+ * null을 반환하는 경우(= partition 미성립, 기존 계약 그대로 진행):
+ *  - 선택 root가 없거나 정규화되지 않는다
+ *  - 표제부에 invalid PK 행이 있다
+ *  - 선택 root 귀속 행이 0건이다
+ *  - 선택 root 귀속 행에 자기 자신이 아닌 상위 up-PK가 있다(= 실제 root가 아니다)
+ *  - 제외할 다른 root가 없다(= 단일 root라 partition이 무의미하다)
+ */
+function partitionTitleRowsByLandRightRoot(
+    titleRows: BrTitleRow[],
+    landRightRootIdentity: string | null | undefined
+): LandRightRootPartition | null {
+    const selected = normalizeRegistryManagementPk(
+        landRightRootIdentity ?? ''
+    );
+    if (selected === null) return null;
+    const selectedTitleRows: BrTitleRow[] = [];
+    const excluded = new Set<string>();
+    for (const row of titleRows) {
+        const self = normalizeRegistryManagementPk(row.mgmBldrgstPk);
+        if (self === null) return null;
+        if (self !== selected) {
+            excluded.add(self);
+            continue;
+        }
+        const up = normalizeRegistryManagementPk(row.mgmUpBldrgstPk);
+        if (up !== null && up !== selected) return null;
+        selectedTitleRows.push(row);
+    }
+    if (selectedTitleRows.length === 0 || excluded.size === 0) return null;
+    return {
+        selectedRootIdentity: selected,
+        selectedTitleRows,
+        excludedRootIdentities: [...excluded].sort(),
+    };
+}
+
+/**
+ * 단일성 판정용 표제부 self PK 집합. 선택 root가 있으면 그 파티션만 본다 (DESIGN §9.1 개정).
+ * invalid PK가 하나라도 있으면 null을 반환해 호출측이 승격을 포기하게 한다.
+ *
+ * 방어적 defense-in-depth: 현재 두 호출부(`resolveStrictSameRunOfficialAttachedComponent`의
+ * normalGate, `resolveSameRunOfficialDevelopmentFullRefreshComponent` singleton tail의
+ * singletonGate) 모두 이 함수를 호출하기 전에 같은 title 행 집합으로
+ * `resolveParcelScopeCompleteness`를 이미 돌려 놓은 뒤다. 그 내부의
+ * `hasInvalidRequiredPk(titleRows)`가 이 함수와 동일한 정규화 함수
+ * (`normalizeRegistryManagementPk`)로 같은 필드(`row.mgmBldrgstPk`)를 검사하므로, invalid PK가
+ * 있으면 그 gate가 이미 `scanFailure ??= 'PROVIDER_PROTOCOL_ERROR'`로 FAILED를 반환한다.
+ * attached 경로는 `normalGate.state !== 'REVIEW_REQUIRED'` 조건에서, singleton 경로는
+ * classifiedSingleton/classificationConflictSingleton 두 판정(둘 다 FAILED가 아닌 상태를
+ * 요구)에서 각각 이 함수 호출 자체에 도달하기 전에 걸러진다. 즉 이 함수의 `self === null`
+ * reject 분기는 두 호출부를 통해서는 현재 도달 불가능하다 — 그렇다고 죽은 코드로 보고 지우지
+ * 말 것. 두 호출부의 gate 호출 순서나 게이팅 조건이 바뀌면 이 함수가 유일한 방어선이 된다.
+ */
+function selectedTitleSelfPks(
+    titleRows: readonly BrTitleRow[],
+    landRightRootIdentity: string | null | undefined
+): string[] | null {
+    const selected = normalizeRegistryManagementPk(
+        landRightRootIdentity ?? ''
+    );
+    const pks = new Set<string>();
+    for (const row of titleRows) {
+        const self = normalizeRegistryManagementPk(row.mgmBldrgstPk);
+        if (self === null) return null;
+        if (selected !== null && self !== selected) continue;
+        pks.add(self);
+    }
+    return [...pks].sort();
+}
+
+/**
+ * expectedPks 전체가 bylot 근거를 갖고 그 값이 모두 0인지 (DESIGN §9.1 개정).
+ * 제외된 동에도 부속지번이 없어야 필지 singleton으로 승격할 수 있다.
+ *
+ * 방어적 defense-in-depth: 현재 유일한 호출부(`resolveSameRunOfficialDevelopmentFullRefreshComponent`의
+ * singleton tail)에서는 이 함수가 호출되는 시점에 이미 `classifiedSingleton` /
+ * `classificationConflictSingleton` 판정이 `singletonGate.issues`에 `BYLOT_ATTACHED_COUNT_MISMATCH`가
+ * 없음을 강제한 뒤다 — 그 경로는 항상 `attached.state === 'COMPLETE_ZERO'`(distinct attached count
+ * 0 고정)이므로, evidence.count가 0이 아닌 PK가 하나라도 있으면 `resolveParcelScopeCompleteness`가
+ * 이미 그 issue로 REVIEW_REQUIRED를 반환해 호출측이 이 함수에 도달하기 전에 걸러진다. PK 집합
+ * 불일치도 `resolveBylotCounts`가 evidence를 `expectedPks`와 1:1로 만들어내므로 발생하지 않는다.
+ * 즉 이 함수의 reject 분기는 이 경로를 통해서는 현재 도달 불가능하다 — 그렇다고 죽은 코드로 보고
+ * 지우지 말 것. 위 호출부의 내부 판정 로직이 바뀌면(예: classifiedSingleton 조건 완화) 이 함수가
+ * 유일한 방어선이 된다.
+ */
+function allBylotCountsZero(
+    bylot: BylotResolution,
+    expectedPks: readonly string[]
+): boolean {
+    const expected = [...new Set(expectedPks)].sort();
+    const evidencePks = [
+        ...new Set(bylot.evidence.map((row) => row.mgmBldrgstPk)),
+    ].sort();
+    return (
+        expected.length > 0 &&
+        evidencePks.length === expected.length &&
+        evidencePks.every((pk, index) => pk === expected[index]) &&
+        bylot.evidence.every((row) => row.count === 0)
+    );
 }
 
 /**
@@ -298,15 +430,27 @@ export function resolveParcelScopeCompleteness(input: ParcelScopeInput): ParcelS
     }));
     const attached = assembleAttachedPnus(normalizedAttachedRows as unknown as AtchJibunRowInput[]);
     const bylot = resolveBylotCounts({ policy, titleRows, basisRows, attachedPks, basisFallbackInvoked });
+    // 표제부 root가 여럿이면 선출된 대지권 대상 root의 행만 분류 입력으로 쓴다 (DESIGN §9.1).
+    // closure·bylot·attached 축은 위에서 이미 전체 root로 계산돼 있고 그대로 둔다.
+    const landRightPartition = partitionTitleRowsByLandRightRoot(
+        titleRows,
+        input.landRightRootIdentity
+    );
+    const classificationTitleRows =
+        landRightPartition?.selectedTitleRows ?? titleRows;
     const classification = classifyHousingType({
-        titleRows: titleRows.map((r) => ({
+        titleRows: classificationTitleRows.map((r) => ({
             regstrGbCd: r.regstrGbCd,
             mainPurpsCd: r.mainPurpsCd,
             mainPurpsCdNm: r.mainPurpsCdNm,
             etcPurps:
                 typeof r.etcPurps === 'string' ? r.etcPurps : undefined,
+            grndFlrCnt: r.grndFlrCnt,
+            totArea: r.totArea,
         })),
-        rootIdentities: dbScope.rootBuildingIdentities,
+        rootIdentities: landRightPartition
+            ? [landRightPartition.selectedRootIdentity]
+            : dbScope.rootBuildingIdentities,
     });
     const externalScopeDigest = buildExternalScopeDigest(baseScans, bylot, policy);
 
@@ -319,6 +463,10 @@ export function resolveParcelScopeCompleteness(input: ParcelScopeInput): ParcelS
         scannedPnus,
         dbScopeHash: dbScope.dbScopeHash,
         externalScopeDigest,
+        landRightRootIdentity:
+            landRightPartition?.selectedRootIdentity ?? null,
+        excludedLandRightRootIdentities:
+            landRightPartition?.excludedRootIdentities ?? [],
     });
 
     // ── 1. 최우선: 필수 provider FAILED/INCOMPLETE → FAILED (apply 0) ──
@@ -504,19 +652,27 @@ function resolveStrictSameRunOfficialAttachedComponent(
         return null;
     }
 
-    const titleSelfPks = [
-        ...new Set(
-            baseScans[0].title.rows
-                .map((row) =>
-                    normalizeRegistryManagementPk(row.mgmBldrgstPk)
-                )
-                .filter((value): value is string => value !== null)
-        ),
-    ].sort();
-    if (titleSelfPks.length !== 1) return null;
+    // 단일성 판정은 선택된 대지권 대상 root 파티션에서만 한다 (DESIGN §9.1 개정).
+    // 부속지번·bylot 축은 전체 root를 그대로 유지하므로, 제외된 root에 실제 부속지번이 있으면
+    // 아래 attached pair 검사(`attached.pairs.some(...)`)가 막고, 제외된 root의 bylotCnt만
+    // 0이 아니고 부속지번은 없는 경우는 공통 gate(`resolveParcelScopeCompleteness`)가
+    // BYLOT_ATTACHED_COUNT_MISMATCH로 이미 REVIEW_REQUIRED를 반환해 이 함수에 도달하기 전에
+    // 걸러진다. 아래 bylot `some(...)` 검사는 이 두 메커니즘이 못 잡는 경우를 위한 defense-in-depth다
+    // — 현재 이 진입점들에서는 reject 분기의 유일한 결정자로 도달하지 않는다.
+    const titleSelfPks = selectedTitleSelfPks(
+        baseScans[0].title.rows,
+        input.landRightRootIdentity
+    );
+    if (titleSelfPks === null || titleSelfPks.length !== 1) return null;
+    const managementPk = titleSelfPks[0];
+    const selectedTitleRows = baseScans[0].title.rows.filter(
+        (row) =>
+            normalizeRegistryManagementPk(row.mgmBldrgstPk) ===
+            managementPk
+    );
     const titleRootPks = [
         ...new Set(
-            baseScans[0].title.rows
+            selectedTitleRows
                 .map(
                     (row) =>
                         normalizeRegistryManagementPk(
@@ -531,16 +687,31 @@ function resolveStrictSameRunOfficialAttachedComponent(
                 )
         ),
     ].sort();
-    if (titleRootPks.length !== 1) return null;
-    const managementPk = titleSelfPks[0];
+    if (
+        titleRootPks.length !== 1 ||
+        titleRootPks[0] !== managementPk
+    ) {
+        return null;
+    }
     if (
         attached.pairs.some(
             (pair) =>
                 normalizeRegistryManagementPk(pair.mgmBldrgstPk) !==
                 managementPk
         ) ||
-        normalGate.expectedPks.length !== 1 ||
-        normalGate.expectedPks[0] !== managementPk
+        !normalGate.expectedPks.includes(managementPk) ||
+        // 선택 root 밖의 관리 PK는 부속지번이 0이어야 한다.
+        // 방어적 defense-in-depth: 제외 root에 실제 부속지번이 있으면 바로 위
+        // `attached.pairs.some(...)` 검사가 먼저 막고, 부속지번 없이 bylotCnt만 0이 아니면
+        // 공통 gate(`resolveParcelScopeCompleteness`)가 BYLOT_ATTACHED_COUNT_MISMATCH로 이미
+        // REVIEW_REQUIRED를 반환해 이 함수에 도달하기 전에 걸러진다(테스트: `부속지번-bearing
+        // 경로: 제외 root의 bylotCnt가 0이 아니면 승격하지 않는다`). 즉 이 reject 분기는 현재
+        // 도달 불가능하다 — 그렇다고 죽은 코드로 보고 지우지 말 것. 위 두 메커니즘의 판정
+        // 로직이 바뀌면 이 검사가 유일한 방어선이 된다.
+        normalGate.bylot.evidence.some(
+            (row) =>
+                row.mgmBldrgstPk !== managementPk && row.count !== 0
+        )
     ) {
         return null;
     }
@@ -675,27 +846,20 @@ export function resolveSameRunOfficialDevelopmentFullRefreshComponent(
     ) {
         return null;
     }
-    const titleSelfPks = [
-        ...new Set(
-            input.baseScans[0].title.rows
-                .map((row) =>
-                    normalizeRegistryManagementPk(
-                        row.mgmBldrgstPk
-                    )
-                )
-                .filter(
-                    (value): value is string => value !== null
-                )
-        ),
-    ].sort();
+    // 선택된 대지권 대상 root 파티션에서 self PK가 정확히 하나여야 한다 (DESIGN §9.1 개정).
+    // 제외된 동을 포함한 전체 expectedPks의 bylotCnt가 모두 0일 때만 필지 singleton이다.
+    const titleSelfPks = selectedTitleSelfPks(
+        input.baseScans[0].title.rows,
+        input.landRightRootIdentity
+    );
     if (
+        titleSelfPks === null ||
         titleSelfPks.length !== 1 ||
-        singletonGate.expectedPks.length !== 1 ||
-        singletonGate.expectedPks[0] !== titleSelfPks[0] ||
-        singletonGate.bylot.evidence.length !== 1 ||
-        singletonGate.bylot.evidence[0].mgmBldrgstPk !==
-            titleSelfPks[0] ||
-        singletonGate.bylot.evidence[0].count !== 0
+        !singletonGate.expectedPks.includes(titleSelfPks[0]) ||
+        !allBylotCountsZero(
+            singletonGate.bylot,
+            singletonGate.expectedPks
+        )
     ) {
         return null;
     }

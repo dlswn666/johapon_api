@@ -1040,3 +1040,417 @@ test('callParcelScopeResolver: RPC error는 throw', async () => {
     const callResolver = async () => ({ data: null, error: { message: 'denied' } });
     await assert.rejects(() => callParcelScopeResolver({ unionId: 'u1', anchorPnu: ANCHOR, rootMgmBldrgstPks: [] }, { callResolver }));
 });
+
+// ── §9.1 개정: 선택된 대지권 대상 root 기준 분류 partition ──────────────
+
+const GENERAL_ROOT = '1010111086';
+const AGGREGATE_ROOT = '1010114204';
+const MIA_ANCHOR = '1130510300107912282';
+
+function completeScan<T>(rows: T[]) {
+    return {
+        state: 'COMPLETE' as const,
+        rows,
+        totalCount: rows.length,
+        pagesFetched: 1,
+    };
+}
+
+function zeroScan() {
+    return {
+        state: 'COMPLETE_ZERO' as const,
+        rows: [] as never[],
+        totalCount: 0 as const,
+        pagesFetched: 1,
+    };
+}
+
+/** 미아7 791-2282 실측 형상: 일반건축물 1행 + 집합건물 1행, 부속지번 0. */
+function multiRootBaseScans() {
+    return [
+        {
+            pnu: MIA_ANCHOR,
+            title: completeScan([
+                {
+                    mgmBldrgstPk: GENERAL_ROOT,
+                    bylotCnt: '0',
+                    regstrGbCd: '1',
+                    mainPurpsCd: '01000',
+                    mainPurpsCdNm: '단독주택',
+                    etcPurps: '단독주택',
+                    grndFlrCnt: '1',
+                    totArea: '88.8',
+                },
+                {
+                    mgmBldrgstPk: AGGREGATE_ROOT,
+                    bylotCnt: '0',
+                    regstrGbCd: '2',
+                    mainPurpsCd: '02000',
+                    mainPurpsCdNm: '공동주택',
+                    etcPurps: '공동주택',
+                    grndFlrCnt: '4',
+                    totArea: '513.06',
+                },
+            ]),
+            attached: zeroScan(),
+        },
+    ];
+}
+
+function multiRootDbScope() {
+    return parseDbScopeResolution({
+        dbState: 'LINKED',
+        rootBuildingIdentities: [GENERAL_ROOT, AGGREGATE_ROOT],
+        componentPnus: [MIA_ANCHOR],
+        linkedBasePnus: [MIA_ANCHOR],
+        linkedPnus: [MIA_ANCHOR],
+        linkedEvidenceKeys: [],
+        pendingEvidenceKeys: [],
+        blockingEvidence: [],
+        openUnresolvedEvidenceKeys: [],
+        componentTruncated: false,
+        propertyMembership: [],
+        dbScopeHash: 'db-scope-hash',
+    });
+}
+
+test('선택 root 없으면 복수 root는 기존대로 REVIEW_REQUIRED다', () => {
+    const res = resolveParcelScopeCompleteness({
+        dbScope: multiRootDbScope(),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+    });
+    assert.equal(res.state, 'REVIEW_REQUIRED');
+    assert.ok(res.issues.includes('BUILDING_CLASSIFICATION_CONFLICT'));
+    assert.equal(res.classification.kind, 'REVIEW_REQUIRED');
+    assert.equal(
+        res.classification.kind === 'REVIEW_REQUIRED' &&
+            res.classification.reason,
+        'MULTIPLE_ROOT_IDENTITIES'
+    );
+    assert.equal(res.landRightRootIdentity, null);
+    assert.deepEqual(res.excludedLandRightRootIdentities, []);
+});
+
+test('선택 root를 주면 그 root의 표제부 행만으로 분류하고 나머지는 제외 기록한다', () => {
+    const res = resolveParcelScopeCompleteness({
+        dbScope: multiRootDbScope(),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(res.classification.kind, 'CLASSIFIED');
+    assert.equal(
+        res.classification.kind === 'CLASSIFIED' &&
+            res.classification.family,
+        'LDAREG'
+    );
+    assert.equal(res.landRightRootIdentity, AGGREGATE_ROOT);
+    assert.deepEqual(res.excludedLandRightRootIdentities, [GENERAL_ROOT]);
+    assert.equal(res.state, 'LINKED_SCOPE_RESOLVED');
+    assert.deepEqual(res.issues, []);
+});
+
+test('선택 root partition은 bylot·attached 축을 좁히지 않는다 — expectedPks는 전체 root', () => {
+    const res = resolveParcelScopeCompleteness({
+        dbScope: multiRootDbScope(),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.deepEqual(res.expectedPks, [GENERAL_ROOT, AGGREGATE_ROOT].sort());
+    assert.equal(res.bylot.evidence.length, 2);
+});
+
+test('선택 root가 표제부에 없으면 partition하지 않고 복수 root REVIEW를 유지한다', () => {
+    const res = resolveParcelScopeCompleteness({
+        dbScope: multiRootDbScope(),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: '9999999999',
+    });
+    assert.equal(res.state, 'REVIEW_REQUIRED');
+    assert.equal(
+        res.classification.kind === 'REVIEW_REQUIRED' &&
+            res.classification.reason,
+        'MULTIPLE_ROOT_IDENTITIES'
+    );
+    assert.equal(res.landRightRootIdentity, null);
+});
+
+test('선택 root가 상위 up-PK를 가진 child면 root로 인정하지 않는다', () => {
+    const scans = multiRootBaseScans();
+    scans[0].title.rows[1] = {
+        ...scans[0].title.rows[1],
+        mgmUpBldrgstPk: '1010119999',
+    } as never;
+    const res = resolveParcelScopeCompleteness({
+        dbScope: multiRootDbScope(),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(res.state, 'REVIEW_REQUIRED');
+    assert.equal(res.landRightRootIdentity, null);
+});
+
+test('단일 root anchor에 선택 root를 주면 partition 없이 기존 경로를 유지한다', () => {
+    const scans = multiRootBaseScans();
+    scans[0].title.rows = [scans[0].title.rows[1]] as never;
+    const res = resolveParcelScopeCompleteness({
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            rootBuildingIdentities: [AGGREGATE_ROOT],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(res.classification.kind, 'CLASSIFIED');
+    assert.equal(res.landRightRootIdentity, null);
+    assert.deepEqual(res.excludedLandRightRootIdentities, []);
+});
+
+// ── §9.1 개정: component 단일성 가드를 선택 root 기준으로 좁힌다 ──────────
+
+test('DEV 전체 갱신 singleton component는 선택 root가 있으면 복수 표제부 root를 허용한다', () => {
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.notEqual(component, null);
+    assert.equal(component?.managementPk, AGGREGATE_ROOT);
+    assert.deepEqual(component?.memberPnus, [MIA_ANCHOR]);
+    assert.equal(component?.pairCount, 0);
+});
+
+test('DEV 전체 갱신 singleton component는 선택 root가 없으면 복수 root를 승격하지 않는다', () => {
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+    });
+    assert.equal(component, null);
+});
+
+test('DEV 전체 갱신 singleton component는 제외 root의 bylotCnt가 0이 아니면 공통 gate가 승격 검토 전에 걸러낸다', () => {
+    // 주의: 이 테스트는 `allBylotCountsZero` helper의 reject 분기를 검증하지 않는다.
+    // singleton tail은 항상 attached.state === 'COMPLETE_ZERO'(distinct attached count 0 고정)를
+    // 요구하므로, 제외 root(GENERAL_ROOT)의 bylotCnt를 0이 아닌 값으로 바꾸면
+    // `resolveParcelScopeCompleteness`가 evidence.count(1) !== distinct attached(0) 불일치로
+    // BYLOT_ATTACHED_COUNT_MISMATCH를 issues에 먼저 채운다. 그 결과 REVIEW_REQUIRED 상태의
+    // issues가 classifiedSingleton/classificationConflictSingleton이 허용하는 issue 집합
+    // ({}, {BUILDING_CLASSIFICATION_CONFLICT}, {BUILDING_CLASSIFICATION_CONFLICT,SCOPE_NOT_LINKED})
+    // 중 어느 것과도 일치하지 않아 두 판정이 모두 false가 되고, 함수는 `allBylotCountsZero`를
+    // 호출하는 코드에 도달하기도 전에 null을 반환한다(`scope.ts`의 `allBylotCountsZero` 위
+    // docblock 참고). 즉 여기서 검증하는 것은 "제외 root의 bylotCnt 불일치가 승격을 막는다"는 관찰 가능한
+    // 동작이며, 그 메커니즘은 이 공통 gate이지 `allBylotCountsZero`가 아니다.
+    const scans = multiRootBaseScans();
+    scans[0].title.rows[0] = {
+        ...scans[0].title.rows[0],
+        bylotCnt: '1',
+    } as never;
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(component, null);
+});
+
+test('선택 root 귀속 표제부 행이 0건이면 승격하지 않는다', () => {
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: multiRootBaseScans() as never,
+        policy: 'TITLE_ONLY',
+        // 표제부에 없는 root
+        landRightRootIdentity: '9999999999',
+    });
+    assert.equal(component, null);
+});
+
+test('선택 root의 표제부 행이 여러 개라도 같은 self PK면 dedup 후 승격한다', () => {
+    const scans = multiRootBaseScans();
+    // 집합 root 표제부 행을 한 번 더 반복한다(같은 self PK).
+    scans[0].title.rows.push({ ...scans[0].title.rows[1] } as never);
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.notEqual(component, null);
+    assert.equal(component?.managementPk, AGGREGATE_ROOT);
+});
+
+test('표제부에 invalid 관리 PK가 있으면 선택 root와 무관하게 승격하지 않는다', () => {
+    // 주의: 이 테스트는 `selectedTitleSelfPks`의 `self === null` reject 분기를 단독으로
+    // 검증하지 않는다. 이 fixture는 attached.state가 'COMPLETE_ZERO'라 singleton tail로
+    // 빠지고, 거기서도 `selectedTitleSelfPks`를 호출하기 전에 같은 title 행으로
+    // `resolveParcelScopeCompleteness`(singletonGate)를 먼저 돌린다. invalid PK는
+    // `hasInvalidRequiredPk(titleRows)`에 걸려 scanFailure = 'PROVIDER_PROTOCOL_ERROR' →
+    // FAILED가 되고, classifiedSingleton/classificationConflictSingleton 둘 다 FAILED가 아닌
+    // 상태를 요구하므로 `selectedTitleSelfPks` 호출 자체에 도달하기 전에 null을 반환한다
+    // (`scope.ts`의 `selectedTitleSelfPks` 위 docblock 참고). 즉 여기서 검증하는 것은
+    // "invalid PK가 승격을 막는다"는 관찰 가능한 동작이며, 그 메커니즘은 이 공통 gate이지
+    // `selectedTitleSelfPks`의 null 분기가 아니다.
+    const scans = multiRootBaseScans();
+    scans[0].title.rows[0] = {
+        ...scans[0].title.rows[0],
+        mgmBldrgstPk: '',
+    } as never;
+    const component = resolveSameRunOfficialDevelopmentFullRefreshComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(component, null);
+});
+
+// ── §9.1 개정: 부속지번-bearing strict attached component 경로
+//    (resolveStrictSameRunOfficialAttachedComponent, resolveSameRunOfficialReadOnlyComponent 경유) ──
+//
+// 미아7 실측처럼 표제부 root가 두 개(일반건축물 GENERAL_ROOT + 집합건물 AGGREGATE_ROOT)이고
+// 부속지번이 실제로 존재하는 형상. 위 singleton 테스트들과 달리 attached.state는 항상
+// 'COMPLETE'다(부속지번 0건인 singleton 경로와 다른 축).
+
+/** 미아7 791-2282의 인접 부속지번(791-2283)으로 가정한 19자리 PNU. */
+const MIA_ATTACHED_PNU = '1130510300107912283';
+
+test('부속지번-bearing 경로: 선택 root에만 부속지번이 걸리고 제외 root의 bylotCnt가 0이면 승격한다', () => {
+    const scans = multiRootBaseScans();
+    // 선택 root(AGGREGATE_ROOT)의 bylotCnt를 아래 부속지번 1건과 일치시킨다.
+    // 제외 root(GENERAL_ROOT)는 fixture 기본값 그대로 bylotCnt '0', 부속지번 없음.
+    scans[0].title.rows[1] = {
+        ...scans[0].title.rows[1],
+        bylotCnt: '1',
+    } as never;
+    scans[0].attached = completeScan([
+        attachedRow(MIA_ANCHOR, MIA_ATTACHED_PNU, AGGREGATE_ROOT),
+    ]) as never;
+    const component = resolveSameRunOfficialReadOnlyComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.notEqual(component, null);
+    assert.equal(component?.managementPk, AGGREGATE_ROOT);
+    assert.deepEqual(component?.memberPnus, [MIA_ANCHOR, MIA_ATTACHED_PNU].sort());
+    assert.equal(component?.pairCount, 1);
+});
+
+test('부속지번-bearing 경로: 부속지번이 선택 root가 아닌 root에 걸리면 승격하지 않는다', () => {
+    const scans = multiRootBaseScans();
+    // 제외 root(GENERAL_ROOT)의 bylotCnt를 아래 부속지번 1건과 일치시켜
+    // BYLOT_ATTACHED_COUNT_MISMATCH를 피하고, "부속지번이 선택 root가 아닌 root에 걸린다"는
+    // 조건만 남긴다. 이 조건을 실제로 결정하는 것은 §9.1 이전부터 있던 cross-root pair 검사
+    // `attached.pairs.some(pair => normalizeRegistryManagementPk(pair.mgmBldrgstPk) !==
+    // managementPk)`다 — 아래 bylot `some(...)` 검사(§9.1 신규)에는 도달하지 않는다.
+    scans[0].title.rows[0] = {
+        ...scans[0].title.rows[0],
+        bylotCnt: '1',
+    } as never;
+    scans[0].attached = completeScan([
+        attachedRow(MIA_ANCHOR, MIA_ATTACHED_PNU, GENERAL_ROOT),
+    ]) as never;
+    const component = resolveSameRunOfficialReadOnlyComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(component, null);
+});
+
+test('부속지번-bearing 경로: 제외 root의 bylotCnt가 0이 아니면 승격하지 않는다', () => {
+    // 주의: 이 테스트는 §9.1이 추가한
+    // `normalGate.bylot.evidence.some(row => row.mgmBldrgstPk !== managementPk && row.count !== 0)`
+    // 체크의 reject 분기를 단독으로 검증하지 않는다. 이 진입점(resolveSameRunOfficialReadOnlyComponent)
+    // 에서는 제외 root(GENERAL_ROOT)에 부속지번이 없는 채로 bylotCnt만 0이 아니면, 그 PK의
+    // distinct attached count(d)가 항상 0이므로 공통 gate(`resolveParcelScopeCompleteness`)가
+    // 이미 BYLOT_ATTACHED_COUNT_MISMATCH를 issues에 채워 normalGate 검사
+    // (정확히 SCOPE_CACHE_SCAN_CONFLICT 하나만 허용)에서 먼저 null로 걸러진다. 반대로 제외 root에
+    // 부속지번을 실제로 붙이면(바로 위 테스트) 기존 `attached.pairs.some(...)` 체크가 먼저 걸린다 —
+    // 이 경로에서는 §9.1 신규 체크 라인이 유일한 판단 근거가 되는 입력을 구성할 수 없었다(§9.1
+    // singleton tail의 `allBylotCountsZero`와 같은 이유: attached count와 bylotCnt 불일치를 잡는
+    // 공통 gate가 먼저 걸린다). 그럼에도 "제외 root의 bylotCnt 불일치가 승격을 막는다"는 관찰
+    // 가능한 동작 자체는 유효하므로 회귀 테스트로 남긴다.
+    const scans = multiRootBaseScans();
+    scans[0].title.rows[0] = {
+        ...scans[0].title.rows[0],
+        bylotCnt: '1', // 제외 root(GENERAL_ROOT), 부속지번은 없음 → d=0 vs count=1 불일치
+    } as never;
+    scans[0].title.rows[1] = {
+        ...scans[0].title.rows[1],
+        bylotCnt: '1', // 선택 root(AGGREGATE_ROOT), 아래 부속지번 1건과 일치
+    } as never;
+    scans[0].attached = completeScan([
+        attachedRow(MIA_ANCHOR, MIA_ATTACHED_PNU, AGGREGATE_ROOT),
+    ]) as never;
+    const component = resolveSameRunOfficialReadOnlyComponent({
+        anchorPnu: MIA_ANCHOR,
+        dbScope: parseDbScopeResolution({
+            ...multiRootDbScope(),
+            dbState: 'NO_EVIDENCE',
+            linkedBasePnus: [],
+            linkedPnus: [],
+        }),
+        baseScans: scans as never,
+        policy: 'TITLE_ONLY',
+        landRightRootIdentity: AGGREGATE_ROOT,
+    });
+    assert.equal(component, null);
+});
