@@ -1235,11 +1235,13 @@ test('791-2188 provider bridge는 1~3자리 positive 지하 suffix의 0-padding�
 
 test('미아7 실측: LDAREG 지하1층 층·호 표기 변형이 EXPOS B0N과 같은 witness로 접힌다', () => {
     // EXPOS는 지하 호를 flrGbCd=10 / flrNo=1 / hoNm=B0N 한 가지로만 주는데,
-    // LDAREG는 같은 호를 지번마다 다르게 준다. 2026-07-30 GIS 인스펙터로 원문 확인:
-    //   791-2155 · 2267  →  buldFloorNm '지',    buldHoNm '비01'
-    //   791-2282         →  buldFloorNm '지',    buldHoNm 'B01'
-    //   791-2320         →  buldFloorNm '지1',   buldHoNm '지하01' / '지하02'
-    //   791-2343         →  buldFloorNm '지하1', buldHoNm '비01'
+    // LDAREG는 같은 호를 지번마다 다르게 준다. GIS 인스펙터 원문 확인:
+    //   791-2155 · 2267  →  buldFloorNm '지',    buldHoNm '비01'          (2026-07-30)
+    //   791-2282         →  buldFloorNm '지',    buldHoNm '지01' / '지02'  (2026-08-01 재실측)
+    //   791-2320         →  buldFloorNm '지1',   buldHoNm '지하01' / '지하02' (2026-07-30)
+    //   791-2343         →  buldFloorNm '지하1', buldHoNm '비01'          (2026-07-30)
+    // 2282 의 종전 'B01' 기록(483ebd5)은 EXPOS hoNm 과 혼동된 오기 — LDAREG 'B0N' 은
+    // 실측 근거가 사라졌으나 이미 인정된 표기의 축소는 별도 판단으로 남긴다.
     const expos = providerUnitShapeWitness('EXPOS_UNIT', {
         flrGbCd: '10',
         flrNo: 1,
@@ -1283,6 +1285,10 @@ test('미아7 실측: LDAREG 지하1층 층·호 표기 변형이 EXPOS B0N과 �
             'B1',
             '지하01',
             '지하1',
+            // 2026-08-01 인스펙터 재실측(791-2282): buldHoNm '지01'/'지02'.
+            // 483ebd5 의 'B01' 기록은 EXPOS hoNm 과 혼동된 오기였다.
+            '지01',
+            '지1',
         ]) {
             assert.deepEqual(
                 providerUnitShapeWitness('LDAREG_UNIT', {

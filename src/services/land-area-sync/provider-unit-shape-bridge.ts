@@ -230,14 +230,18 @@ function exposWitness(
  * 호를 지번마다 다른 원문으로 보낸다. 2026-07-30 GIS 인스펙터로 원문을 직접
  * 확인한 결과는 다음과 같다.
  *
- *   791-2155 · 2267  →  buldFloorNm '지',    buldHoNm '비01'
- *   791-2282         →  buldFloorNm '지',    buldHoNm 'B01'
- *   791-2320         →  buldFloorNm '지1',   buldHoNm '지하01' / '지하02'
- *   791-2343         →  buldFloorNm '지하1', buldHoNm '비01'
+ *   791-2155 · 2267  →  buldFloorNm '지',    buldHoNm '비01'          (2026-07-30)
+ *   791-2282         →  buldFloorNm '지',    buldHoNm '지01' / '지02'  (2026-08-01 재실측)
+ *   791-2320         →  buldFloorNm '지1',   buldHoNm '지하01' / '지하02' (2026-07-30)
+ *   791-2343         →  buldFloorNm '지하1', buldHoNm '비01'          (2026-07-30)
+ *
+ * 2282 의 종전 'B01' 기록(483ebd5)은 EXPOS hoNm 과 혼동된 오기였다 — 그 오기 때문에
+ * 위드닝 후에도 2282 만 witness 미발화로 남았었다(2026-08-01 DEV 캡처에서 발견).
+ * LDAREG 'B0N' 은 실측 근거가 사라졌으나 이미 인정된 표기의 축소는 별도 판단으로 남긴다.
  *
  * `지층`은 `지`와 함께 정규화 역상에 있어 같이 인정한다. 그 밖에 정규화가 B1로
- * 접히는 표기(`지하01`/`지01`/`B1`/`B01` 등)는 실측되지 않았으므로 넣지 않는다 —
- * exact witness만 인정한다는 이 모듈의 계약을 추측으로 무르지 않기 위해서다.
+ * 접히는 미실측 표기를 추가하지 않는다 — exact witness만 인정한다는 이 모듈의
+ * 계약을 추측으로 무르지 않기 위해서다.
  *
  * 지하 2층 이하 표기는 EXPOS 쪽 witness가 flrNo=1만 인정하므로 넣지 않는다.
  */
@@ -276,7 +280,9 @@ function ldaregWitness(
     // 791-2188 실측: LDAREG exact floor=지하 + ho=비0N. EXPOS와 동일하게
     // 최대 3자리 positive suffix의 leading zero만 canonicalize한다.
     // 미아7 실측에서 층은 LDAREG_BASEMENT_FIRST_FLOOR_LABELS의 원문으로,
-    // 호는 비0N 외에 B0N·지하0N으로도 오는 것이 확인돼 세 접두사를 함께 인정한다.
+    // 호는 비0N 외에 지하0N·지0N(2026-08-01 재실측, 791-2282)으로도 오는 것이 확인돼
+    // 네 접두사를 함께 인정한다. 교대 순서는 '지하'가 '지'보다 앞이어야 지하0N 이
+    // 지+하0N 으로 잘리지 않는다.
     const strictRawFloor = strictAliasScalar(row, [
         'buldFloorNm',
         'flrNoNm',
@@ -287,7 +293,7 @@ function ldaregWitness(
     ]);
     const koreanBasement = strictRawHo === null
         ? null
-        : /^(?:비|B|지하)(\d{1,3})$/u.exec(strictRawHo);
+        : /^(?:비|B|지하|지)(\d{1,3})$/u.exec(strictRawHo);
     const koreanBasementSuffix =
         koreanBasement === null
             ? null
