@@ -29,6 +29,7 @@ host_status="${host_root}/status"
 host_validated="${host_root}/validated"
 host_started="${host_root}/guardian-started"
 host_capture_failure="${host_root}/capture-failure-summary.json"
+host_stage="${host_root}/full-refresh-stage"
 operation_lock_path="${application_root}/.land-area-sync-operation.lock"
 container_root="/app/.development-land-area-sync"
 container_target="${container_root}/target-${RUN_KEY}.json"
@@ -66,6 +67,14 @@ write_private_line() {
     write_status=1
   fi
   return "${write_status}"
+}
+
+# full-refresh 단계 진행 마커 — 고정 토큰과 exit code만 기록한다(식별자 금지).
+append_stage() {
+  if [[ ! -f "${host_stage}" ]]; then
+    install -m 600 /dev/null "${host_stage}"
+  fi
+  printf '%s\n' "$1" >> "${host_stage}"
 }
 
 verify_absent() {
@@ -155,7 +164,8 @@ schedule_host_self_cleanup() {
       "${host_root}/artifact.json" \
       "${host_root}/status" \
       "${host_root}/validated" \
-      "${host_root}/capture-failure-summary.json"
+      "${host_root}/capture-failure-summary.json" \
+      "${host_root}/full-refresh-stage"
     rmdir -- "${host_root}"
   ) </dev/null >/dev/null 2>&1 &
 }
@@ -331,6 +341,7 @@ else
   docker exec "${target_container}" \
     chmod 600 "${container_capture_target}"
   capture_run_id="${RUN_KEY//-/}"
+  append_stage "CAPTURE_START"
   set +e
   timeout --foreground --kill-after=30s "${capture_timeout_seconds}" \
   docker exec -w /app \
@@ -343,10 +354,12 @@ else
     --audit-out ".development-land-area-evidence-capture/audit-${RUN_KEY}.json"
   inline_capture_status="$?"
   set -e
+  append_stage "CAPTURE_EXIT_${inline_capture_status}"
   if [[ "${inline_capture_status}" -ne 0 ]]; then
     # 인라인 캡처 실패 audit의 redacted 요약만 host로 반출한다. 공개 capture
     # artifact와 같은 수위(게이트/승격 코드·집계 카운트·retry·issue code 카운트)만
     # 허용하고 anchorPnu/UUID 등 식별자는 어떤 경로로도 내보내지 않는다.
+    set +e
     docker exec -w /app \
       -e "AUDIT_PATH=${container_capture_audit}" \
       -e "INLINE_CAPTURE_STATUS=${inline_capture_status}" \
@@ -393,12 +406,21 @@ else
             : null,
         };
         process.stdout.write(`${JSON.stringify(summary)}\n`);
-      ' > "${host_capture_failure}.tmp.$$" \
+      ' > "${host_capture_failure}.tmp.$$"
+    summary_export_status="$?"
+    set -e
+    if [[ "${summary_export_status}" -eq 0 ]] \
       && mv -f -- "${host_capture_failure}.tmp.$$" "${host_capture_failure}" \
-      && chmod 600 "${host_capture_failure}" \
-      || rm -f -- "${host_capture_failure}.tmp.$$"
+      && chmod 600 "${host_capture_failure}"; then
+      append_stage "SUMMARY_EXPORT_OK"
+    else
+      rm -f -- "${host_capture_failure}.tmp.$$"
+      append_stage "SUMMARY_EXPORT_FAILED_${summary_export_status}"
+    fi
     exit "${inline_capture_status}"
   fi
+  append_stage "VALIDATION_START"
+  set +e
   docker exec -w /app \
     -e "FULL_REFRESH_TARGET=${container_capture_target}" \
     -e "FULL_REFRESH_EVIDENCE=${container_capture_evidence}" \
@@ -451,7 +473,14 @@ else
         { flag: "wx", mode: 0o600 }
       );
     '
+  validation_status="$?"
+  set -e
+  append_stage "VALIDATION_EXIT_${validation_status}"
+  if [[ "${validation_status}" -ne 0 ]]; then
+    exit "${validation_status}"
+  fi
 fi
+append_stage "RUNNER_START"
 write_private_line "${host_started}" "$$"
 
 set +e

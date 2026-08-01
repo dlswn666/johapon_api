@@ -433,7 +433,19 @@ jobs:
             "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/capture-failure-summary.json" \
             development-land-area-sync-output/capture-failure-summary.json \
             2>/dev/null
+          scp "${ssh_options[@]}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/full-refresh-stage" \
+            development-land-area-sync-output/full-refresh-stage \
+            2>/dev/null
           set -e
+          if [[ -f development-land-area-sync-output/full-refresh-stage ]]; then
+            if grep -Evq '^[A-Z0-9_]{1,64}$' development-land-area-sync-output/full-refresh-stage; then
+              echo "::warning::Full-refresh stage marker contains unexpected content; suppressed."
+            else
+              echo "Full-refresh stage markers:"
+              cat development-land-area-sync-output/full-refresh-stage
+            fi
+          fi
           if [[ -f development-land-area-sync-output/capture-failure-summary.json ]]; then
             if grep -Eq '[0-9]{12,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
               development-land-area-sync-output/capture-failure-summary.json; then
