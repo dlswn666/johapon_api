@@ -5526,3 +5526,62 @@ test('미아7 전체 갱신 비성공 15개 Phase 0 manifest는 공식 API 재�
         )
     );
 });
+
+test('791-3568 LDAREG 재관측 manifest는 3568을 첫 표본으로 두고 exact 고정한다', async () => {
+    const manifestName =
+        'mia-seven-791-3568-ldareg-reobservation-20260801';
+    const manifestPath = path.join(
+        process.cwd(),
+        `phase0-manifests/${manifestName}.json`
+    );
+    const manifestRaw = await readFile(manifestPath, 'utf8');
+    const expectedManifest = {
+        version: LAND_AREA_PHASE0_MANIFEST_VERSION_V2,
+        samples: [
+            {
+                alias: 'mia7-3568-reobservation-791-3568',
+                expectedBylot: 'ZERO',
+                expectedFamily: 'LDAREG',
+                pnu: '1130510100107913568',
+            },
+            {
+                alias: 'mia7-3568-reobservation-791-2155',
+                expectedBylot: 'ZERO',
+                expectedFamily: 'LDAREG',
+                pnu: '1130510100107912155',
+            },
+            {
+                alias: 'mia7-3568-reobservation-791-2244',
+                expectedBylot: 'POSITIVE',
+                expectedFamily: 'LADFRL',
+                pnu: '1130510100107912244',
+            },
+        ],
+    } as const;
+
+    assert.deepEqual(JSON.parse(manifestRaw), expectedManifest);
+    assert.deepEqual(
+        parseLandAreaPhase0Manifest(JSON.parse(manifestRaw)),
+        expectedManifest
+    );
+    assert.equal(
+        createHash('sha256').update(manifestRaw).digest('hex'),
+        '430c02e1e6dfdd81e0ab27f9d47bc21dd63a6a3b03f81a67f0e75ad41201f451'
+    );
+
+    const workflow = await readFile(
+        path.join(
+            process.cwd(),
+            '.github/workflows/phase0-land-area-capture.yml'
+        ),
+        'utf8'
+    );
+    assert.match(workflow, new RegExp(`^          - ${manifestName}$`, 'm'));
+    assert.match(
+        workflow,
+        new RegExp(
+            `${manifestName.replaceAll('-', '\\-')}\\)\\n` +
+                `              manifest_path="phase0-manifests/${manifestName}\\.json"`
+        )
+    );
+});

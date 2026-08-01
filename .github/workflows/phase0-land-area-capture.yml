@@ -14,6 +14,7 @@ on:
           - mia-seven-791-2280-base-attached-first-observation-20260725
           - mia-seven-clean-multifamily-remaining-six-first-observation-20260725
           - mia-seven-full-refresh-remaining-fifteen-first-observation-20260728
+          - mia-seven-791-3568-ldareg-reobservation-20260801
 
 permissions:
   contents: read
@@ -77,6 +78,9 @@ jobs:
               ;;
             mia-seven-full-refresh-remaining-fifteen-first-observation-20260728)
               manifest_path="phase0-manifests/mia-seven-full-refresh-remaining-fifteen-first-observation-20260728.json"
+              ;;
+            mia-seven-791-3568-ldareg-reobservation-20260801)
+              manifest_path="phase0-manifests/mia-seven-791-3568-ldareg-reobservation-20260801.json"
               ;;
             *)
               echo "::error::Manifest is not repository-approved."

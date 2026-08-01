@@ -1,0 +1,23 @@
+{
+  "version": "land-area-phase0-capture-input@2",
+  "samples": [
+    {
+      "alias": "mia7-3568-reobservation-791-3568",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107913568"
+    },
+    {
+      "alias": "mia7-3568-reobservation-791-2155",
+      "expectedBylot": "ZERO",
+      "expectedFamily": "LDAREG",
+      "pnu": "1130510100107912155"
+    },
+    {
+      "alias": "mia7-3568-reobservation-791-2244",
+      "expectedBylot": "POSITIVE",
+      "expectedFamily": "LADFRL",
+      "pnu": "1130510100107912244"
+    }
+  ]
+}
