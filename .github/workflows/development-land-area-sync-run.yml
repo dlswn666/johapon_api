@@ -272,7 +272,9 @@ jobs:
             "${run_root}/guardian-started" \
             "${run_root}/artifact.json" \
             "${run_root}/status" \
-            "${run_root}/validated"
+            "${run_root}/validated" \
+            "${run_root}/capture-failure-summary.json" \
+            "${run_root}/full-refresh-stage"
           rmdir -- "${run_root}"
           test ! -e "${run_root}"
           test ! -L "${run_root}"

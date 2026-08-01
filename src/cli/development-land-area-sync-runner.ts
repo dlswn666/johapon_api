@@ -9,6 +9,7 @@ import {
     parseDevelopmentTargetManifest,
     runDevelopmentLandAreaSync,
     developmentTargetAllowedScopePnus,
+    developmentTargetExpectedActivePnus,
     validateDevelopmentRunnerEnvironment,
     type DevelopmentRelationGisInvariantRows,
 } from '../operations/development-land-area-sync-runner';
@@ -373,16 +374,37 @@ async function main(): Promise<void> {
                             .order('pnu', { ascending: true })
                             .range(from, to)
                 );
+                // 조회 scope에는 land_lots가 없는 것이 정상인 공식 query-only
+                // 부속지번(예: 791-2244의 703-130)이 포함될 수 있다. land_lots
+                // 전건 요구는 union 활성 PNU(∩ scope)에만 적용하고, query-only
+                // PNU는 행이 있으면 검증에 포함하되 부재를 실패로 보지 않는다.
+                const expectedActivePnusForLots =
+                    developmentTargetExpectedActivePnus(target);
+                const requiredLandLotPnus =
+                    expectedActivePnusForLots === null
+                        ? scopePnus
+                        : (() => {
+                              const activeSet = new Set(
+                                  expectedActivePnusForLots
+                              );
+                              return scopePnus.filter((pnu) =>
+                                  activeSet.has(pnu)
+                              );
+                          })();
+                const landLotPnuSet = new Set(
+                    landLots.map((row) => row.pnu)
+                );
                 if (
-                    landLots.length !== scopePnus.length ||
                     landLots.some(
                         (row) =>
                             row.union_id !== input.unionId ||
                             typeof row.pnu !== 'string' ||
                             !scopeSet.has(row.pnu)
                     ) ||
-                    new Set(landLots.map((row) => row.pnu)).size !==
-                        scopePnus.length
+                    landLotPnuSet.size !== landLots.length ||
+                    requiredLandLotPnus.some(
+                        (pnu) => !landLotPnuSet.has(pnu)
+                    )
                 ) {
                     throw new Error(
                         'DEVELOPMENT_LAND_LOTS_INVARIANT_SCOPE_INVALID'
