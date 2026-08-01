@@ -277,6 +277,24 @@ function ldaregWitness(
         };
     }
 
+    // 791-2155 실측(2026-08-01 GIS 인스펙터 원문): LDAREG exact 반층 N.5 + 숫자 호.
+    //   buldFloorNm '4.5' + buldHoNm '401'  ↔  EXPOS flrGbCd '20' / flrNo 4 / hoNm '401'
+    // 대지권등록부가 복층 호실을 N.5로 표기해도 건축물대장 전유부는 지상 N층으로
+    // 보낸다. .5 반층은 지상 N층 위 절반이므로 canonical floor는 N이다.
+    // .5 이외의 소수 표기는 실측된 적이 없어 인정하지 않는다.
+    const halfFloorAbove = rawFloor === null
+        ? null
+        : /^([1-9]\d{0,2})\.5$/u.exec(rawFloor);
+    if (halfFloorAbove !== null && numericHo !== null) {
+        const floor = halfFloorAbove[1];
+        return {
+            kind: PROVIDER_UNIT_BRIDGE_ABOVE_NO_SUFFIX,
+            token: `ABOVE_NO_SUFFIX:${floor}:${numericHo}`,
+            canonicalFloor: floor,
+            canonicalHo: numericHo,
+        };
+    }
+
     // 791-2188 실측: LDAREG exact floor=지하 + ho=비0N. EXPOS와 동일하게
     // 최대 3자리 positive suffix의 leading zero만 canonicalize한다.
     // 미아7 실측에서 층은 LDAREG_BASEMENT_FIRST_FLOOR_LABELS의 원문으로,

@@ -317,7 +317,8 @@ test('미아7 component target은 활성 299 PNU를 공식 278 component·301 �
     assert.equal(component279.anchors.length, 278);
     assert.equal(component279.targetCount, 278);
     assert.equal(component279.allowedScopePnus.length, 301);
-    assert.equal(component279.expectedPropertyUnitCount, 429);
+    // 2026-08-01 개정: 3568 도로지분 7건 제외(공식 LDAREG 원천 부재) → 422
+    assert.equal(component279.expectedPropertyUnitCount, 422);
     assert.equal(
         component279.expectedUnionActivePropertyUnitCount,
         429

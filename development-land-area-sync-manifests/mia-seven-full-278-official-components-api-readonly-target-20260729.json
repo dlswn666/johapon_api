@@ -889,8 +889,8 @@
   "expectedUnionActivePnuDigest": "db754ce378896d45bb09b66ffe1174577a805fa74d264ed59ed17c9d97a78cbc",
   "targetCount": 278,
   "scopeDigest": "c661e864d20342519cf7d453454ead53d9279a21c37cdfaa87b8e68f5e2a7eb9",
-  "manifestDigest": "b00f52f97ef20df9f0e7658c84e238044c5eddabce6f1083fa3789776ecf1c24",
-  "expectedPropertyUnitCount": 429,
+  "manifestDigest": "10eeb4fb47aa5e32429604b9e91eba7628c3319d2f1bb0584fda92976737100c",
+  "expectedPropertyUnitCount": 422,
   "expectedUnionActivePropertyUnitCount": 429,
   "expectedUnionActivePnuCount": 299,
   "allowManualOverwrite": true

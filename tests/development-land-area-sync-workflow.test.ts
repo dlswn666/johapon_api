@@ -115,7 +115,7 @@ test('미아7 전체 299 anchor API 재조회 legacy route는 read-only capture�
     );
 });
 
-test('미아7 278 official component·429 물건지 전체 재조회는 299 active PNU와 301 scanned PNU를 분리해 검증한다', () => {
+test('미아7 278 official component·422 물건지(도로지분 7건 제외) 전체 재조회는 299 active PNU와 301 scanned PNU를 분리해 검증한다', () => {
     const label =
         'mia-seven-full-278-official-components-api-readonly-20260729';
     const selection = captureWorkflow.slice(
@@ -135,7 +135,7 @@ test('미아7 278 official component·429 물건지 전체 재조회는 299 acti
         /mia-seven-full-278-official-components-api-readonly-target-20260729\.json/
     );
     assert.match(selection, /target_count="278"/);
-    assert.match(selection, /property_unit_count="429"/);
+    assert.match(selection, /property_unit_count="422"/);
     assert.match(
         captureWorkflow,
         /audit\?\.activePnuCount !== target\.expectedUnionActivePnuCount/

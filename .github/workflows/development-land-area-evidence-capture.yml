@@ -68,7 +68,7 @@ jobs:
             mia-seven-full-278-official-components-api-readonly-20260729)
               target_path="development-land-area-sync-manifests/mia-seven-full-278-official-components-api-readonly-target-20260729.json"
               target_count="278"
-              property_unit_count="429"
+              property_unit_count="422"
               ;;
             mia-seven-full-299-api-readonly-20260728)
               target_path="development-land-area-sync-manifests/mia-seven-full-299-api-readonly-target-20260728.json"

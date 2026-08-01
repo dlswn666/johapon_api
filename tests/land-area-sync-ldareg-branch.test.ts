@@ -1367,6 +1367,71 @@ test('LDAREG 지하 witness는 지하1층 exact 표기와 positive suffix만 인
     );
 });
 
+test('미아7 실측: LDAREG 반층 N.5 표기가 EXPOS 지상 N층 숫자 호와 같은 witness로 접힌다', () => {
+    // 2026-08-01 GIS 인스펙터 원문(791-2155): LDAREG buldFloorNm '4.5' + buldHoNm '401',
+    // 같은 호의 EXPOS는 flrGbCd '20' / flrNo 4 / hoNm '401'. 대지권등록부가 복층
+    // 호실을 N.5로 표기해도 전유부는 지상 N층으로 보낸다.
+    const expos = providerUnitShapeWitness('EXPOS_UNIT', {
+        flrGbCd: '20',
+        flrNo: 4,
+        hoNm: '401',
+    });
+    assert.deepEqual(expos, {
+        kind: 'PROVIDER_ABOVE_NO_SUFFIX',
+        token: 'ABOVE_NO_SUFFIX:4:401',
+        canonicalFloor: '4',
+        canonicalHo: '401',
+    });
+    assert.deepEqual(
+        providerUnitShapeWitness('LDAREG_UNIT', {
+            buldFloorNm: '4.5',
+            buldHoNm: '401',
+        }),
+        expos
+    );
+
+    // 층 정수부·호가 다르면 다른 호실이다.
+    assert.notEqual(
+        providerUnitShapeWitness('LDAREG_UNIT', {
+            buldFloorNm: '3.5',
+            buldHoNm: '401',
+        })?.token,
+        expos?.token
+    );
+    assert.notEqual(
+        providerUnitShapeWitness('LDAREG_UNIT', {
+            buldFloorNm: '4.5',
+            buldHoNm: '402',
+        })?.token,
+        expos?.token
+    );
+
+    // .5 반층 exact shape 외의 소수·비정형 표기는 인정하지 않는다.
+    for (const [buldFloorNm, buldHoNm] of [
+        ['4.05', '401'],
+        ['4.55', '401'],
+        ['4.50', '401'],
+        ['0.5', '401'],
+        ['.5', '401'],
+        ['4.', '401'],
+        ['4,5', '401'],
+        ['4.5층', '401'],
+        // 반층 + 숫자 호 shape만 실측됐다. 0000 placeholder 호는 이 경로가 아니다.
+        ['4.5', '0000'],
+        ['4.5', '401호'],
+        ['4.5', '0401'],
+    ] as const) {
+        assert.equal(
+            providerUnitShapeWitness('LDAREG_UNIT', {
+                buldFloorNm,
+                buldHoNm,
+            }),
+            null,
+            `${buldFloorNm}/${buldHoNm}`
+        );
+    }
+});
+
 test('runtime 791-2191: LDAREG 숫자/0000 및 지/0000을 EXPOS N층·지층 exact tuple로 바꿔 기존 building link를 해소한다', () => {
     const units = [
         {
@@ -1446,6 +1511,122 @@ test('runtime 791-2191: LDAREG 숫자/0000 및 지/0000을 EXPOS N층·지층 ex
     ) as { allowed: boolean; bridgeRequiredCount: number };
     assert.equal(gate.allowed, true);
     assert.equal(gate.bridgeRequiredCount, 3);
+});
+
+test('runtime 791-2155 실측 형상: 반층 4.5/401·지하 지/비01·등기 고아 B01이 있어도 5호 전건 매칭된다', () => {
+    // 2026-08-01 실측 재현. 반층 witness가 없던 시절에는 4.5/401 한 행이
+    // sourceRawWitnessConsistent를 false로 만들어 bridge 전체가 닫혔고,
+    // 그 결과 지하 지/비01까지 PROPERTY_UNIT_NOT_FOUND ×2 + bijection ×1로
+    // anchor가 REVIEW에 갇혔다. 등기 스캔 B01 building_unit(물건지 미연결
+    // 고아)이 있어도 활성 물건지 연결이 증명된 수기 B1 후보가 이긴다.
+    const units = [
+        { lFloor: '지', lHo: '비01', flrGbCd: '10', flrNo: 1, exposHo: 'B01', dbHo: 'B1', numerator: '41.72' },
+        { lFloor: '1', lHo: '101', flrGbCd: '20', flrNo: 1, exposHo: '101', dbHo: '101', numerator: '41.44' },
+        { lFloor: '2', lHo: '201', flrGbCd: '20', flrNo: 2, exposHo: '201', dbHo: '201', numerator: '42.62' },
+        { lFloor: '3', lHo: '301', flrGbCd: '20', flrNo: 3, exposHo: '301', dbHo: '301', numerator: '35.64' },
+        { lFloor: '4.5', lHo: '401', flrGbCd: '20', flrNo: 4, exposHo: '401', dbHo: '401', numerator: '54.58' },
+    ].map((unit) => ({
+        ...unit,
+        propertyId: `PU-2155-${unit.dbHo}`,
+        buildingUnitId: `BU-2155-${unit.dbHo}`,
+    }));
+    const buildingId = '33333333-3333-4333-8333-333333333333';
+    const result = assemble({
+        unionId: 'union-1',
+        scannedPnus: [ANCHOR],
+        rootIdentity: PK,
+        perPnu: [
+            {
+                pnu: ANCHOR,
+                ldaregRows: [
+                    ...units.map((unit) => ({
+                        pnu: ANCHOR,
+                        agbldgSn: 'MIA7-2155',
+                        buldNm: '근린생활및단독주택',
+                        buldDongNm: '0000',
+                        buldFloorNm: unit.lFloor,
+                        buldHoNm: unit.lHo,
+                        buldRoomNm: '0000',
+                        ldaQotaRate: `${unit.numerator}/216`,
+                        clsSeCode: '0',
+                        clsSeCodeNm: '현재',
+                    })),
+                    // 실측 placeholder 행: 5개 건물 전부에 1행씩 있는 ratio 공백 행.
+                    {
+                        pnu: ANCHOR,
+                        agbldgSn: 'MIA7-2155',
+                        buldNm: '근린생활및단독주택',
+                        buldDongNm: '0000',
+                        buldFloorNm: '0000',
+                        buldHoNm: '0000',
+                        buldRoomNm: '0000',
+                        ldaQotaRate: '',
+                        clsSeCode: '0',
+                        clsSeCodeNm: '현재',
+                    },
+                ],
+                exposRows: units.map((unit) => ({
+                    mgmBldrgstPk: PK,
+                    flrGbCd: unit.flrGbCd,
+                    flrNo: unit.flrNo,
+                    hoNm: unit.exposHo,
+                })),
+            },
+        ],
+        buildingUnits: [
+            ...units.map((unit) => ({
+                id: unit.buildingUnitId,
+                buildingId,
+                dong: null,
+                floor: null,
+                ho: unit.dbHo,
+                registryExternalId: null,
+            })),
+            // 등기 스캔이 만든 지하 호 — 물건지 미연결 고아.
+            {
+                id: 'BU-2155-B01-REGISTRY',
+                buildingId,
+                dong: null,
+                floor: '1',
+                ho: 'B01',
+                registryExternalId: '1010142714',
+            },
+        ],
+        propertyUnits: units.map((unit) => ({
+            id: unit.propertyId,
+            unionId: 'union-1',
+            buildingUnitId: unit.buildingUnitId,
+            pnu: ANCHOR,
+            isDeleted: false,
+            dong: null,
+            ho: unit.dbHo,
+        })),
+        scopeLadfrlAreas: [{ pnu: ANCHOR, area: '216' }],
+        scopeLadfrlTotal: '216',
+    });
+
+    assert.equal(result.blocking, false);
+    assert.equal(result.items.length, 5);
+    const numeratorByProperty = new Map(
+        result.items.map((item) => [
+            item.propertyUnitId,
+            item.components[0].ratioNumerator,
+        ])
+    );
+    assert.deepEqual(
+        [...numeratorByProperty.entries()].sort(),
+        units
+            .map((unit) => [unit.propertyId, unit.numerator])
+            .sort()
+    );
+    const gate = result.componentMatchDigest.find(
+        (entry) =>
+            (entry as { kind?: string }).kind ===
+            'EXPOS_PROVIDER_SHAPE_BRIDGE_GATE'
+    ) as { allowed: boolean; bridgeRequiredCount: number };
+    assert.equal(gate.allowed, true);
+    // bridge가 필요한 잔여 레코드는 지하(지/비01)와 반층(4.5/401) 두 건이다.
+    assert.equal(gate.bridgeRequiredCount, 2);
 });
 
 for (const invalidCase of [

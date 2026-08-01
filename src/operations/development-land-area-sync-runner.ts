@@ -4857,9 +4857,10 @@ export function validateDevelopmentPublicRunArtifact(
                 attributionFields.some((field) => field === null) ||
                 (manifestLabel ===
                     'mia-seven-full-278-official-components-api-readonly-20260729' &&
+                    // 422 = 활성 429 중 3568 도로지분 7건 제외(공식 LDAREG 원천 부재, 2026-08-01 결정)
                     (aggregateCounts.targetCount !== 278 ||
                         aggregateCounts.expectedPropertyUnitCount !==
-                            429 ||
+                            422 ||
                         digests.manifestDigest !==
                             MIA_SEVEN_DEVELOPMENT_FULL_REFRESH_MANIFEST_DIGEST ||
                         publicRelationGisPreflight === null ||
@@ -4868,11 +4869,11 @@ export function validateDevelopmentPublicRunArtifact(
                         publicRelationGisPreflight.scopePnuCount !==
                             301 ||
                         publicRelationGisPreflight.propertyUnitCount !==
-                            429 ||
+                            422 ||
                         publicRelationGisPostflight.scopePnuCount !==
                             301 ||
                         publicRelationGisPostflight.propertyUnitCount !==
-                            429 ||
+                            422 ||
                         landRightFields.some(
                             (field) => field === null
                         ))))) ||

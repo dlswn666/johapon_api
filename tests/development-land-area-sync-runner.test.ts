@@ -425,7 +425,7 @@ function fullRefreshRelationGisSnapshot():
     ) as DevelopmentRelationGisInvariantSnapshot['tables'];
     return {
         scopePnuCount: 301,
-        propertyUnitCount: 429,
+        propertyUnitCount: 422,
         tables,
         aggregateDigest: sha256Utf8(
             JSON.stringify(
@@ -525,7 +525,7 @@ function validFullRefreshRunArtifact(): {
             },
             writeAttribution: {
                 writerJobCount: 1,
-                attributedPropertyUnitCount: 429,
+                attributedPropertyUnitCount: 422,
                 attributionDigest: sha256Utf8(
                     'full-refresh-property-attribution'
                 ),
@@ -540,7 +540,7 @@ function validFullRefreshRunArtifact(): {
                 strategy: 'LADFRL',
                 scopeState: 'SINGLE_PNU_CONFIRMED',
                 outcome: 'APPLIED',
-                updatedPropertyUnits: index < 151 ? 2 : 1,
+                updatedPropertyUnits: index < 144 ? 2 : 1,
                 unchangedPropertyUnits: 0,
                 issueCodes: [],
             })),
@@ -727,32 +727,56 @@ function fullRefreshRuntimeFixture(input: {
         manifestDigest: parsed.manifestDigest,
         entries,
     };
-    const preRows = entries.flatMap((entry) =>
-        propertyRowsByAnchor.get(entry.anchorPnu)!.map((property) => ({
-            id: property.id,
-            pnu: property.pnu,
-            landArea: null,
-            landAreaSource: 'LEGACY_UNKNOWN' as const,
+    // 2026-08-01 개정: 활성 429 중 3568 도로지분 7건은 evidence 커버리지 밖의
+    // MANUAL 행으로 남는다(공식 LDAREG 원천 부재). DB snapshot은 429 전건을 요구한다.
+    const uncoveredRoadShareRows = Array.from(
+        { length:
+            parsed.expectedUnionActivePropertyUnitCount -
+            parsed.expectedPropertyUnitCount },
+        (_, offset) => ({
+            id: numberedUuid(
+                '10000000',
+                parsed.expectedPropertyUnitCount + offset
+            ),
+            pnu: '1130510100107913568',
+            landArea: '5',
+            landAreaSource: 'MANUAL' as const,
             landAreaSyncedAt: null,
             landAreaSyncJobId: null,
-        }))
+        })
     );
-    const postRows = entries.flatMap((entry) => {
-        const writerJobId = writerJobIdByPnu.get(
-            entry.anchorPnu
-        )!;
-        return propertyRowsByAnchor
-            .get(entry.anchorPnu)!
-            .map((property) => ({
+    const preRows = [
+        ...entries.flatMap((entry) =>
+            propertyRowsByAnchor.get(entry.anchorPnu)!.map((property) => ({
                 id: property.id,
                 pnu: property.pnu,
-                landArea: '1',
-                landAreaSource: entry.expectedStrategy,
-                landAreaSyncedAt:
-                    '2026-07-28T00:01:00.000Z',
-                landAreaSyncJobId: writerJobId,
-            }));
-    });
+                landArea: null,
+                landAreaSource: 'LEGACY_UNKNOWN' as const,
+                landAreaSyncedAt: null,
+                landAreaSyncJobId: null,
+            }))
+        ),
+        ...uncoveredRoadShareRows,
+    ];
+    const postRows = [
+        ...entries.flatMap((entry) => {
+            const writerJobId = writerJobIdByPnu.get(
+                entry.anchorPnu
+            )!;
+            return propertyRowsByAnchor
+                .get(entry.anchorPnu)!
+                .map((property) => ({
+                    id: property.id,
+                    pnu: property.pnu,
+                    landArea: '1',
+                    landAreaSource: entry.expectedStrategy,
+                    landAreaSyncedAt:
+                        '2026-07-28T00:01:00.000Z',
+                    landAreaSyncJobId: writerJobId,
+                }));
+        }),
+        ...uncoveredRoadShareRows.map((row) => ({ ...row })),
+    ];
     const terminalByJobId = new Map<string, LandAreaSyncApiJob>();
     for (const entry of entries) {
         const writerJobId = writerJobIdByPnu.get(
@@ -903,11 +927,14 @@ async function runFullRefreshRuntime(input: {
                 jobIds,
                 [...fixture.writerJobIdByPnu.values()].sort()
             );
-            return fixture.postRows.map((row) => ({
-                id: row.id,
-                unionId: fixture.targetManifest.unionId,
-                landAreaSyncJobId: row.landAreaSyncJobId!,
-            }));
+            // 미커버 MANUAL 행(landAreaSyncJobId null)은 job id 조회에 잡히지 않는다.
+            return fixture.postRows
+                .filter((row) => row.landAreaSyncJobId !== null)
+                .map((row) => ({
+                    id: row.id,
+                    unionId: fixture.targetManifest.unionId,
+                    landAreaSyncJobId: row.landAreaSyncJobId!,
+                }));
         },
         ...(input.omitRelationReader
             ? {}
@@ -1264,7 +1291,7 @@ test('공개 artifact는 집계와 digest allowlist만 남기고 raw 식별자·
     );
 });
 
-test('미아7 전체 재조회 private/public artifact는 공식 278 구성요소·301 조회 PNU·429 물건과 relation/rights 게이트를 고정한다', () => {
+test('미아7 전체 재조회 private/public artifact는 공식 278 구성요소·301 조회 PNU·422 물건(도로지분 7건 제외)과 relation/rights 게이트를 고정한다', () => {
     const { artifact, targetManifest } =
         validFullRefreshRunArtifact();
     assert.doesNotThrow(() =>
@@ -1283,7 +1310,7 @@ test('미아7 전체 재조회 private/public artifact는 공식 278 구성요�
     assert.equal(publicArtifact.aggregateCounts.targetCount, 278);
     assert.equal(
         publicArtifact.aggregateCounts.expectedPropertyUnitCount,
-        429
+        422
     );
     assert.equal(
         publicArtifact.relationGisInvariant.preflight
@@ -2101,7 +2128,7 @@ test('repo-pinned v3 전체 갱신 target만 정책 marker로 승격하고 임�
     assert.deepEqual(marker, {
         profile: 'DEVELOPMENT_FULL_REFRESH_API_REQUERY_V1',
         manifestDigest:
-            'b00f52f97ef20df9f0e7658c84e238044c5eddabce6f1083fa3789776ecf1c24',
+            '10eeb4fb47aa5e32429604b9e91eba7628c3319d2f1bb0584fda92976737100c',
         scopeDigest:
             'c661e864d20342519cf7d453454ead53d9279a21c37cdfaa87b8e68f5e2a7eb9',
     });
