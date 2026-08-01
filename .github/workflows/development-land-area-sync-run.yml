@@ -426,6 +426,23 @@ jobs:
             echo "::error::Remote guardian status is invalid."
             exit 1
           fi
+          # 인라인 캡처 실패 시 guardian이 남긴 redacted 요약(코드·카운트만)을
+          # best-effort로 회수해 로그에 노출한다. 식별자 유입은 아래 grep이 차단한다.
+          set +e
+          scp "${ssh_options[@]}" \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/capture-failure-summary.json" \
+            development-land-area-sync-output/capture-failure-summary.json \
+            2>/dev/null
+          set -e
+          if [[ -f development-land-area-sync-output/capture-failure-summary.json ]]; then
+            if grep -Eq '[0-9]{12,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+              development-land-area-sync-output/capture-failure-summary.json; then
+              echo "::warning::Inline capture failure summary contains disallowed identifiers; suppressed."
+            else
+              echo "Inline capture failure summary:"
+              cat development-land-area-sync-output/capture-failure-summary.json
+            fi
+          fi
           if [[ "${runner_status}" -eq 0 || "${runner_status}" -eq 1 ]]; then
             scp "${ssh_options[@]}" \
               "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/artifact.json" \

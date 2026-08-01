@@ -28,6 +28,7 @@ host_artifact="${host_root}/artifact.json"
 host_status="${host_root}/status"
 host_validated="${host_root}/validated"
 host_started="${host_root}/guardian-started"
+host_capture_failure="${host_root}/capture-failure-summary.json"
 operation_lock_path="${application_root}/.land-area-sync-operation.lock"
 container_root="/app/.development-land-area-sync"
 container_target="${container_root}/target-${RUN_KEY}.json"
@@ -153,7 +154,8 @@ schedule_host_self_cleanup() {
       "${host_root}/guardian-started" \
       "${host_root}/artifact.json" \
       "${host_root}/status" \
-      "${host_root}/validated"
+      "${host_root}/validated" \
+      "${host_root}/capture-failure-summary.json"
     rmdir -- "${host_root}"
   ) </dev/null >/dev/null 2>&1 &
 }
@@ -329,6 +331,7 @@ else
   docker exec "${target_container}" \
     chmod 600 "${container_capture_target}"
   capture_run_id="${RUN_KEY//-/}"
+  set +e
   timeout --foreground --kill-after=30s "${capture_timeout_seconds}" \
   docker exec -w /app \
     -e LAND_AREA_SYNC_ENABLED= \
@@ -338,6 +341,64 @@ else
     --capture-run-id "${capture_run_id}" \
     --evidence-out ".development-land-area-evidence-capture/evidence-${RUN_KEY}.json" \
     --audit-out ".development-land-area-evidence-capture/audit-${RUN_KEY}.json"
+  inline_capture_status="$?"
+  set -e
+  if [[ "${inline_capture_status}" -ne 0 ]]; then
+    # 인라인 캡처 실패 audit의 redacted 요약만 host로 반출한다. 공개 capture
+    # artifact와 같은 수위(게이트/승격 코드·집계 카운트·retry·issue code 카운트)만
+    # 허용하고 anchorPnu/UUID 등 식별자는 어떤 경로로도 내보내지 않는다.
+    docker exec -w /app \
+      -e "AUDIT_PATH=${container_capture_audit}" \
+      -e "INLINE_CAPTURE_STATUS=${inline_capture_status}" \
+      "${target_container}" \
+      node -e '
+        const fs = require("node:fs");
+        const CODE_RE = /^[A-Z0-9_]{1,100}$/;
+        const n = (v) => (Number.isSafeInteger(v) ? v : null);
+        const code = (v) => (typeof v === "string" && CODE_RE.test(v) ? v : null);
+        const codes = (v) =>
+          Array.isArray(v) ? v.map(code).filter(Boolean).slice(0, 32) : null;
+        let audit = null;
+        try {
+          audit = JSON.parse(fs.readFileSync(process.env.AUDIT_PATH ?? "", "utf8"));
+        } catch {}
+        const entries = Array.isArray(audit?.entries) ? audit.entries : [];
+        const statusCounts = {};
+        const issueCodeCounts = {};
+        for (const entry of entries) {
+          const status = code(entry?.status);
+          if (status) statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+          for (const issue of codes(entry?.issueCodes) ?? []) {
+            issueCodeCounts[issue] = (issueCodeCounts[issue] ?? 0) + 1;
+          }
+        }
+        const summary = {
+          inlineCaptureExitStatus: n(Number(process.env.INLINE_CAPTURE_STATUS)),
+          auditReadable: audit !== null,
+          failureCode: code(audit?.failureCode),
+          gateStatus: code(audit?.gate?.status),
+          gateFailureCodes: codes(audit?.gate?.failureCodes),
+          promotionGateStatus: code(audit?.promotionGate?.status),
+          promotionGateFailureCodes: codes(audit?.promotionGate?.failureCodes),
+          entryCount: n(entries.length),
+          statusCounts,
+          issueCodeCounts,
+          retry: audit?.retry
+            ? {
+                rounds: n(audit.retry.rounds),
+                retriedAnchorCount: n(audit.retry.retriedAnchorCount),
+                recoveredAnchorCount: n(audit.retry.recoveredAnchorCount),
+                skipped: code(audit.retry.skipped),
+              }
+            : null,
+        };
+        process.stdout.write(`${JSON.stringify(summary)}\n`);
+      ' > "${host_capture_failure}.tmp.$$" \
+      && mv -f -- "${host_capture_failure}.tmp.$$" "${host_capture_failure}" \
+      && chmod 600 "${host_capture_failure}" \
+      || rm -f -- "${host_capture_failure}.tmp.$$"
+    exit "${inline_capture_status}"
+  fi
   docker exec -w /app \
     -e "FULL_REFRESH_TARGET=${container_capture_target}" \
     -e "FULL_REFRESH_EVIDENCE=${container_capture_evidence}" \
