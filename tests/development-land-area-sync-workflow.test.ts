@@ -115,7 +115,7 @@ test('미아7 전체 299 anchor API 재조회 legacy route는 read-only capture�
     );
 });
 
-test('미아7 278 official component·422 물건지(도로지분 7건 제외) 전체 재조회는 299 active PNU와 301 scanned PNU를 분리해 검증한다', () => {
+test('미아7 278 official component·422 물건지(도로지분 7건 제외) 전체 재조회는 299 active PNU와 300 scanned PNU를 분리해 검증한다', () => {
     const label =
         'mia-seven-full-278-official-components-api-readonly-20260729';
     const selection = captureWorkflow.slice(

@@ -424,7 +424,7 @@ function fullRefreshRelationGisSnapshot():
         )
     ) as DevelopmentRelationGisInvariantSnapshot['tables'];
     return {
-        scopePnuCount: 301,
+        scopePnuCount: 300,
         propertyUnitCount: 422,
         tables,
         aggregateDigest: sha256Utf8(
@@ -608,6 +608,9 @@ function fullRefreshRuntimeFixture(input: {
     >(parsed.anchors.map((anchor) => [anchor, []]));
     let propertyIndex = 0;
     for (const pnu of parsed.expectedUnionActivePnus) {
+        // 3568은 조회 scope·evidence 커버리지 밖(도로지분 carveout) —
+        // 미커버 MANUAL 행 생성기가 별도로 모델링한다.
+        if (pnu === '1130510100107913568') continue;
         const anchor = anchorByPnu.get(pnu);
         assert.ok(anchor, `active PNU ${pnu} component missing`);
         propertyRowsByAnchor.get(anchor!)!.push({
@@ -1291,7 +1294,7 @@ test('공개 artifact는 집계와 digest allowlist만 남기고 raw 식별자·
     );
 });
 
-test('미아7 전체 재조회 private/public artifact는 공식 278 구성요소·301 조회 PNU·422 물건(도로지분 7건 제외)과 relation/rights 게이트를 고정한다', () => {
+test('미아7 전체 재조회 private/public artifact는 공식 278 구성요소·300 조회 PNU·422 물건(도로지분 7건 제외)과 relation/rights 게이트를 고정한다', () => {
     const { artifact, targetManifest } =
         validFullRefreshRunArtifact();
     assert.doesNotThrow(() =>
@@ -1315,7 +1318,7 @@ test('미아7 전체 재조회 private/public artifact는 공식 278 구성요�
     assert.equal(
         publicArtifact.relationGisInvariant.preflight
             ?.scopePnuCount,
-        301
+        300
     );
     assert.deepEqual(publicArtifact.strategyCounts, {
         LADFRL: 278,
@@ -2128,9 +2131,9 @@ test('repo-pinned v3 전체 갱신 target만 정책 marker로 승격하고 임�
     assert.deepEqual(marker, {
         profile: 'DEVELOPMENT_FULL_REFRESH_API_REQUERY_V1',
         manifestDigest:
-            '10eeb4fb47aa5e32429604b9e91eba7628c3319d2f1bb0584fda92976737100c',
+            '17f07208a0192d9e289d0e348b87bd3bd8ce9a2f5ec1396afcb4f5466c44bc9d',
         scopeDigest:
-            'c661e864d20342519cf7d453454ead53d9279a21c37cdfaa87b8e68f5e2a7eb9',
+            'a138f3310593bca21f6f64311e47f525da4eaf28ae4c1d01af855852d0f1a586',
     });
     assert.throws(
         () =>

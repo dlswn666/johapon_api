@@ -293,7 +293,7 @@ test('미아7 전체 API 재조회 target은 활성 anchor 299건과 property un
     );
 });
 
-test('미아7 component target은 활성 299 PNU를 공식 278 component·301 조회 scope로 고정한다', () => {
+test('미아7 component target은 활성 299 PNU를 공식 278 component·300 조회 scope로 고정한다', () => {
     const full299 = parseDevelopmentTargetManifest(
         JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
     );
@@ -316,7 +316,8 @@ test('미아7 component target은 활성 299 PNU를 공식 278 component·301 �
 
     assert.equal(component279.anchors.length, 278);
     assert.equal(component279.targetCount, 278);
-    assert.equal(component279.allowedScopePnus.length, 301);
+    // 2026-08-01 개정: 3568은 조회 scope에서도 제외(어떤 anchor component도 스캔하지 않음)
+    assert.equal(component279.allowedScopePnus.length, 300);
     // 2026-08-01 개정: 3568 도로지분 7건 제외(공식 LDAREG 원천 부재) → 422
     assert.equal(component279.expectedPropertyUnitCount, 422);
     assert.equal(
@@ -777,7 +778,7 @@ test('v3 전체 capture는 실행 직전 DEV 활성 429호·299 PNU exact 집합
     );
 });
 
-test('278 official component capture는 anchor 밖 active PNU 21개를 허용하되 301 조회 scope 밖 PNU는 거부한다', () => {
+test('278 official component capture는 anchor 밖 active PNU 21개를 허용하되 300 조회 scope 밖 PNU는 거부한다', () => {
     const full299 = parseDevelopmentTargetManifest(
         JSON.parse(readFileSync(MIA_FULL_299_TARGET_URL, 'utf8'))
     );

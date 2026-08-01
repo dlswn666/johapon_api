@@ -4867,11 +4867,11 @@ export function validateDevelopmentPublicRunArtifact(
                         publicRelationGisPostflight === null ||
                         publicRelationGisChanged ||
                         publicRelationGisPreflight.scopePnuCount !==
-                            301 ||
+                            300 ||
                         publicRelationGisPreflight.propertyUnitCount !==
                             422 ||
                         publicRelationGisPostflight.scopePnuCount !==
-                            301 ||
+                            300 ||
                         publicRelationGisPostflight.propertyUnitCount !==
                             422 ||
                         landRightFields.some(

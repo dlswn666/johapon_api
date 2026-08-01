@@ -41,12 +41,18 @@ API에 값이 존재할 때만 적용 가능하므로 이 7건은 수기 유지�
 | `src/operations/development-land-area-sync-runner.ts` | 공개 run artifact의 라벨 고정 검증 429→422 (relationGis pre/postflight 포함) |
 | 테스트 4종 | 위 고정값 갱신 |
 
-anchors(278)·allowedScopePnus(301)·expectedUnionActivePnus(299)·
-expectedUnionActivePropertyUnitCount(429)는 그대로다 — DB 활성 상태의 진실값과
-스캔 커버리지 요구는 변하지 않고, **자동 기록 커버리지 기대만** 422로 줄었다.
-3568은 여전히 활성 PNU로 스캔되지만(299 도달 검증 유지) 그 물건지들은 evidence
-커버리지 밖이다. 게이트의 SET-일치 검증은 expected==active(429)일 때만 발동하는
-설계라 422 재정의로 자동 비활성화되며, COUNT 검증(=422)이 커버리지를 담당한다.
+anchors(278)·expectedUnionActivePnus(299)·expectedUnionActivePropertyUnitCount(429)는
+그대로다 — DB 활성 상태의 진실값은 변하지 않고, **자동 기록 커버리지 기대만** 422로
+줄었다. 게이트의 SET-일치 검증은 expected==active(429)일 때만 발동하는 설계라 422
+재정의로 자동 비활성화되며, COUNT 검증(=422)이 커버리지를 담당한다.
+
+**2차 개정(같은 날): allowedScopePnus 301→300.** 첫 재실행(run 30703064281)에서
+278/278 CAPTURED·422/422·promotionGate PASS까지 도달했으나
+`CAPTURE_SCANNED_PNU_COVERAGE_MISMATCH` 1건이 남았다 — 3568은 공식 데이터가 없어
+어떤 anchor component의 스캔에도 포함되지 않는데(스캔 300 vs 허용 301) 조회 scope에는
+남아 있었기 때문. carveout의 논리적 완결로 3568을 allowedScopePnus에서도 제거했다
+(scopeDigest `a138f331…`, manifestDigest `17f07208…`). 3568은 여전히 활성 PNU
+진실값(299)에는 포함되므로 DB identity 검증은 그대로 3568 물건지를 요구한다.
 
 ## 함께 해소된 791-2155 (같은 날, 코드로 해결)
 
