@@ -3357,7 +3357,7 @@ test('POST 5xx 전에 durable admission이 없으면 exact 조회를 유한 횟�
     assert.equal(artifact.gate.status, 'FAIL');
     assert.equal(
         artifact.gate.failureCode,
-        'AMBIGUOUS_ADMISSION_NOT_DURABLE'
+        'AMBIGUOUS_ADMISSION_NOT_DURABLE_HTTP_503'
     );
 });
 

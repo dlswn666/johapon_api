@@ -2066,6 +2066,8 @@ async function reconcileAmbiguousAdmission(input: {
     maxAttempts: number;
     sleep: (milliseconds: number) => Promise<void>;
     replayAdmission: () => Promise<string>;
+    /** 최초 admission 실패 원인 — durable 미발견 시 최종 코드에 보존한다. */
+    initiatingError?: unknown;
 }): Promise<LandAreaSyncApiJob> {
     // 최초 POST는 동일 admission UUID로 한 번 호출한다. 5xx/timeout이면 latest를
     // 추정하지 않고 exact durable id만 제한된 횟수 조회한다. durable PROCESSING 행을
@@ -2128,8 +2130,21 @@ async function reconcileAmbiguousAdmission(input: {
             return exact;
         }
     }
+    // 최초 admission 실패의 서버 코드·status를 접미로 보존해 artifact만으로
+    // 서버 측 5xx 원인을 특정할 수 있게 한다.
+    const initiating = input.initiatingError;
+    const initiatingSuffix =
+        initiating instanceof ControlledApiError &&
+        /^[A-Z0-9_]{1,60}$/.test(initiating.code)
+            ? initiating.code === `HTTP_${initiating.status}`
+                ? `_${initiating.code}`
+                : `_${initiating.code}_${initiating.status}`
+            : '';
     throw new ControlledRunnerError(
-        'AMBIGUOUS_ADMISSION_NOT_DURABLE'
+        `AMBIGUOUS_ADMISSION_NOT_DURABLE${initiatingSuffix}`.slice(
+            0,
+            100
+        )
     );
 }
 
@@ -3269,6 +3284,7 @@ export async function runDevelopmentLandAreaSync(input: {
                         pnu,
                         admissionKey: discoveryAdmissionKey,
                         sourceDiscoveryJobId: null,
+                        initiatingError: error,
                         pollIntervalMs,
                         maxAttempts: admissionReconciliationAttempts,
                         sleep,
@@ -3414,6 +3430,7 @@ export async function runDevelopmentLandAreaSync(input: {
                             pnu,
                             admissionKey: applyAdmissionKey,
                             sourceDiscoveryJobId: discoveryJobId,
+                            initiatingError: error,
                             pollIntervalMs,
                             maxAttempts: admissionReconciliationAttempts,
                             sleep,
