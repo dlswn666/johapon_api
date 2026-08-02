@@ -1,3 +1,4 @@
+import { request as nodeHttpRequest } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import {
@@ -1629,6 +1630,121 @@ export class LocalhostDevelopmentLandAreaSyncClient
             this.actorAuthUserId,
             this.now()
         );
+        // 2026-08-02: 같은 컨테이너에서 guardian의 node:http health check는 매 run
+        // 성공하는 반면 undici fetch 기반 요청은 서버가 요청을 수신·처리(잡 생성
+        // 2초 완료)했음에도 응답 수신 전 15초 타임아웃으로 죽는 현상이 11~14차
+        // write run에서 결정론적으로 재현됐다. 기본 전송층을 검증된 node:http로
+        // 교체한다. 테스트가 fetchImpl을 주입한 경우에만 기존 fetch 경로를 쓴다.
+        if (this.fetchImpl !== fetch) {
+            return this.requestViaFetch(path, init, token);
+        }
+        let response: { status: number; bytes: Buffer };
+        try {
+            response = await new Promise<{ status: number; bytes: Buffer }>(
+                (resolve, reject) => {
+                    const bodyText = init.body
+                        ? JSON.stringify(init.body)
+                        : null;
+                    const request = nodeHttpRequest(
+                        `${LOCAL_API_ORIGIN}${path}`,
+                        {
+                            method: init.method,
+                            headers: {
+                                Accept: 'application/json',
+                                Authorization: `Bearer ${token}`,
+                                ...(bodyText
+                                    ? {
+                                          'Content-Type':
+                                              'application/json',
+                                          'Content-Length': String(
+                                              Buffer.byteLength(bodyText)
+                                          ),
+                                      }
+                                    : {}),
+                            },
+                            timeout: 15_000,
+                        },
+                        (incoming) => {
+                            const chunks: Buffer[] = [];
+                            let size = 0;
+                            incoming.on('data', (chunk: Buffer) => {
+                                size += chunk.length;
+                                if (size > RESPONSE_SIZE_LIMIT) {
+                                    incoming.destroy();
+                                    reject(
+                                        new ControlledApiError(
+                                            'API_RESPONSE_TOO_LARGE',
+                                            incoming.statusCode ?? 0
+                                        )
+                                    );
+                                    return;
+                                }
+                                chunks.push(chunk);
+                            });
+                            incoming.on('end', () =>
+                                resolve({
+                                    status: incoming.statusCode ?? 0,
+                                    bytes: Buffer.concat(chunks),
+                                })
+                            );
+                            incoming.on('error', () =>
+                                reject(
+                                    new ControlledApiError(
+                                        'API_NETWORK_ERROR',
+                                        0
+                                    )
+                                )
+                            );
+                        }
+                    );
+                    request.on('timeout', () => {
+                        request.destroy();
+                        reject(
+                            new ControlledApiError('API_NETWORK_ERROR', 0)
+                        );
+                    });
+                    request.on('error', () =>
+                        reject(
+                            new ControlledApiError('API_NETWORK_ERROR', 0)
+                        )
+                    );
+                    if (bodyText) {
+                        request.write(bodyText);
+                    }
+                    request.end();
+                }
+            );
+        } catch (error) {
+            if (error instanceof ControlledApiError) {
+                throw error;
+            }
+            throw new ControlledApiError('API_NETWORK_ERROR', 0);
+        }
+        let value: unknown;
+        try {
+            value = JSON.parse(response.bytes.toString('utf8'));
+        } catch {
+            throw new ControlledApiError('API_RESPONSE_NOT_JSON', response.status);
+        }
+        if (response.status < 200 || response.status >= 300) {
+            const body = value && typeof value === 'object'
+                ? (value as Record<string, unknown>)
+                : {};
+            const code =
+                typeof body.code === 'string' && /^[A-Z0-9_]{1,80}$/.test(body.code)
+                    ? body.code
+                    : `HTTP_${response.status}`;
+            throw new ControlledApiError(code, response.status);
+        }
+        return { status: response.status, value };
+    }
+
+    /** 테스트 전용 경로 — fetchImpl 주입 시 기존 fetch 기반 전송을 유지한다. */
+    private async requestViaFetch(
+        path: string,
+        init: { method: 'GET' | 'POST'; body?: Record<string, unknown> },
+        token: string
+    ): Promise<{ status: number; value: unknown }> {
         let response: Response;
         try {
             response = await this.fetchImpl(`${LOCAL_API_ORIGIN}${path}`, {
