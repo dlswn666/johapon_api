@@ -3156,7 +3156,10 @@ export async function runDevelopmentLandAreaSync(input: {
         safetyFailureCode =
             error instanceof ControlledRunnerError
                 ? error.code
-                : 'POSTFLIGHT_READ_FAILED';
+                : error instanceof Error &&
+                    /^[A-Z0-9_]{1,100}$/.test(error.message)
+                  ? error.message
+                  : 'POSTFLIGHT_READ_FAILED';
     };
     try {
         const observedPreflight =
@@ -3187,10 +3190,15 @@ export async function runDevelopmentLandAreaSync(input: {
             landRightPreflightRows = observedLandRights.rows;
         }
     } catch (error) {
+        // CLI reader의 invariant 실패는 SCREAMING_SNAKE 코드 메시지를 가진 일반
+        // Error다. 코드를 보존해야 artifact만으로 실패 지점을 특정할 수 있다.
         failureCode =
             error instanceof ControlledRunnerError
                 ? error.code
-                : 'PREFLIGHT_READ_FAILED';
+                : error instanceof Error &&
+                    /^[A-Z0-9_]{1,100}$/.test(error.message)
+                  ? error.message
+                  : 'PREFLIGHT_READ_FAILED';
         stoppedBeforePnu =
             developmentTargetExecutionAnchors(input.target)[0] ?? null;
     }

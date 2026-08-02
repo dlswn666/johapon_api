@@ -186,7 +186,18 @@ async function main(): Promise<void> {
                 (expectedCount !== null &&
                     result.count !== expectedCount)
             ) {
-                throw new Error(`${code}_READ_FAILED`);
+                // PostgREST 오류 코드를 artifact에서 판독 가능한 접미로 보존한다.
+                const causeRaw = (
+                    result.error as { code?: unknown } | null
+                )?.code;
+                const cause =
+                    typeof causeRaw === 'string' &&
+                    /^[A-Za-z0-9]{1,16}$/.test(causeRaw)
+                        ? `_${causeRaw.toUpperCase()}`
+                        : result.error
+                          ? '_ERR'
+                          : '_SHAPE';
+                throw new Error(`${code}_READ_FAILED${cause}`);
             }
             const pageCount = result.count as number;
             expectedCount = pageCount;
