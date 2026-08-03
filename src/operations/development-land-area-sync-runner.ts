@@ -25,6 +25,7 @@ const HEX64_RE = /^[0-9a-f]{64}$/;
 const POSITIVE_INTEGER_RE = /^[1-9][0-9]*$/;
 const LOCAL_API_ORIGIN = 'http://127.0.0.1:3100';
 const RESPONSE_SIZE_LIMIT = 256 * 1024;
+const LOCAL_API_REQUEST_TIMEOUT_MS = 60_000;
 
 export const DEVELOPMENT_TARGET_MANIFEST_VERSION =
     'land-area-development-target-manifest@1';
@@ -1635,6 +1636,9 @@ export class LocalhostDevelopmentLandAreaSyncClient
         // 2초 완료)했음에도 응답 수신 전 15초 타임아웃으로 죽는 현상이 11~14차
         // write run에서 결정론적으로 재현됐다. 기본 전송층을 검증된 node:http로
         // 교체한다. 테스트가 fetchImpl을 주입한 경우에만 기존 fetch 경로를 쓴다.
+        // 2026-08-03: gisSystemAdminMiddleware가 응답 전에 dev Supabase 조회를
+        // await하므로 DB 지연이 15초를 넘으면 "잡은 생성되는데 응답만 유실"
+        // 형상이 된다. 지연/유실을 판별하도록 요청 타임아웃을 60초로 올린다.
         if (this.fetchImpl !== fetch) {
             return this.requestViaFetch(path, init, token);
         }
@@ -1662,7 +1666,7 @@ export class LocalhostDevelopmentLandAreaSyncClient
                                       }
                                     : {}),
                             },
-                            timeout: 15_000,
+                            timeout: LOCAL_API_REQUEST_TIMEOUT_MS,
                         },
                         (incoming) => {
                             const chunks: Buffer[] = [];
@@ -1756,7 +1760,7 @@ export class LocalhostDevelopmentLandAreaSyncClient
                 },
                 ...(init.body ? { body: JSON.stringify(init.body) } : {}),
                 redirect: 'error',
-                signal: AbortSignal.timeout(15_000),
+                signal: AbortSignal.timeout(LOCAL_API_REQUEST_TIMEOUT_MS),
             });
         } catch {
             throw new ControlledApiError('API_NETWORK_ERROR', 0);

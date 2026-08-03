@@ -13,6 +13,10 @@ import {
     validateDevelopmentRunnerEnvironment,
     type DevelopmentRelationGisInvariantRows,
 } from '../operations/development-land-area-sync-runner';
+import {
+    formatLocalhostProbeSummary,
+    probeLocalhostLandAreaSyncApi,
+} from '../operations/land-area-sync-localhost-probe';
 
 const PRIVATE_DIRECTORY = '.development-land-area-sync';
 const INPUT_SIZE_LIMIT = 1024 * 1024;
@@ -129,6 +133,34 @@ async function writeArtifact(
     }
 }
 
+/**
+ * write 11~15차 admission 응답 유실 진단용 in-process 프로브.
+ * guardian의 fresh-process 프로브(PRERUN_PROBE_EXIT_*)와 결과를 대조해
+ * 문제 범위를 판별한다. 실패해도 run 진행에는 영향을 주지 않으며,
+ * 출력은 고정 토큰·상태코드·소요시간뿐이다(식별자 금지).
+ */
+async function emitRunnerProbe(
+    phase: 'STARTUP' | 'POSTFAIL',
+    actorAuthUserId: string
+): Promise<void> {
+    try {
+        const summary = await probeLocalhostLandAreaSyncApi({
+            secret: process.env.DEV_API_JWT_SECRET,
+            actorAuthUserId,
+        });
+        process.stdout.write(
+            `LAND_AREA_SYNC_RUNNER_PROBE_${phase}_EXIT_${summary.exitCode}\n`
+        );
+        process.stdout.write(
+            `${formatLocalhostProbeSummary(summary)}\n`
+        );
+    } catch {
+        process.stdout.write(
+            `LAND_AREA_SYNC_RUNNER_PROBE_${phase}_EXIT_99\n`
+        );
+    }
+}
+
 async function main(): Promise<void> {
     const args = parseArguments(process.argv.slice(2));
     const [targetInput, dbApprovalInput, evidenceInput] = await Promise.all([
@@ -141,6 +173,7 @@ async function main(): Promise<void> {
         parseDevelopmentDbApprovalManifest(dbApprovalInput);
     const evidence = parseDevelopmentEvidenceManifest(evidenceInput);
     validateDevelopmentRunnerEnvironment(process.env, target);
+    await emitRunnerProbe('STARTUP', args.actorAuthUserId);
 
     const client = new LocalhostDevelopmentLandAreaSyncClient(
         process.env.DEV_API_JWT_SECRET!,
@@ -688,6 +721,14 @@ async function main(): Promise<void> {
         `LAND_AREA_DEVELOPMENT_RUN_ARTIFACT:${artifact.gate.status}\n`
     );
     if (artifact.gate.status !== 'PASS') {
+        if (
+            typeof artifact.gate.failureCode === 'string' &&
+            /ADMISSION|API_NETWORK|API_RESPONSE/.test(
+                artifact.gate.failureCode
+            )
+        ) {
+            await emitRunnerProbe('POSTFAIL', args.actorAuthUserId);
+        }
         process.exitCode = 1;
     }
 }

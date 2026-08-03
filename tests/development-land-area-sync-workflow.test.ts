@@ -486,6 +486,63 @@ test('runner soft timeout은 API queue 10분보다 길고 terminal 전 반환하
     assert.match(runner, /JOB_POLL_SOFT_TIMEOUT_AFTER_TERMINAL/);
 });
 
+test('admission 응답 유실 진단 프로브는 고정 토큰 마커·카운트만 내보내고 원문 로그를 반출하지 않는다', () => {
+    const probeCli = fs.readFileSync(
+        path.join(root, 'src/cli/development-land-area-sync-probe.ts'),
+        'utf8'
+    );
+    const probeModule = fs.readFileSync(
+        path.join(
+            root,
+            'src/operations/land-area-sync-localhost-probe.ts'
+        ),
+        'utf8'
+    );
+    // guardian: fresh-process 프로브 + runner 센티널 승격 + 실패 시 카운트 마커
+    assert.match(guardian, /development-land-area-sync-probe\.js/);
+    assert.match(
+        guardian,
+        /append_stage "PRERUN_PROBE_EXIT_\$\{prerun_probe_status\}"/
+    );
+    assert.match(
+        guardian,
+        /\^LAND_AREA_SYNC_RUNNER_PROBE_\[A-Z0-9_\]\{1,44\}\$/
+    );
+    assert.match(
+        guardian,
+        /docker logs --since "\$\{probe_window_started_at\}"/
+    );
+    assert.match(guardian, /ADMISSION_202_LOGGED_/);
+    assert.match(guardian, /RESPONSE_CLOSED_EARLY_/);
+    assert.match(guardian, /GIS_AUTH_SLOW_LOGGED_/);
+    // 서버 로그 원문은 stage/host 어디에도 쓰지 않는다 — grep 카운트만 쓴다.
+    assert.doesNotMatch(
+        guardian,
+        /append_stage "\$\{server_http_window\}"|server_http_window[^\n]*>+ *"?\$\{host_/
+    );
+    // runner CLI: in-process 프로브 센티널(startup/postfail)
+    assert.match(cli, /emitRunnerProbe\('STARTUP', args\.actorAuthUserId\)/);
+    assert.match(cli, /emitRunnerProbe\('POSTFAIL', args\.actorAuthUserId\)/);
+    assert.match(
+        cli,
+        /ADMISSION\|API_NETWORK\|API_RESPONSE/
+    );
+    // 진단이 게이트 판정을 바꾸지 않는다 — 프로브는 exitCode에 관여하지 않는다.
+    assert.match(cli, /LAND_AREA_SYNC_RUNNER_PROBE_\$\{phase\}_EXIT_/);
+    // localhost client 타임아웃은 서버측 지연/유실 판별을 위해 60초다.
+    assert.match(
+        runner,
+        /LOCAL_API_REQUEST_TIMEOUT_MS = 60_000/
+    );
+    assert.doesNotMatch(runner, /15_000/);
+    // 프로브 출력은 고정 토큰·상태코드·소요시간뿐 — 식별자 출력 금지.
+    assert.match(probeModule, /LAND_AREA_SYNC_PROBE_SUMMARY/);
+    assert.doesNotMatch(
+        probeCli,
+        /anchorPnu|unionId|process\.env\.DEV_SUPABASE/
+    );
+});
+
 test('image는 non-root runner private directory를 mode 700으로 준비한다', () => {
     assert.match(dockerfile, /\.development-land-area-sync/);
     assert.match(

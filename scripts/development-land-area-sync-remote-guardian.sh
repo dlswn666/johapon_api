@@ -480,21 +480,77 @@ else
     exit "${validation_status}"
   fi
 fi
+# write 11~15차 admission 응답 유실 진단 — runner와 별개의 fresh process로
+# 무인증 /health + 인증 admissions 왕복을 찔러 exit code만 마커로 남긴다
+# (0=양쪽 응답, 20=health 무응답, 30=인증 타임아웃, 31=인증 소켓 오류,
+# 40=구성 불가). 진단 전용이라 실패해도 run을 중단하지 않는다.
+probe_window_started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+set +e
+docker exec -w /app \
+  -e "LAND_AREA_SYNC_PROBE_ACTOR_AUTH_USER_ID=${ACTOR_AUTH_USER_ID}" \
+  "${target_container}" \
+  node dist/cli/development-land-area-sync-probe.js
+prerun_probe_status="$?"
+set -e
+append_stage "PRERUN_PROBE_EXIT_${prerun_probe_status}"
 append_stage "RUNNER_START"
 write_private_line "${host_started}" "$$"
 
 set +e
-timeout --foreground --kill-after=30s "${runner_timeout_seconds}" \
-docker exec -w /app "${target_container}" \
-  node dist/cli/development-land-area-sync-runner.js \
-  --target ".development-land-area-sync/target-${RUN_KEY}.json" \
-  --db-approval ".development-land-area-sync/db-approval-${RUN_KEY}.json" \
-  --evidence ".development-land-area-sync/evidence-${RUN_KEY}.json" \
-  --actor-auth-user-id "${ACTOR_AUTH_USER_ID}" \
-  --out ".development-land-area-sync/artifact-${RUN_KEY}.json"
+runner_output="$(
+  timeout --foreground --kill-after=30s "${runner_timeout_seconds}" \
+  docker exec -w /app "${target_container}" \
+    node dist/cli/development-land-area-sync-runner.js \
+    --target ".development-land-area-sync/target-${RUN_KEY}.json" \
+    --db-approval ".development-land-area-sync/db-approval-${RUN_KEY}.json" \
+    --evidence ".development-land-area-sync/evidence-${RUN_KEY}.json" \
+    --actor-auth-user-id "${ACTOR_AUTH_USER_ID}" \
+    --out ".development-land-area-sync/artifact-${RUN_KEY}.json" \
+    2>&1
+)"
 runner_status="$?"
 set -e
+printf '%s\n' "${runner_output}"
+# runner의 in-process 프로브 센티널(고정 토큰)만 stage 마커로 승격한다.
+runner_probe_marker_count=0
+while IFS= read -r runner_line; do
+  if [[ "${runner_line}" =~ ^LAND_AREA_SYNC_RUNNER_PROBE_[A-Z0-9_]{1,44}$ ]] \
+    && [[ "${runner_probe_marker_count}" -lt 8 ]]; then
+    append_stage "${runner_line}"
+    runner_probe_marker_count=$((runner_probe_marker_count + 1))
+  fi
+done <<< "${runner_output}"
 final_status="${runner_status}"
+
+# 실패 run에서만 서버 HTTP 로그의 진단 카운트를 마커로 보존한다. 컨테이너가
+# 재생성되면 docker logs가 소멸하므로 지금이 유일한 회수 시점이다. 식별자
+# 없는 고정 패턴의 매칭 카운트만 내보낸다.
+if [[ "${runner_status}" -ne 0 ]]; then
+  set +e
+  server_http_window="$(
+    docker logs --since "${probe_window_started_at}" "${target_container}" 2>&1 \
+      | sed 's/\x1b\[[0-9;]*m//g'
+  )"
+  admission_202_count="$(
+    printf '%s\n' "${server_http_window}" \
+      | grep -c 'POST /api/gis/land-area-sync - 202'
+  )"
+  response_closed_count="$(
+    printf '%s\n' "${server_http_window}" \
+      | grep -c 'CLOSED_BEFORE_FINISH'
+  )"
+  gis_auth_slow_count="$(
+    printf '%s\n' "${server_http_window}" \
+      | grep -c 'GIS_AUTH_SLOW_VERIFICATION'
+  )"
+  set -e
+  [[ "${admission_202_count}" =~ ^[0-9]{1,6}$ ]] || admission_202_count="NA"
+  [[ "${response_closed_count}" =~ ^[0-9]{1,6}$ ]] || response_closed_count="NA"
+  [[ "${gis_auth_slow_count}" =~ ^[0-9]{1,6}$ ]] || gis_auth_slow_count="NA"
+  append_stage "ADMISSION_202_LOGGED_${admission_202_count}"
+  append_stage "RESPONSE_CLOSED_EARLY_${response_closed_count}"
+  append_stage "GIS_AUTH_SLOW_LOGGED_${gis_auth_slow_count}"
+fi
 
 # hard timeout은 runner의 225분 신규-anchor cutoff와 admission wall timer/terminal
 # drain보다 긴 비상 상한이다. timeout 뒤에도 DB approval의 1시간 remaining gate와

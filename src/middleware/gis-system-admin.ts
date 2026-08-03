@@ -5,6 +5,10 @@ import { createLogger } from '../utils/logger';
 
 const logger = createLogger('GIS-AUTH');
 
+// 응답 전에 await하는 DB 권한 검증이 이 시간을 넘기면 클라이언트 타임아웃과
+// 겹쳐 "처리는 됐는데 응답만 유실" 형상을 만들 수 있어 명시적으로 기록한다.
+const SLOW_VERIFICATION_THRESHOLD_MS = 5_000;
+
 const GIS_JOB_TYPES = [
     'GIS_MAP',
     'APARTMENT_PRICE_SYNC',
@@ -44,6 +48,7 @@ export async function gisSystemAdminMiddleware(
     }
     if (requestedUnionId) req.body.unionId = requestedUnionId;
 
+    const verificationStartedAt = Date.now();
     try {
         const client = getSupabaseService(req.user!.databaseTarget).getClient();
         // JWT userId는 auth.users UUID다. users.id(VARCHAR)와 직접 비교하지 않는다.
@@ -184,5 +189,12 @@ export async function gisSystemAdminMiddleware(
             code: 'AUTHORIZATION_LOOKUP_FAILED',
             error: '현재 권한을 확인할 수 없습니다.',
         });
+    } finally {
+        const verificationDuration = Date.now() - verificationStartedAt;
+        if (verificationDuration >= SLOW_VERIFICATION_THRESHOLD_MS) {
+            logger.warn(
+                `GIS_AUTH_SLOW_VERIFICATION (${verificationDuration}ms)`
+            );
+        }
     }
 }

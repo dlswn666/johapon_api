@@ -1,0 +1,162 @@
+name: Land Area Sync Localhost Probe
+
+# write 11~15차 "무인증 health는 성공, 인증 라우트 응답만 유실" 비대칭의
+# 읽기 전용 재현 프로브. 컨테이너 안 fresh process로 무인증 /health와 인증
+# admissions 조회 왕복을 검증한다. write 창(enable) 없이도 실행 가능하며
+# DB에 어떤 쓰기도 하지 않는다. 출력은 고정 토큰·상태코드·소요시간뿐이다.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tonghari-api-land-area-sync-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Read-only localhost API round-trip probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require EC2 connection secrets
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_FINGERPRINT: ${{ secrets.EC2_SSH_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          for secret_name in \
+            EC2_HOST \
+            EC2_USERNAME \
+            EC2_SSH_KEY \
+            EC2_SSH_FINGERPRINT
+          do
+            if [[ -z "${!secret_name:-}" ]]; then
+              missing+=("${secret_name}")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Missing required EC2 connection secret."
+            exit 1
+          fi
+
+      - name: Configure pinned EC2 SSH identity
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_FINGERPRINT: ${{ secrets.EC2_SSH_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "${EC2_USERNAME}" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+            echo "::error::EC2 username format is invalid."
+            exit 1
+          fi
+          if [[
+            ${#EC2_HOST} -gt 253
+            || ! "${EC2_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$
+          ]]; then
+            echo "::error::EC2 host format is invalid."
+            exit 1
+          fi
+
+          install -d -m 700 "${HOME}/.ssh"
+          install -m 600 /dev/null "${HOME}/.ssh/id_ed25519"
+          printf '%s\n' "${EC2_SSH_KEY}" > "${HOME}/.ssh/id_ed25519"
+
+          host_keys="$(
+            ssh-keyscan -T 10 -t ed25519,ecdsa,rsa "${EC2_HOST}" 2>/dev/null
+          )"
+          if [[ -z "${host_keys}" ]]; then
+            echo "::error::EC2 host key scan returned no keys."
+            exit 1
+          fi
+          matched_host_key=""
+          while IFS= read -r host_key; do
+            fingerprint="$(
+              printf '%s\n' "${host_key}" \
+                | ssh-keygen -lf - -E sha256 \
+                | awk '{print $2}'
+            )"
+            if [[ "${fingerprint}" == "${EC2_SSH_FINGERPRINT}" ]]; then
+              matched_host_key="${host_key}"
+              break
+            fi
+          done <<< "${host_keys}"
+          if [[ -z "${matched_host_key}" ]]; then
+            echo "::error::EC2 SSH fingerprint mismatch."
+            exit 1
+          fi
+          printf '%s\n' "${matched_host_key}" > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/known_hosts"
+
+      - name: Run probe inside the API container
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          PROBE_ACTOR_AUTH_USER_ID: ${{ secrets.DEV_GIS_SYSTEM_ADMIN_AUTH_UUID }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${PROBE_ACTOR_AUTH_USER_ID}" ]] \
+            && [[ ! "${PROBE_ACTOR_AUTH_USER_ID}" =~ ^[0-9a-f-]{36}$ ]]; then
+            echo "::error::Probe actor UUID format is invalid."
+            exit 1
+          fi
+
+          ssh_options=(
+            -i "${HOME}/.ssh/id_ed25519"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=40
+            -o "UserKnownHostsFile=${HOME}/.ssh/known_hosts"
+          )
+
+          probe_status=0
+          probe_output="$(
+            ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+              "PROBE_ACTOR_AUTH_USER_ID='${PROBE_ACTOR_AUTH_USER_ID}' bash -s" <<'REMOTE_PROBE'
+          set -euo pipefail
+          container_name="alimtalk-proxy"
+          if [[ -n "${PROBE_ACTOR_AUTH_USER_ID}" ]] \
+            && [[ ! "${PROBE_ACTOR_AUTH_USER_ID}" =~ ^[0-9a-f-]{36}$ ]]; then
+            echo "PROBE_ACTOR_INVALID"
+            exit 64
+          fi
+          if ! docker container inspect "${container_name}" >/dev/null 2>&1; then
+            echo "PROBE_CONTAINER_MISSING"
+            exit 65
+          fi
+          docker exec -w /app \
+            -e "LAND_AREA_SYNC_PROBE_ACTOR_AUTH_USER_ID=${PROBE_ACTOR_AUTH_USER_ID}" \
+            "${container_name}" \
+            node dist/cli/development-land-area-sync-probe.js
+          REMOTE_PROBE
+          )" || probe_status="$?"
+
+          # 안전 필터 — 고정 형식의 요약/오류 토큰 라인만 표시한다.
+          if [[ -n "${probe_output}" ]]; then
+            filtered_output="$(
+              printf '%s\n' "${probe_output}" \
+                | grep -E '^(LAND_AREA_SYNC_PROBE_SUMMARY( [a-z_]+=[A-Z0-9_]+)+|PROBE_[A-Z0-9_]{1,40})$'
+            )" || filtered_output=""
+            if [[ -n "${filtered_output}" ]]; then
+              printf '%s\n' "${filtered_output}"
+            else
+              echo "PROBE_OUTPUT_SUPPRESSED"
+            fi
+          fi
+          echo "PROBE_EXIT_${probe_status}"
+          exit "${probe_status}"
