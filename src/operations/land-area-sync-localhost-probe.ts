@@ -122,10 +122,13 @@ export async function probeLocalhostLandAreaSyncApi(input: {
 
     let authed: LocalhostProbeCheck;
     let token: string | null = null;
+    // env 경유 actor는 빈 문자열로 올 수 있다(시크릿 미주입 등) — 빈 값이면
+    // nil 폴백으로 강등해 인증 왕복 자체는 항상 시도한다(403도 왕복 증거다).
+    const actorCandidate = input.actorAuthUserId?.trim();
     try {
         token = createDevelopmentGisSystemAdminJwt(
             input.secret ?? '',
-            input.actorAuthUserId ?? FALLBACK_ACTOR_AUTH_USER_ID,
+            actorCandidate || FALLBACK_ACTOR_AUTH_USER_ID,
             input.now ? input.now() : new Date()
         );
     } catch {

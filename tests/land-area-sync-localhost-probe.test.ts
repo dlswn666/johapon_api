@@ -104,6 +104,32 @@ test('서버가 아예 없으면 health 무응답으로 exit 20을 보고한다'
     assert.equal(summary.health.outcome, 'NETWORK_ERROR');
 });
 
+test('actor가 빈 문자열이면 nil 폴백으로 인증 왕복을 그대로 시도한다', async () => {
+    const seenAuth: Array<string | undefined> = [];
+    const server = createServer((req, res) => {
+        if (req.url !== '/health') {
+            seenAuth.push(req.headers.authorization);
+        }
+        res.writeHead(req.url === '/health' ? 200 : 403);
+        res.end('{}');
+    });
+    const origin = await listen(server);
+    try {
+        const summary = await probeLocalhostLandAreaSyncApi({
+            origin,
+            secret: SECRET,
+            actorAuthUserId: '',
+            timeoutMs: 2_000,
+        });
+        assert.equal(summary.exitCode, 0);
+        assert.equal(summary.authed.outcome, 'RESPONSE');
+        assert.equal(summary.authed.status, 403);
+        assert.match(seenAuth[0] ?? '', /^Bearer eyJ/);
+    } finally {
+        await close(server);
+    }
+});
+
 test('secret이 없으면 인증 프로브는 INVALID로 exit 40을 보고한다', async () => {
     const server = createServer((req, res) => {
         res.writeHead(200);
