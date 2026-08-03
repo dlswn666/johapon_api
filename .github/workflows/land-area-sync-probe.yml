@@ -210,3 +210,36 @@ jobs:
           )"
           echo "Sanitized land-area-sync server log window (since ${LOG_SINCE}):"
           printf '%s\n' "${scan_output}"
+
+      - name: Scan EC2 host posture for flood-source triage
+        if: always() && inputs.log_since != ''
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          set -euo pipefail
+
+          ssh_options=(
+            -i "${HOME}/.ssh/id_ed25519"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=40
+            -o "UserKnownHostsFile=${HOME}/.ssh/known_hosts"
+          )
+
+          # 프로세스 이름·카운트만 — 인자/식별자 미노출.
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" bash -s <<'REMOTE_HOST_SCAN'
+          set -euo pipefail
+          echo "HOST_CONTAINERS:"
+          docker ps --format '{{.Names}} {{.Status}}' | head -8
+          echo "HOST_NODE_PROCESS_COUNT_$(pgrep -c -f node 2>/dev/null || echo 0)"
+          echo "HOST_OUTBOUND_443_BY_PROCESS:"
+          ss -tnp state established '( dport = :443 )' 2>/dev/null \
+            | grep -oE 'users:\(\("[A-Za-z0-9._-]+' \
+            | sed 's/users:((\"//' \
+            | sort | uniq -c | sort -rn | head -8
+          echo "HOST_OUTBOUND_443_TOTAL_$(ss -tn state established '( dport = :443 )' 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')"
+          REMOTE_HOST_SCAN
