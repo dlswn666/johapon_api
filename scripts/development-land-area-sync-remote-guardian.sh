@@ -531,9 +531,14 @@ if [[ "${runner_status}" -ne 0 ]]; then
     docker logs --since "${probe_window_started_at}" "${target_container}" 2>&1 \
       | sed 's/\x1b\[[0-9;]*m//g'
   )"
+  # req.path는 /api/gis 라우터 mount 이후 경로다 — 프리픽스를 넣으면 0 오판.
   admission_202_count="$(
     printf '%s\n' "${server_http_window}" \
-      | grep -c 'POST /api/gis/land-area-sync - 202'
+      | grep -c 'POST /land-area-sync - 202'
+  )"
+  confirm_202_count="$(
+    printf '%s\n' "${server_http_window}" \
+      | grep -cE 'POST /land-area-sync/[0-9a-f-]{36}/confirm - 20[0-9]'
   )"
   response_closed_count="$(
     printf '%s\n' "${server_http_window}" \
@@ -545,9 +550,11 @@ if [[ "${runner_status}" -ne 0 ]]; then
   )"
   set -e
   [[ "${admission_202_count}" =~ ^[0-9]{1,6}$ ]] || admission_202_count="NA"
+  [[ "${confirm_202_count}" =~ ^[0-9]{1,6}$ ]] || confirm_202_count="NA"
   [[ "${response_closed_count}" =~ ^[0-9]{1,6}$ ]] || response_closed_count="NA"
   [[ "${gis_auth_slow_count}" =~ ^[0-9]{1,6}$ ]] || gis_auth_slow_count="NA"
   append_stage "ADMISSION_202_LOGGED_${admission_202_count}"
+  append_stage "CONFIRM_2XX_LOGGED_${confirm_202_count}"
   append_stage "RESPONSE_CLOSED_EARLY_${response_closed_count}"
   append_stage "GIS_AUTH_SLOW_LOGGED_${gis_auth_slow_count}"
 fi
