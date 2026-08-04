@@ -8,7 +8,6 @@ import {
     MemberInviteSyncResult,
     PreRegisterRequest,
     PreRegisterData,
-    SyncPropertiesRequest,
 } from '../types/member.types';
 import { createLogger } from '../utils/logger';
 import { getAutoOwnershipRatio as calculateAutoOwnershipRatio } from './member.pre-register-ownership';
@@ -211,16 +210,6 @@ export class MemberQueueService {
             });
 
         return jobInfo;
-    }
-
-    /**
-     * Phase F 승인 전에는 property↔building 자동 연결 작업을 영속화하거나 queue에 넣지 않는다.
-     */
-    async addSyncPropertiesJob(request: SyncPropertiesRequest): Promise<MemberJobInfo> {
-        void request;
-        throw Object.assign(new Error('호실 자동 연결은 Phase F 승인 전까지 사용할 수 없습니다.'), {
-            code: 'FEATURE_DISABLED_PHASE_F',
-        });
     }
 
     /**

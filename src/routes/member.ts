@@ -166,33 +166,4 @@ router.get('/job/:jobId', legacyJobReadDisabled);
 router.get('/job/:jobId/db', legacyJobReadDisabled);
 router.get('/jobs/:unionId', legacyJobReadDisabled);
 
-/**
- * 소유지 자동 연결 요청
- * POST /member/sync-properties
- *
- * Phase F 별도 승인 전까지 서버에서 명시적으로 차단한다.
- *
- * Request Body:
- * {
- *   unionId: string
- * }
- */
-router.post('/sync-properties', async (req, res) => {
-    const { unionId } = req.body;
-
-    if (!unionId) {
-        return res.status(400).json({
-            success: false,
-            error: 'unionId is required.',
-        });
-    }
-
-    logger.warn(`Sync properties blocked before Phase F approval: unionId=${unionId}`);
-    return res.status(409).json({
-        success: false,
-        code: 'FEATURE_DISABLED_PHASE_F',
-        error: '호실 자동 연결은 Phase F 승인 전까지 사용할 수 없습니다.',
-    });
-});
-
 export default router;

@@ -7,7 +7,7 @@ import { DatabaseTarget } from './database.types';
 /**
  * 작업 유형
  */
-export type MemberJobType = 'MEMBER_INVITE_SYNC' | 'PRE_REGISTER' | 'SYNC_PROPERTIES';
+export type MemberJobType = 'MEMBER_INVITE_SYNC' | 'PRE_REGISTER';
 
 /**
  * 작업 상태
@@ -131,40 +131,13 @@ export interface PreRegisterResult {
 }
 
 // ============================================
-// 소유지 동기화 (SYNC_PROPERTIES)
-// ============================================
-
-/**
- * 소유지 동기화 요청
- * GIS 데이터(land_lots, buildings, building_units)와 정식 물건지를 매칭하여
- * property_units.building_unit_id를 보강합니다.
- */
-export interface SyncPropertiesRequest {
-    jobType: 'SYNC_PROPERTIES';
-    unionId: string;
-    databaseTarget: DatabaseTarget;
-}
-
-/**
- * 소유지 동기화 결과
- */
-export interface SyncPropertiesResult {
-    success: boolean;
-    totalCount: number;
-    syncedCount: number;
-    skippedCount: number; // 이미 연결된 사용자
-    failedCount: number;
-    errors: string[];
-}
-
-// ============================================
 // 공통 타입
 // ============================================
 
 /**
  * 조합원 대량 처리 요청 (통합)
  */
-export type MemberBulkRequest = MemberInviteSyncRequest | PreRegisterRequest | SyncPropertiesRequest;
+export type MemberBulkRequest = MemberInviteSyncRequest | PreRegisterRequest;
 
 /**
  * 작업 정보
@@ -180,7 +153,7 @@ export interface MemberJobInfo {
     createdAt: Date;
     startedAt?: Date;
     completedAt?: Date;
-    result?: MemberInviteSyncResult | PreRegisterResult | SyncPropertiesResult;
+    result?: MemberInviteSyncResult | PreRegisterResult;
 }
 
 /**
@@ -193,7 +166,7 @@ export interface MemberJobStatusResponse {
     progress: number; // 0-100
     totalCount: number;
     processedCount: number;
-    result?: MemberInviteSyncResult | PreRegisterResult | SyncPropertiesResult;
+    result?: MemberInviteSyncResult | PreRegisterResult;
     error?: string;
     createdAt: string;
     startedAt?: string;

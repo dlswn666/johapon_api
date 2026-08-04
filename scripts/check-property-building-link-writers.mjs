@@ -1017,13 +1017,12 @@ async function findPropertyBuildingLinkWriterViolations({
         return [`${policyPath}: policy를 읽을 수 없습니다: ${error.message}`];
     }
 
+    // 소유지 전수 자동연결(SYNC_PROPERTIES)은 2026-08-04 영구 폐기 — 라우트 자체가 존재하면 안 된다.
+    // 재구축 좌석(SYNC_PROPERTIES_SHADOW)은 마이그레이션에 예약되어 있으며, 재도입 시 별도 승인 계약이 필요하다.
     const memberRoute = await readFile(resolve(repoRoot, 'src/routes/member.ts'), 'utf8');
     const routeViolations = [];
-    if (!memberRoute.includes("code: 'FEATURE_DISABLED_PHASE_F'")) {
-        routeViolations.push('src/routes/member.ts: SYNC_PROPERTIES feature-disabled response is missing');
-    }
-    if (!memberRoute.includes('return res.status(409).json')) {
-        routeViolations.push('src/routes/member.ts: SYNC_PROPERTIES must return HTTP 409');
+    if (memberRoute.includes('sync-properties') || memberRoute.includes('SYNC_PROPERTIES')) {
+        routeViolations.push('src/routes/member.ts: SYNC_PROPERTIES route는 영구 폐기되었다 — 승인 없는 재도입 금지');
     }
 
     try {
