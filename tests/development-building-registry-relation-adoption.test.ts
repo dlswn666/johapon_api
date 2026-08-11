@@ -621,11 +621,10 @@ test('환경 gate는 개발 project URL과 LAND_AREA_SYNC_ENABLED=false를 exact
         DEV_SUPABASE_SERVICE_ROLE_KEY: 'development-key',
         LAND_AREA_SYNC_ENABLED: 'false',
     };
-    assert.equal(
-        validateDevelopmentRelationAdoptionEnvironment(valid)
-            .developmentUrl,
-        valid.DEV_SUPABASE_URL
-    );
+    const resolved = validateDevelopmentRelationAdoptionEnvironment(valid);
+    assert.equal(resolved.supabaseUrl, valid.DEV_SUPABASE_URL);
+    // target 미지정이면 development 로 떨어진다 — 기존 워크플로 호환.
+    assert.equal(resolved.databaseTarget, 'development');
     assert.throws(() =>
         validateDevelopmentRelationAdoptionEnvironment({
             ...valid,
@@ -645,6 +644,66 @@ test('환경 gate는 개발 project URL과 LAND_AREA_SYNC_ENABLED=false를 exact
             LAND_AREA_SYNC_ENABLED: 'False',
         })
     );
+});
+
+test('환경 gate는 production target 을 허용하되 target↔project URL 일치를 강제한다', () => {
+    const productionEnv = {
+        DATA_PORTAL_API_KEY: 'api-key',
+        SUPABASE_URL: 'https://bpdjashtxqrcgxfequgf.supabase.co',
+        SUPABASE_SERVICE_ROLE_KEY: 'production-key',
+        RELATION_ADOPTION_DATABASE_TARGET: 'production',
+        LAND_AREA_SYNC_ENABLED: 'false',
+    };
+    const resolved =
+        validateDevelopmentRelationAdoptionEnvironment(productionEnv);
+    assert.equal(resolved.databaseTarget, 'production');
+    assert.equal(resolved.supabaseUrl, productionEnv.SUPABASE_URL);
+    assert.equal(
+        resolved.supabaseServiceRoleKey,
+        productionEnv.SUPABASE_SERVICE_ROLE_KEY
+    );
+
+    // production 을 선언하고 dev project 로 향하면 거부한다(그 반대도 마찬가지).
+    assert.throws(() =>
+        validateDevelopmentRelationAdoptionEnvironment({
+            ...productionEnv,
+            SUPABASE_URL: 'https://yxypndgipnxrdfyctmvh.supabase.co',
+        })
+    );
+    // production 선언인데 운영 자격증명이 없으면 dev 키로 대체되지 않는다.
+    assert.throws(() =>
+        validateDevelopmentRelationAdoptionEnvironment({
+            DATA_PORTAL_API_KEY: 'api-key',
+            DEV_SUPABASE_URL: 'https://yxypndgipnxrdfyctmvh.supabase.co',
+            DEV_SUPABASE_SERVICE_ROLE_KEY: 'development-key',
+            RELATION_ADOPTION_DATABASE_TARGET: 'production',
+            LAND_AREA_SYNC_ENABLED: 'false',
+        })
+    );
+    // 알 수 없는 target 은 fail-closed. 대소문자·유사어도 통과시키지 않는다.
+    for (const bad of ['staging', 'Production', 'dev', 'prod']) {
+        assert.throws(
+            () =>
+                validateDevelopmentRelationAdoptionEnvironment({
+                    ...productionEnv,
+                    RELATION_ADOPTION_DATABASE_TARGET: bad,
+                }),
+            `target=${JSON.stringify(bad)} 는 거부돼야 한다`
+        );
+    }
+
+    // 빈 값·공백은 "미지정"이라 development 로 폴백한다(거부가 아니다).
+    // 그래서 dev 자격증명을 주면 통과해야 한다 — 폴백 경로를 정직하게 고정한다.
+    for (const blank of ['', ' ']) {
+        const fallback = validateDevelopmentRelationAdoptionEnvironment({
+            DATA_PORTAL_API_KEY: 'api-key',
+            DEV_SUPABASE_URL: 'https://yxypndgipnxrdfyctmvh.supabase.co',
+            DEV_SUPABASE_SERVICE_ROLE_KEY: 'development-key',
+            RELATION_ADOPTION_DATABASE_TARGET: blank,
+            LAND_AREA_SYNC_ENABLED: 'false',
+        });
+        assert.equal(fallback.databaseTarget, 'development');
+    }
 });
 
 test('공개 artifact validator는 수동값 0과 식별자 비공개, PASS 수량을 강제한다', async () => {

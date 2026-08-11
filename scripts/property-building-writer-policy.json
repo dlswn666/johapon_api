@@ -203,7 +203,7 @@
       "path": "src/cli/development-building-registry-relation-adoption.ts",
       "name": "inspect_development_verified_building_registry_relation_v1",
       "contextSha256": "d3cf5b26f61cf0bbed0e30d011e7ab2aed958e894a6c684ea1df66e66a5fa85a",
-      "sourceFileSha256": "ff25cc211ee7d433e6b5fc6cfc4509055f028acee5f1479bc1b7cdf82356fd40",
+      "sourceFileSha256": "329004dbe347aab79e68f350bee77b4181f22098552cb72bd13b769fdb8ce441",
       "owner": "개발 건축물대장 기준·부속지번 관계 채택 pre/postflight",
       "rationale": "저장소 승인 target의 개발 DB membership, 관계 projection, 기존 대지권 승인 불변성과 operation attribution을 exact read-only inspector로 검증하는 단일 occurrence를 고정한다."
     },
@@ -212,7 +212,7 @@
       "path": "src/cli/development-building-registry-relation-adoption.ts",
       "name": "adopt_development_verified_building_registry_relation_v1",
       "contextSha256": "a7e64d5c50e3b51fc9e4cd12c1f23d3d247fa3c80c70f32db81b3bdc7943c65d",
-      "sourceFileSha256": "ff25cc211ee7d433e6b5fc6cfc4509055f028acee5f1479bc1b7cdf82356fd40",
+      "sourceFileSha256": "329004dbe347aab79e68f350bee77b4181f22098552cb72bd13b769fdb8ce441",
       "owner": "개발 건축물대장 기준·부속지번 공식 관계 채택",
       "rationale": "Phase 0 및 fresh Building HUB evidence, runtime property membership digest, 별도 relation approval에 결합된 exact-one 개발 관계 채택 occurrence를 고정한다."
     },

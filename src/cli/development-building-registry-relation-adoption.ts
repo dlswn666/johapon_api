@@ -10,6 +10,7 @@ import path from 'node:path';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
     DEVELOPMENT_RELATION_ADOPTION_INSPECTOR_CONTRACT,
+    isRelationAdoptionDatabaseTarget,
     parseDevelopmentRelationAdoptionTarget,
     runDevelopmentRelationAdoption,
     toDevelopmentRelationAdoptionPublicArtifact,
@@ -18,6 +19,7 @@ import {
     type DevelopmentRelationAdoptionTarget,
     type DevelopmentRelationSnapshot,
     type DevelopmentRelationWriteAttribution,
+    type RelationAdoptionDatabaseTarget,
 } from '../operations/development-building-registry-relation-adoption';
 import { LandAreaSyncAdapter } from '../services/land-area-sync/adapter';
 import { validateLandAreaPhase0CaptureArtifact } from '../verification/land-area-phase0-artifact-validator';
@@ -25,8 +27,29 @@ import { validateLandAreaPhase0CaptureArtifact } from '../verification/land-area
 const PRIVATE_DIRECTORY =
     '.development-building-registry-relation-adoption';
 const DEVELOPMENT_PROJECT_REF = 'yxypndgipnxrdfyctmvh';
-const DEVELOPMENT_SUPABASE_URL =
-    `https://${DEVELOPMENT_PROJECT_REF}.supabase.co`;
+const PRODUCTION_PROJECT_REF = 'bpdjashtxqrcgxfequgf';
+
+// target 별로 접속 가능한 프로젝트를 exact 로 못박는다. 종전에는 dev URL 하나만
+// 허용해 운영을 구조적으로 막았는데, 이제 "선언한 target 과 실제 URL 이 일치"를
+// 요구한다 — 임의 프로젝트로 향하는 것은 여전히 불가능하다.
+const SUPABASE_URL_BY_TARGET: Record<RelationAdoptionDatabaseTarget, string> = {
+    development: `https://${DEVELOPMENT_PROJECT_REF}.supabase.co`,
+    production: `https://${PRODUCTION_PROJECT_REF}.supabase.co`,
+};
+
+const SUPABASE_ENV_KEYS_BY_TARGET: Record<
+    RelationAdoptionDatabaseTarget,
+    { url: string; serviceRoleKey: string }
+> = {
+    development: {
+        url: 'DEV_SUPABASE_URL',
+        serviceRoleKey: 'DEV_SUPABASE_SERVICE_ROLE_KEY',
+    },
+    production: {
+        url: 'SUPABASE_URL',
+        serviceRoleKey: 'SUPABASE_SERVICE_ROLE_KEY',
+    },
+};
 const INPUT_SIZE_LIMIT = 128 * 1024;
 const OUTPUT_SIZE_LIMIT = 3 * 1024 * 1024;
 const HEX40_RE = /^[0-9a-f]{40}$/;
@@ -44,6 +67,9 @@ export interface DevelopmentRelationAdoptionCliEnvironment {
     DATA_PORTAL_API_KEY?: string;
     DEV_SUPABASE_URL?: string;
     DEV_SUPABASE_SERVICE_ROLE_KEY?: string;
+    SUPABASE_URL?: string;
+    SUPABASE_SERVICE_ROLE_KEY?: string;
+    RELATION_ADOPTION_DATABASE_TARGET?: string;
     LAND_AREA_SYNC_ENABLED?: string;
     [key: string]: string | undefined;
 }
@@ -234,33 +260,46 @@ export function validateDevelopmentRelationAdoptionEnvironment(
     env: DevelopmentRelationAdoptionCliEnvironment
 ): {
     serviceKey: string;
-    developmentUrl: string;
-    developmentServiceRoleKey: string;
+    databaseTarget: RelationAdoptionDatabaseTarget;
+    supabaseUrl: string;
+    supabaseServiceRoleKey: string;
 } {
     const serviceKey = required(
         env.DATA_PORTAL_API_KEY,
         'DATA_PORTAL_API_KEY_MISSING'
     );
-    const developmentUrl = required(
-        env.DEV_SUPABASE_URL,
-        'DEV_SUPABASE_URL_MISSING'
+
+    // 미지정이면 development. 기존 워크플로·로컬 실행은 그대로 dev 로 동작한다.
+    const requestedTarget = env.RELATION_ADOPTION_DATABASE_TARGET?.trim()
+        ? env.RELATION_ADOPTION_DATABASE_TARGET.trim()
+        : 'development';
+    if (!isRelationAdoptionDatabaseTarget(requestedTarget)) {
+        throw new Error('RELATION_RUN_DATABASE_TARGET_INVALID');
+    }
+    const databaseTarget: RelationAdoptionDatabaseTarget = requestedTarget;
+    const envKeys = SUPABASE_ENV_KEYS_BY_TARGET[databaseTarget];
+
+    const supabaseUrl = required(
+        env[envKeys.url],
+        `${envKeys.url}_MISSING`
     );
-    const developmentServiceRoleKey = required(
-        env.DEV_SUPABASE_SERVICE_ROLE_KEY,
-        'DEV_SUPABASE_SERVICE_ROLE_KEY_MISSING'
+    const supabaseServiceRoleKey = required(
+        env[envKeys.serviceRoleKey],
+        `${envKeys.serviceRoleKey}_MISSING`
     );
     if (
-        developmentUrl !== DEVELOPMENT_SUPABASE_URL ||
+        supabaseUrl !== SUPABASE_URL_BY_TARGET[databaseTarget] ||
         env.LAND_AREA_SYNC_ENABLED !== 'false' ||
         serviceKey.length > 4096 ||
-        developmentServiceRoleKey.length > 8192
+        supabaseServiceRoleKey.length > 8192
     ) {
         throw new Error('RELATION_RUN_ENVIRONMENT_INVALID');
     }
     return {
         serviceKey,
-        developmentUrl,
-        developmentServiceRoleKey,
+        databaseTarget,
+        supabaseUrl,
+        supabaseServiceRoleKey,
     };
 }
 
@@ -591,7 +630,7 @@ export class SupabaseDevelopmentRelationAdoptionDatabase
         if (
             result.contractVersion !==
                 DEVELOPMENT_RELATION_ADOPTION_INSPECTOR_CONTRACT ||
-            result.databaseTarget !== 'development' ||
+            result.databaseTarget !== target.databaseTarget ||
             result.unionId !== target.unionId ||
             result.basePnu !== target.basePnu ||
             result.attachedPnu !== target.attachedPnu ||
@@ -955,9 +994,14 @@ export async function runDevelopmentRelationAdoptionCli(
                 artifactSha256:
                     priorPhase0Artifact.sha256,
             });
+        // 접속할 DB 와 타깃 문서가 선언한 환경이 어긋나면 즉시 멈춘다.
+        // 이게 없으면 production 자격증명으로 development 타깃을 채택할 수 있다.
+        if (target.databaseTarget !== environment.databaseTarget) {
+            throw new Error('RELATION_RUN_DATABASE_TARGET_MISMATCH');
+        }
         const client = createClient(
-            environment.developmentUrl,
-            environment.developmentServiceRoleKey,
+            environment.supabaseUrl,
+            environment.supabaseServiceRoleKey,
             {
                 auth: {
                     persistSession: false,

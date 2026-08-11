@@ -34,9 +34,31 @@ export const DEVELOPMENT_RELATION_ADOPTION_INSPECTOR_CONTRACT =
 export const DEVELOPMENT_RELATION_ADOPTION_PHASE0_ARTIFACT_VERSION =
     'land-area-phase0-capture-artifact@6' as const;
 
+/**
+ * 채택 트랙이 쓸 수 있는 DB 환경. DB 쪽 manifest CHECK
+ * (20260811120000_generalize_relation_adoption_database_target) 와 같은 집합이어야 한다.
+ * 승인은 (database_target, union_id) 로 분리 저장되므로 환경 간 승인이 섞이지 않는다.
+ */
+export const RELATION_ADOPTION_DATABASE_TARGETS = [
+    'development',
+    'production',
+] as const;
+
+export type RelationAdoptionDatabaseTarget =
+    (typeof RELATION_ADOPTION_DATABASE_TARGETS)[number];
+
+export function isRelationAdoptionDatabaseTarget(
+    value: unknown
+): value is RelationAdoptionDatabaseTarget {
+    return (
+        typeof value === 'string' &&
+        (RELATION_ADOPTION_DATABASE_TARGETS as readonly string[]).includes(value)
+    );
+}
+
 export interface DevelopmentRelationAdoptionTarget {
     version: typeof DEVELOPMENT_RELATION_ADOPTION_TARGET_VERSION;
-    databaseTarget: 'development';
+    databaseTarget: RelationAdoptionDatabaseTarget;
     unionId: string;
     basePnu: string;
     attachedPnu: string;
@@ -196,7 +218,7 @@ interface SanitizedOfficialScan {
 
 export interface DevelopmentRelationAdoptionArtifact {
     version: typeof DEVELOPMENT_RELATION_ADOPTION_ARTIFACT_VERSION;
-    databaseTarget: 'development';
+    databaseTarget: RelationAdoptionDatabaseTarget;
     manifestDigest: string;
     targetDigest: string | null;
     sourceReleaseSha: string;
@@ -263,7 +285,7 @@ export interface DevelopmentRelationAdoptionArtifact {
 
 export interface DevelopmentRelationAdoptionPublicArtifact {
     version: typeof DEVELOPMENT_RELATION_ADOPTION_PUBLIC_ARTIFACT_VERSION;
-    databaseTarget: 'development';
+    databaseTarget: RelationAdoptionDatabaseTarget;
     manifestDigest: string;
     targetDigest: string | null;
     sourceReleaseSha: string;
@@ -411,6 +433,12 @@ export function computeDevelopmentRelationAdoptionExecutionTargetDigest(input: {
     return sha256(
         [
             'relation-adoption-target@1',
+            // ⚠️ 환경값이 아니다. DB 의
+            // private.compute_development_relation_adoption_target_digest_v1 이
+            // 해시 입력에 쓰는 namespace 토큰의 미러이며, 그 함수는 IMMUTABLE·무인자라
+            // identity 를 읽을 수 없어 일반화 대상에서 의도적으로 제외했다.
+            // 여기를 databaseTarget 으로 바꾸면 TS 와 DB 의 target digest 가 갈라져
+            // 모든 채택이 digest 불일치로 거부된다.
             'development',
             input.target.unionId.toLowerCase(),
             input.target.basePnu,
@@ -499,7 +527,7 @@ export function parseDevelopmentRelationAdoptionTarget(
             'manifestDigest',
         ]) ||
         value.version !== DEVELOPMENT_RELATION_ADOPTION_TARGET_VERSION ||
-        value.databaseTarget !== 'development' ||
+        !isRelationAdoptionDatabaseTarget(value.databaseTarget) ||
         typeof value.unionId !== 'string' ||
         !UUID_RE.test(value.unionId) ||
         value.unionId !== value.unionId.toLowerCase() ||
@@ -1141,7 +1169,7 @@ export async function runDevelopmentRelationAdoption(
     const sortedFailures = [...failureCodes].sort();
     return {
         version: DEVELOPMENT_RELATION_ADOPTION_ARTIFACT_VERSION,
-        databaseTarget: 'development',
+        databaseTarget: input.target.databaseTarget,
         manifestDigest: input.target.manifestDigest,
         targetDigest: executionTargetDigest,
         sourceReleaseSha: input.sourceReleaseSha,
@@ -1249,7 +1277,7 @@ export function validateDevelopmentRelationAdoptionPublicArtifact(input: {
         ]) ||
         artifact.version !==
             DEVELOPMENT_RELATION_ADOPTION_PUBLIC_ARTIFACT_VERSION ||
-        artifact.databaseTarget !== 'development' ||
+        artifact.databaseTarget !== input.target.databaseTarget ||
         artifact.manifestDigest !== input.target.manifestDigest ||
         (artifact.targetDigest !== null &&
             (typeof artifact.targetDigest !== 'string' ||
