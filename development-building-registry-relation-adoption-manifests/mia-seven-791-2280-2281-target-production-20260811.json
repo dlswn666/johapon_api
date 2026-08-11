@@ -1,0 +1,26 @@
+{
+    "version": "development-building-registry-relation-adoption-target@1",
+    "databaseTarget": "production",
+    "unionId": "00f48b95-e9bc-4c92-a0e5-6b9a57adcfb9",
+    "basePnu": "1130510100107912280",
+    "attachedPnu": "1130510100107912281",
+    "managementPk": "10101100184244",
+    "expectedActivePropertyUnitCount": 4,
+    "scopeDigest": "071c33bbdb72ed3b8352b0e67fc45777b88f204807f65ea15ef9aa620126c937",
+    "phase0": {
+        "runId": "31467832037",
+        "artifactVersion": "land-area-phase0-capture-artifact@6",
+        "artifactSha256": "08998d1cd5e69c82f92bb3cba69741c7a14901101bf6dae9e950421b6ad0780b",
+        "schemaHash": "0909518650db9d6330549bf67998a75b1c17378ece1dd14473be5f3c3cb3a05a"
+    },
+    "officialHashes": {
+        "managementPkHash": "f08ca977d2953f01a078fa640cd76c2fdbe451bc11733a56b2afd75eb3d43ee1",
+        "basePnuHash": "f8c4920b68de6d7441ac532477419d052472ea27258474e035937618574a98a4",
+        "attachedPnuHash": "d1905cf3cee6bf98e3b5a580b3ad11262768e434530864675714288b17f29995",
+        "pairsDigest": "2b0a47b1200d72dadb7bae5253a1db2e075af85d87c5b7eb8e9d0d0630d646dd",
+        "titleSchemaHash": "f81810d53907f4c3d1a38d59fe1ebf1428340823c9578a2afc172aa94a3c4a17",
+        "basisSchemaHash": "89df90d6bd45b7769dd7fc3b59ba63087a53c03320b3f586f6567087bfbac993",
+        "attachedSchemaHash": "3efb67b7489ee3f57f129f7cc1a17fa0b10af960a10fd4af3a46cf0fda4e8f20"
+    },
+    "manifestDigest": "bd824ca70bc690020462161cf24808d85b69fd215ff5f330616751c4b4985362"
+}
