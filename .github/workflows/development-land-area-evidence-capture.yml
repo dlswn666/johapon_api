@@ -671,7 +671,7 @@ jobs:
             );
           if (
             audit?.version !== "land-area-development-evidence-capture-audit@3"
-            || audit?.databaseTarget !== "development"
+            || !["development", "production"].includes(audit?.databaseTarget)
             || typeof manifestLabel !== "string"
             || !/^[a-z0-9-]{1,100}$/.test(manifestLabel)
             || !Number.isSafeInteger(audit.targetCount)
