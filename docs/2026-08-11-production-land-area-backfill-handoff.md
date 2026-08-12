@@ -1,5 +1,20 @@
 # 운영 대지권 백필 — 인계 문서 (2026-08-11)
 
+> **2026-08-12 진행 갱신** — §3-A·§3-B 완료, §3-C 선행 1건 추가 완료.
+>
+> - 3-A 러너·캡처 TS 일반화: api `27a0861`. digest·JWT·env·allowlist 전부
+>   databaseTarget 축. production v3 는 full-refresh marker 를 만들지 않는다.
+> - 3-B 운영 매니페스트: api `da62881`,
+>   `…-production-target-20260812.json` (digest 3종 재계산: 730b3757 / 1ed934de /
+>   352212dc). 운영 실측: 활성 PNU 집합 md5 가 dev 매니페스트와 exact 일치,
+>   429 물건지 / land_area 0 / 3568 도로지분 7건 확인.
+> - 캡처 워크플로 운영 read-only 경로: api `fabce86`. **다음 스텝 = 이 경로
+>   디스패치**(무쓰기). 결과가 실행 창 설계를 결정한다: 전부 DB_RESOLVER 로
+>   해석되면 그대로 write run 설계로, official 확장이 필요한 anchor 가 나오면
+>   그 실패 코드를 보고 관계 채택(운영 이식 완료된 트랙) 또는 프로파일 이식을
+>   선택한다. 캡처는 main SHA exact 일치 필요 — Docker Build and Deploy 완료 후
+>   디스패치할 것.
+
 **목표**: 미아7 운영 물건지 **429건의 `land_area` 를 채운다.** 지금 전건 NULL 이라
 면적 기준 동의율이 아예 계산되지 않는다.
 
