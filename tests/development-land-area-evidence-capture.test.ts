@@ -1839,3 +1839,72 @@ test('production target 캡처는 입구 가드를 통과하고 audit·identity 
         /CAPTURE_INPUT_INVALID/
     );
 });
+
+const MIA_FULL_278_PRODUCTION_TARGET_URL = new URL(
+    '../development-land-area-sync-manifests/mia-seven-full-278-official-components-api-readonly-production-target-20260812.json',
+    import.meta.url
+);
+
+test('미아7 production target은 dev와 동일 집합에 production 축 digest 3종만 다르게 고정한다', () => {
+    const development = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(
+                MIA_FULL_278_OFFICIAL_COMPONENT_TARGET_URL,
+                'utf8'
+            )
+        )
+    );
+    const production = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(MIA_FULL_278_PRODUCTION_TARGET_URL, 'utf8')
+        )
+    );
+    if (
+        development.version !==
+            DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 ||
+        production.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v3 targets expected');
+    }
+    assert.equal(production.databaseTarget, 'production');
+    // 집합·카운트는 dev 와 완전히 같다 (운영 활성 PNU 집합 md5 실측 일치, 2026-08-12).
+    assert.deepEqual(production.anchors, development.anchors);
+    assert.deepEqual(
+        production.allowedScopePnus,
+        development.allowedScopePnus
+    );
+    assert.deepEqual(
+        production.expectedUnionActivePnus,
+        development.expectedUnionActivePnus
+    );
+    assert.equal(production.targetCount, 278);
+    assert.equal(production.expectedPropertyUnitCount, 422);
+    assert.equal(
+        production.expectedUnionActivePropertyUnitCount,
+        429
+    );
+    assert.equal(production.expectedUnionActivePnuCount, 299);
+    // digest 3종은 production 축 재계산 값으로 고정한다.
+    assert.equal(
+        production.expectedUnionActivePnuDigest,
+        '730b3757852db56d11c5e0f11affd4f8d57a0624fefba856b474bf6d12da760f'
+    );
+    assert.equal(
+        production.scopeDigest,
+        '1ed934dea2bb3610a9cc98dececfed76998f4649cfe927f8f64dee62db7b8ba2'
+    );
+    assert.equal(
+        production.manifestDigest,
+        '352212dc1357e6e113ca0eeb269934664b4138d833d7bc81ca10d893ba7c024e'
+    );
+    // dev digest 와는 전부 달라야 한다 — 승인·allowlist 교차 재사용 불가의 근거.
+    assert.notEqual(
+        production.expectedUnionActivePnuDigest,
+        development.expectedUnionActivePnuDigest
+    );
+    assert.notEqual(production.scopeDigest, development.scopeDigest);
+    assert.notEqual(
+        production.manifestDigest,
+        development.manifestDigest
+    );
+});
