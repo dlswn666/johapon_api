@@ -436,25 +436,35 @@ else
       const evidence = runner.parseDevelopmentEvidenceManifest(read("FULL_REFRESH_EVIDENCE"));
       const audit = read("FULL_REFRESH_AUDIT");
       const marker = runner.developmentFullRefreshMarkerForTarget(target);
-      const exactFullRefreshComponentCoverage =
+      // in-run 캡처 계약은 target 환경으로 갈린다.
+      // - development: repo-pinned full-refresh 마커 필수 + 전 anchor 가 same-run
+      //   official 로 해석돼야 한다 (기존 계약 그대로).
+      // - production: 마커가 없어야 하고(dev 가드 미이식의 전제) 전 anchor 가
+      //   DB-revalidatable 표준 계약이어야 한다 — same-run official 이 하나라도
+      //   나오면 write 승격을 거부한다 (fail-closed).
+      const development = target.databaseTarget === "development";
+      const officialCoverage =
         audit?.verifiedNoDataCount === 0
           && audit?.sameRunOfficialComponentCount
             + audit?.sameRunOfficialParcelCount
-          === target.targetCount;
+          === (development ? target.targetCount : 0);
       if (
-        !marker
+        (development ? !marker : marker !== null)
+        || audit?.databaseTarget !== target.databaseTarget
         || audit?.gate?.status !== "PASS"
         || audit?.promotionGate?.status !== "PASS"
         || audit?.promotionGate?.writeEligible !== true
         || audit?.readOnlyGuards?.durableSyncJobWrites !== 0
         || audit?.readOnlyGuards?.propertyUnitWriteRpcCalls !== 0
         || audit?.resolvedComponentCount !== target.targetCount
-        || !exactFullRefreshComponentCoverage
+        || !officialCoverage
         || evidence.manifestDigest !== target.manifestDigest
       ) process.exit(1);
       const approval = {
         version: "land-area-development-db-approval-manifest@1",
-        databaseTarget: "development",
+        // 러너 교차검증이 approval.databaseTarget === target.databaseTarget 을
+        // exact 요구한다 — target 환경을 그대로 따른다.
+        databaseTarget: target.databaseTarget,
         unionId: target.unionId,
         pnus: target.allowedScopePnus,
         targetCount: target.allowedScopePnus.length,

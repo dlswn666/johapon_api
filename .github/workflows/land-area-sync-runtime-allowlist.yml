@@ -12,7 +12,7 @@ on:
           - enable
           - disable
       land_area_sync_allowed_targets:
-        description: 'canonical development:unionUuid:PNU allowlist 원문 (disable은 빈 값)'
+        description: 'canonical databaseTarget:unionUuid:PNU allowlist 원문 (disable은 빈 값)'
         required: false
         type: string
       expected_allowlist_count:
@@ -739,8 +739,12 @@ jobs:
               false
             fi
             for allowed_entry in "${allowed_entries[@]}"; do
-              if [[ ! "${allowed_entry}" =~ ^development:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9]{19}$ ]]; then
-                echo "Only exact canonical development targets are allowed."
+              # 환경 축은 exact canonical 로만 허용한다. production 항목은
+              # 2026-08-12 운영 대지권 백필 창부터 허용 — 사용은 여전히
+              # DB approval manifest + 러너 digest 교차검증 + 보호 환경 승인
+              # 3중 게이트 뒤에 있다.
+              if [[ ! "${allowed_entry}" =~ ^(development|production):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9]{19}$ ]]; then
+                echo "Only exact canonical database-target entries are allowed."
                 false
               fi
             done

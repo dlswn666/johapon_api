@@ -44,13 +44,22 @@ test('workflow는 protected environment secret의 actor UUID만 내부 사용하
         workflow.indexOf('workflow_dispatch:'),
         workflow.indexOf('permissions:')
     );
-    assert.match(workflow, /environment: land-area-sync-development-write/);
+    // 환경은 manifest 라벨 하나로만 결정된다 — production 라벨이면 별도 보호
+    // 환경(land-area-sync-production-write), 그 외 전부 dev 환경이다.
+    assert.match(
+        workflow,
+        /environment: \$\{\{ inputs\.manifest == 'mia-seven-standard-267-api-readonly-production-20260812' && 'land-area-sync-production-write' \|\| 'land-area-sync-development-write' \}\}/
+    );
     assert.match(workflow, /GITHUB_REF.*refs\/heads\/main/);
     assert.match(workflow, /type: choice/);
     assert.match(workflow, /mia-seven-representative-20260725/);
-    assert.match(
-        workflow,
-        /ACTOR_AUTH_USER_ID: \$\{\{ secrets\.DEV_GIS_SYSTEM_ADMIN_AUTH_UUID \}\}/
+    // actor 도 같은 라벨 식으로만 분기한다 — production 은 환경 스코프 시크릿.
+    const actorExpression =
+        /ACTOR_AUTH_USER_ID: \$\{\{ inputs\.manifest == 'mia-seven-standard-267-api-readonly-production-20260812' && secrets\.PROD_GIS_SYSTEM_ADMIN_AUTH_UUID \|\| secrets\.DEV_GIS_SYSTEM_ADMIN_AUTH_UUID \}\}/g;
+    assert.equal(
+        (workflow.match(actorExpression) ?? []).length,
+        2,
+        'actor 시크릿 분기는 검증 스텝과 원격 스텝 두 곳 모두에 있어야 한다'
     );
     assert.doesNotMatch(dispatchBlock, /actor_auth_user_id|auth UUID/i);
     assert.doesNotMatch(
@@ -606,15 +615,64 @@ test('미아7 production read-only 캡처 경로는 캡처 워크플로에만 �
         captureWorkflow,
         /databaseTarget: "development"/
     );
-    // production 은 write run 워크플로에 아직 없다 — 실행 창 설계 전 유출 방지.
+    // full-278 production(REVIEW 11 포함)은 write run 워크플로에 없어야 한다 —
+    // write 는 검증된 standard-267 부분집합만 허용한다.
     assert.doesNotMatch(workflow, new RegExp(label));
     assert.doesNotMatch(
         workflow,
-        /production-target-20260812\.json/
+        /mia-seven-full-278-official-components-api-readonly-production-target-20260812\.json/
     );
     // dev 기본값은 그대로다.
     assert.match(
         captureWorkflow,
         /default: mia-seven-full-278-official-components-api-readonly-20260729/
     );
+});
+
+test('미아7 standard-267 production write 경로는 in-run 캡처 모드로만 있고 계약은 target 환경으로 갈린다', () => {
+    const label =
+        'mia-seven-standard-267-api-readonly-production-20260812';
+    const selection = workflow.slice(
+        workflow.indexOf(`${label})`),
+        workflow.indexOf('*)', workflow.indexOf(`${label})`))
+    );
+    assert.match(workflow, new RegExp(`- ${label}`));
+    assert.match(
+        selection,
+        /mia-seven-standard-267-api-readonly-production-target-20260812\.json/
+    );
+    // in-run 캡처 모드 — 저장소에 커밋된 evidence/approval 파일을 쓰지 않는다.
+    assert.match(
+        selection,
+        /db_approval_path=""[\s\S]+evidence_path=""[\s\S]+full_refresh_mode="1"/
+    );
+    // manifest 검증: dev 는 마커 필수, production 은 마커 부재 필수.
+    assert.match(
+        workflow,
+        /if \(target\.databaseTarget === "development"\) \{[\s\S]+if \(!marker\) process\.exit\(1\);[\s\S]+\} else if \(marker !== null\) \{[\s\S]+process\.exit\(1\);/
+    );
+    // guardian: in-container 검증도 환경으로 갈린다 — production 은 same-run
+    // official 0 을 요구하고, 합성 approval 은 target 환경을 따른다.
+    assert.match(
+        guardian,
+        /development \? !marker : marker !== null/
+    );
+    assert.match(
+        guardian,
+        /audit\?\.databaseTarget !== target\.databaseTarget/
+    );
+    assert.match(
+        guardian,
+        /=== \(development \? target\.targetCount : 0\)/
+    );
+    assert.match(
+        guardian,
+        /databaseTarget: target\.databaseTarget/
+    );
+    assert.doesNotMatch(
+        guardian,
+        /databaseTarget: "development"/
+    );
+    // dev 기본값·기존 dev 경로는 그대로다.
+    assert.match(workflow, /default: mia-seven-representative-20260725/);
 });

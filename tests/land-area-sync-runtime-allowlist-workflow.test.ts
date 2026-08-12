@@ -412,15 +412,19 @@ test('Docker deploy timeout은 두 lock 대기와 배포 rollback의 전체 wors
     );
 });
 
-test('runtime allowlist workflow는 Supabase나 DB에 연결하거나 운영 target을 구성하지 않는다', () => {
+test('runtime allowlist workflow는 Supabase나 DB에 연결하지 않고 exact canonical 환경 항목만 허용한다', () => {
     assert.doesNotMatch(workflow, /SUPABASE_URL/);
     assert.doesNotMatch(workflow, /SERVICE_ROLE_KEY/);
     assert.doesNotMatch(workflow, /\bpsql\b/);
     assert.doesNotMatch(workflow, /\bsupabase\b/i);
-    assert.doesNotMatch(
+    // 2026-08-12 운영 대지권 백필 창부터 production 항목을 허용한다 — 단,
+    // 환경 축이 명시된 exact canonical(uuid+19자리 PNU)만. wildcard 나
+    // 부분 일치를 허용하는 완화는 여기서 즉시 실패해야 한다.
+    assert.match(
         workflow,
-        /\bproduction:[0-9a-f*-]+:[0-9*]+\b/
+        /\^\(development\|production\):\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{12\}:\[0-9\]\{19\}\$/
     );
+    assert.doesNotMatch(workflow, /allowed_entry[^\n]*\.\*/);
 });
 
 test('기존 docker-build push 배포는 enabled runtime을 계속 fail closed한다', () => {
