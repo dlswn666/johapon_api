@@ -440,9 +440,21 @@ test('workflow와 runner는 raw JWT/secret/log를 artifact나 출력으로 내�
     assert.doesNotMatch(cli, /process\.env\.(?:JWT_SECRET|SUPABASE_URL|SUPABASE_SERVICE_ROLE_KEY)\b.*write/);
 });
 
-test('DB 직접 접근은 development service-role read-only select이며 write는 localhost canonical API에만 맡긴다', () => {
-    assert.match(cli, /process\.env\.DEV_SUPABASE_URL/);
-    assert.match(cli, /process\.env\.DEV_SUPABASE_SERVICE_ROLE_KEY/);
+test('DB 직접 접근은 target 축 service-role read-only select이며 write는 localhost canonical API에만 맡긴다', () => {
+    // 접속 정보는 validateDevelopmentRunnerEnvironment 의 target 선택 결과만 쓴다.
+    // 원시 env 를 CLI 에서 직접 집어 쓰는 경로는 금지한다.
+    assert.match(cli, /environment\.supabaseUrl/);
+    assert.match(cli, /environment\.supabaseServiceRoleKey/);
+    assert.doesNotMatch(cli, /process\.env\.DEV_SUPABASE_URL/);
+    assert.doesNotMatch(cli, /process\.env\.SUPABASE_URL/);
+    // 선언한 target 과 실제 접속 프로젝트의 exact 일치를 강제한다.
+    assert.match(
+        cli,
+        /SUPABASE_URL_BY_TARGET\[target\.databaseTarget\]/
+    );
+    assert.match(cli, /RUNNER_DATABASE_TARGET_MISMATCH/);
+    assert.match(cli, /yxypndgipnxrdfyctmvh/);
+    assert.match(cli, /bpdjashtxqrcgxfequgf/);
     assert.match(cli, /\.from\('property_units'\)[\s\S]+\.select\(/);
     assert.match(
         cli,
@@ -454,9 +466,12 @@ test('DB 직접 접근은 development service-role read-only select이며 write�
         /\.(?:insert|update|upsert|delete|rpc)\s*\(/
     );
     assert.match(runner, /const LOCAL_API_ORIGIN = 'http:\/\/127\.0\.0\.1:3100'/);
-    assert.match(runner, /keyid: 'dev'/);
-    assert.match(runner, /databaseTarget: 'development'/);
-    assert.match(runner, /iss: 'tonghari-web-dev'/);
+    // JWT 는 서명키(kid)가 환경을 확정한다 — dev/prod 두 flavor 만 존재한다.
+    assert.match(runner, /keyid: development \? 'dev' : 'prod'/);
+    assert.match(
+        runner,
+        /iss: development \? 'tonghari-web-dev' : 'tonghari-web'/
+    );
     assert.match(runner, /aud: 'tonghari-api'/);
 });
 
@@ -520,9 +535,15 @@ test('admission 응답 유실 진단 프로브는 고정 토큰 마커·카운�
         guardian,
         /append_stage "\$\{server_http_window\}"|server_http_window[^\n]*>+ *"?\$\{host_/
     );
-    // runner CLI: in-process 프로브 센티널(startup/postfail)
-    assert.match(cli, /emitRunnerProbe\('STARTUP', args\.actorAuthUserId\)/);
-    assert.match(cli, /emitRunnerProbe\('POSTFAIL', args\.actorAuthUserId\)/);
+    // runner CLI: in-process 프로브 센티널(startup/postfail) — target 축 인증 전달
+    assert.match(
+        cli,
+        /emitRunnerProbe\('STARTUP', args\.actorAuthUserId, probeAuth\)/
+    );
+    assert.match(
+        cli,
+        /emitRunnerProbe\(\s*'POSTFAIL',\s*args\.actorAuthUserId,\s*probeAuth\s*\)/
+    );
     assert.match(
         cli,
         /ADMISSION\|API_NETWORK\|API_RESPONSE/

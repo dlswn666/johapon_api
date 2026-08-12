@@ -1,5 +1,8 @@
 import { request as nodeHttpRequest } from 'node:http';
-import { createDevelopmentGisSystemAdminJwt } from './development-land-area-sync-runner';
+import {
+    createDevelopmentGisSystemAdminJwt,
+    type LandAreaSyncRunnerDatabaseTarget,
+} from './development-land-area-sync-runner';
 
 /**
  * localhost land-area-sync API 왕복 진단 프로브.
@@ -108,6 +111,7 @@ export async function probeLocalhostLandAreaSyncApi(input: {
     timeoutMs?: number;
     now?: () => Date;
     nowMs?: () => number;
+    databaseTarget?: LandAreaSyncRunnerDatabaseTarget;
 }): Promise<LocalhostProbeSummary> {
     const origin = input.origin ?? DEFAULT_ORIGIN;
     const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -129,7 +133,8 @@ export async function probeLocalhostLandAreaSyncApi(input: {
         token = createDevelopmentGisSystemAdminJwt(
             input.secret ?? '',
             actorCandidate || FALLBACK_ACTOR_AUTH_USER_ID,
-            input.now ? input.now() : new Date()
+            input.now ? input.now() : new Date(),
+            input.databaseTarget ?? 'development'
         );
     } catch {
         token = null;

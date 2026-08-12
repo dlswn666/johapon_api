@@ -79,6 +79,7 @@ function target(pnus = [PNU]): DevelopmentTargetManifest {
         pnus,
         targetCount: pnus.length,
         manifestDigest: computeDevelopmentTargetDigest(
+            'development',
             UNION_ID,
             pnus
         ),
@@ -132,6 +133,7 @@ function snapshot(
 function targetV2(): DevelopmentTargetManifest {
     const allowedScopePnus = [PNU, ATTACHED_PNU];
     const identity = {
+        databaseTarget: 'development' as const,
         unionId: UNION_ID,
         anchors: [PNU],
         allowedScopePnus,
@@ -146,6 +148,7 @@ function targetV2(): DevelopmentTargetManifest {
         databaseTarget: 'development',
         ...identity,
         scopeDigest: computeDevelopmentTargetDigest(
+            identity.databaseTarget,
             identity.unionId,
             identity.allowedScopePnus
         ),
@@ -158,12 +161,14 @@ function threePnuComponentTargetV3(): DevelopmentTargetManifest {
     const allowedScopePnus = [PNU, ATTACHED_PNU, THIRD_PNU];
     const expectedUnionActivePnus = [PNU];
     const identity = {
+        databaseTarget: 'development' as const,
         unionId: UNION_ID,
         anchors: [PNU],
         allowedScopePnus,
         expectedUnionActivePnus,
         expectedUnionActivePnuDigest:
             computeDevelopmentActivePnuDigest(
+                'development',
                 UNION_ID,
                 expectedUnionActivePnus
             ),
@@ -178,6 +183,7 @@ function threePnuComponentTargetV3(): DevelopmentTargetManifest {
         databaseTarget: 'development',
         ...identity,
         scopeDigest: computeDevelopmentTargetDigest(
+            identity.databaseTarget,
             identity.unionId,
             identity.allowedScopePnus
         ),
@@ -211,6 +217,7 @@ test('791-2280 API read-only target은 anchor 1건과 대표·부속지번 allow
     assert.equal(
         manifest.scopeDigest,
         computeDevelopmentTargetDigest(
+            'development',
             UNION_ID,
             manifest.allowedScopePnus
         )
@@ -251,12 +258,13 @@ test('미아7 전체 API 재조회 target은 활성 anchor 299건과 property un
     assert.equal(full299.expectedUnionActivePnuCount, 299);
     assert.equal(full299.allowManualOverwrite, true);
     assert.equal(
-        computeDevelopmentTargetDigest(UNION_ID, full299.anchors),
+        computeDevelopmentTargetDigest('development', UNION_ID, full299.anchors),
         '638977eb11e2e09afdb949179fe59e7944c2ed4c973fe2695bf0628239a2e219'
     );
     assert.equal(
         full299.scopeDigest,
         computeDevelopmentTargetDigest(
+            'development',
             UNION_ID,
             full299.allowedScopePnus
         )
@@ -332,6 +340,7 @@ test('미아7 component target은 활성 299 PNU를 공식 278 component·300 �
     assert.equal(
         component279.expectedUnionActivePnuDigest,
         computeDevelopmentActivePnuDigest(
+            'development',
             UNION_ID,
             full299.anchors
         )
@@ -401,6 +410,7 @@ test('미아7 component target은 활성 299 PNU를 공식 278 component·300 �
     assert.equal(
         component279.scopeDigest,
         computeDevelopmentTargetDigest(
+            'development',
             UNION_ID,
             component279.allowedScopePnus
         )
@@ -420,6 +430,7 @@ test('미아7 component target은 활성 299 PNU를 공식 278 component·300 �
                 expectedUnionActivePnus: changedActivePnus,
                 expectedUnionActivePnuDigest:
                     computeDevelopmentActivePnuDigest(
+                        'development',
                         UNION_ID,
                         changedActivePnus
                     ),
@@ -1491,6 +1502,7 @@ function retryTarget(): DevelopmentTargetManifest {
         pnus: RETRY_PNUS,
         targetCount: RETRY_PNUS.length,
         manifestDigest: computeDevelopmentTargetDigest(
+            'development',
             UNION_ID,
             RETRY_PNUS
         ),
@@ -1735,4 +1747,95 @@ test('실패가 임계 비율을 넘으면 재시도를 생략하고 사유를 �
     for (const entry of result.audit.entries) {
         assert.equal(entry.attempts, 1);
     }
+});
+
+// ── production target 축 (2026-08-12 캡처 일반화) ──────────────────────
+
+function productionRetryTarget(): DevelopmentTargetManifest {
+    return {
+        version: DEVELOPMENT_TARGET_MANIFEST_VERSION,
+        databaseTarget: 'production',
+        unionId: UNION_ID,
+        pnus: RETRY_PNUS,
+        targetCount: RETRY_PNUS.length,
+        manifestDigest: computeDevelopmentTargetDigest(
+            'production',
+            UNION_ID,
+            RETRY_PNUS
+        ),
+        expectedPropertyUnitCount: RETRY_PNUS.length,
+        expectedUnionActivePropertyUnitCount: RETRY_PNUS.length,
+        expectedUnionActivePnuCount: RETRY_PNUS.length,
+    };
+}
+
+test('production target 캡처는 입구 가드를 통과하고 audit·identity digest에 production 축을 새긴다', async () => {
+    const productionTarget = productionRetryTarget();
+    const identityRows = RETRY_PNUS.map((pnu, index) => ({
+        id: RETRY_PROPERTY_UNIT_IDS[index],
+        pnu,
+    }));
+
+    // identity digest 는 환경 축을 포함한다 — 같은 행 집합이라도 dev 와 다르다.
+    const productionIdentity =
+        assertDevelopmentEvidenceCaptureActiveIdentity({
+            target: productionTarget,
+            rows: identityRows,
+        });
+    const developmentIdentity =
+        assertDevelopmentEvidenceCaptureActiveIdentity({
+            target: retryTarget(),
+            rows: identityRows,
+        });
+    assert.equal(
+        productionIdentity.pnuDigest,
+        computeDevelopmentActivePnuDigest(
+            'production',
+            UNION_ID,
+            [...RETRY_PNUS].sort()
+        )
+    );
+    assert.notEqual(
+        productionIdentity.pnuDigest,
+        developmentIdentity.pnuDigest
+    );
+    assert.notEqual(
+        productionIdentity.propertyIdentityDigest,
+        developmentIdentity.propertyIdentityDigest
+    );
+
+    // 캡처 본체 — production target 이 CAPTURE_INPUT_INVALID 로 거부되지 않고,
+    // audit/evidence 의 databaseTarget 이 target 을 그대로 따른다.
+    const result = await captureDevelopmentLandAreaEvidence({
+        target: productionTarget,
+        captureRunId: '31700000001',
+        concurrency: 1,
+        sleep: async () => {},
+        deps: alwaysFailingTitleDeps({
+            onScanTitle: () => {},
+            failFor: () => false,
+        }) as never,
+    });
+    assert.equal(result.audit.databaseTarget, 'production');
+    assert.equal(
+        result.audit.capturedEvidence?.databaseTarget ?? 'production',
+        'production'
+    );
+
+    // 미지의 환경 문자열은 여전히 입구에서 거부한다.
+    await assert.rejects(
+        captureDevelopmentLandAreaEvidence({
+            target: {
+                ...productionTarget,
+                databaseTarget: 'staging',
+            } as unknown as DevelopmentTargetManifest,
+            captureRunId: '31700000001',
+            concurrency: 1,
+            deps: alwaysFailingTitleDeps({
+                onScanTitle: () => {},
+                failFor: () => false,
+            }) as never,
+        }),
+        /CAPTURE_INPUT_INVALID/
+    );
 });

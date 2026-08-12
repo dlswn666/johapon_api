@@ -17,7 +17,9 @@ import {
     DEVELOPMENT_TARGET_MANIFEST_VERSION_V3,
     LocalhostDevelopmentLandAreaSyncClient,
     computeDevelopmentTargetDigest,
+    computeDevelopmentActivePnuDigest,
     computeDevelopmentTargetV2ManifestDigest,
+    computeDevelopmentTargetV3ManifestDigest,
     createDevelopmentGisSystemAdminJwt,
     createDevelopmentPublicRunArtifact,
     developmentFullRefreshMarkerForTarget,
@@ -43,6 +45,7 @@ import {
     type DevelopmentTargetManifestV2,
     type DevelopmentTargetManifestV3,
     type LandAreaSyncApiClient,
+    type LandAreaSyncRunnerDatabaseTarget,
     type LandAreaSyncApiJob,
     type ObservedDevelopmentLandRight,
 } from '../src/operations/development-land-area-sync-runner';
@@ -73,14 +76,22 @@ function sha256Utf8(value: string): string {
     return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
-function target(pnus = [PNU], expectedPropertyUnitCount = 1): DevelopmentTargetManifest {
+function target(
+    pnus = [PNU],
+    expectedPropertyUnitCount = 1,
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget = 'development'
+): DevelopmentTargetManifest {
     return {
         version: DEVELOPMENT_TARGET_MANIFEST_VERSION,
-        databaseTarget: 'development',
+        databaseTarget,
         unionId: UNION_ID,
         pnus,
         targetCount: pnus.length,
-        manifestDigest: computeDevelopmentTargetDigest(UNION_ID, pnus),
+        manifestDigest: computeDevelopmentTargetDigest(
+            databaseTarget,
+            UNION_ID,
+            pnus
+        ),
         expectedPropertyUnitCount,
         expectedUnionActivePropertyUnitCount: expectedPropertyUnitCount,
         expectedUnionActivePnuCount: pnus.length,
@@ -94,7 +105,7 @@ function approval(
         developmentTargetAllowedScopePnus(targetManifest);
     return {
         version: DEVELOPMENT_DB_APPROVAL_MANIFEST_VERSION,
-        databaseTarget: 'development',
+        databaseTarget: targetManifest.databaseTarget,
         unionId: targetManifest.unionId,
         pnus,
         targetCount: pnus.length,
@@ -110,6 +121,7 @@ function targetV2(
     expectedPropertyUnitCount = 1
 ): DevelopmentTargetManifestV2 {
     const identity = {
+        databaseTarget: 'development' as const,
         unionId: UNION_ID,
         anchors,
         allowedScopePnus,
@@ -125,6 +137,7 @@ function targetV2(
         databaseTarget: 'development',
         ...identity,
         scopeDigest: computeDevelopmentTargetDigest(
+            identity.databaseTarget,
             identity.unionId,
             identity.allowedScopePnus
         ),
@@ -229,7 +242,7 @@ function evidence(
 ): DevelopmentEvidenceManifest {
     return {
         version: DEVELOPMENT_EVIDENCE_MANIFEST_VERSION,
-        databaseTarget: 'development',
+        databaseTarget: targetManifest.databaseTarget,
         unionId: targetManifest.unionId,
         manifestDigest: targetManifest.manifestDigest,
         entries,
@@ -242,7 +255,7 @@ function evidenceV2(
 ): DevelopmentEvidenceManifest {
     return {
         version: DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2,
-        databaseTarget: 'development',
+        databaseTarget: targetManifest.databaseTarget,
         unionId: targetManifest.unionId,
         manifestDigest: targetManifest.manifestDigest,
         entries: entries.map((entry) => ({
@@ -355,7 +368,11 @@ function validRunArtifact(): DevelopmentRunArtifact {
         databaseTarget: 'development',
         unionId: UNION_ID,
         targetCount: 1,
-        manifestDigest: computeDevelopmentTargetDigest(UNION_ID, [PNU]),
+        manifestDigest: computeDevelopmentTargetDigest(
+            'development',
+            UNION_ID,
+            [PNU]
+        ),
         expectedPropertyUnitCount: 1,
         observedPropertyUnitCount: 1,
         startedAt: '2026-07-25T00:00:00.000Z',
@@ -1998,7 +2015,7 @@ test('v2 target은 실행 anchor와 전체 허용 scope를 분리하고 API capt
     );
     assert.equal(
         developmentTargetScopeDigest(targetManifest),
-        computeDevelopmentTargetDigest(UNION_ID, [
+        computeDevelopmentTargetDigest('development', UNION_ID, [
             PNU,
             SECOND_PNU,
         ])
@@ -3594,4 +3611,354 @@ test('FAILED/review/cache conflict이면 다음 PNU admission을 즉시 중단�
     );
     assert.equal(artifact.gate.stoppedBeforePnu, PNU);
     assert.deepEqual(latestPnus, [PNU]);
+});
+
+// ── production target 축 (2026-08-12 러너 일반화) ──────────────────────
+
+function productionTargetV3(): DevelopmentTargetManifestV3 {
+    const allowedScopePnus = [PNU, SECOND_PNU];
+    const expectedUnionActivePnus = [PNU, SECOND_PNU];
+    const identity = {
+        databaseTarget: 'production' as const,
+        unionId: UNION_ID,
+        anchors: [PNU, SECOND_PNU],
+        allowedScopePnus,
+        expectedUnionActivePnus,
+        expectedUnionActivePnuDigest:
+            computeDevelopmentActivePnuDigest(
+                'production',
+                UNION_ID,
+                expectedUnionActivePnus
+            ),
+        targetCount: 2,
+        expectedPropertyUnitCount: 2,
+        expectedUnionActivePropertyUnitCount: 2,
+        expectedUnionActivePnuCount: 2,
+        allowManualOverwrite: true as const,
+    };
+    return {
+        version: DEVELOPMENT_TARGET_MANIFEST_VERSION_V3,
+        ...identity,
+        scopeDigest: computeDevelopmentTargetDigest(
+            identity.databaseTarget,
+            identity.unionId,
+            identity.allowedScopePnus
+        ),
+        manifestDigest:
+            computeDevelopmentTargetV3ManifestDigest(identity),
+    };
+}
+
+test('digest 축은 환경을 분리한다 — 같은 입력의 dev/production digest·canonical 값이 전부 다르다', () => {
+    assert.notEqual(
+        computeDevelopmentTargetDigest('development', UNION_ID, [PNU]),
+        computeDevelopmentTargetDigest('production', UNION_ID, [PNU])
+    );
+    assert.notEqual(
+        computeDevelopmentActivePnuDigest('development', UNION_ID, [PNU]),
+        computeDevelopmentActivePnuDigest('production', UNION_ID, [PNU])
+    );
+    const identity = {
+        unionId: UNION_ID,
+        anchors: [PNU],
+        allowedScopePnus: [PNU],
+        targetCount: 1,
+        expectedPropertyUnitCount: 1,
+        expectedUnionActivePropertyUnitCount: 1,
+        expectedUnionActivePnuCount: 1,
+        allowManualOverwrite: true,
+    };
+    assert.notEqual(
+        computeDevelopmentTargetV2ManifestDigest({
+            ...identity,
+            databaseTarget: 'development',
+        }),
+        computeDevelopmentTargetV2ManifestDigest({
+            ...identity,
+            databaseTarget: 'production',
+        })
+    );
+    const v3Identity = {
+        ...identity,
+        expectedUnionActivePnus: [PNU],
+        expectedUnionActivePnuDigest: '0'.repeat(64),
+    };
+    assert.notEqual(
+        computeDevelopmentTargetV3ManifestDigest({
+            ...v3Identity,
+            databaseTarget: 'development',
+        }),
+        computeDevelopmentTargetV3ManifestDigest({
+            ...v3Identity,
+            databaseTarget: 'production',
+        })
+    );
+});
+
+test('production target manifest는 production 축 digest로만 파싱되고 dev 축 digest는 거부된다', () => {
+    const productionV1 = target([PNU], 1, 'production');
+    const parsed = parseDevelopmentTargetManifest(productionV1);
+    assert.equal(parsed.databaseTarget, 'production');
+
+    // dev 축으로 계산한 digest 를 production 문서에 끼우면 파싱 자체가 실패한다.
+    assert.throws(
+        () =>
+            parseDevelopmentTargetManifest({
+                ...productionV1,
+                manifestDigest: computeDevelopmentTargetDigest(
+                    'development',
+                    UNION_ID,
+                    [PNU]
+                ),
+            }),
+        /TARGET_MANIFEST_INVALID/
+    );
+    // 미지의 환경 문자열은 membership 가드가 거부한다.
+    assert.throws(
+        () =>
+            parseDevelopmentTargetManifest({
+                ...productionV1,
+                databaseTarget: 'staging',
+            }),
+        /TARGET_MANIFEST_INVALID/
+    );
+
+    const productionV3 = productionTargetV3();
+    const parsedV3 = parseDevelopmentTargetManifest(productionV3);
+    assert.equal(parsedV3.databaseTarget, 'production');
+});
+
+test('production v3 target은 full-refresh marker를 만들지 않고 same-run official evidence는 write-eligible하지 않다', () => {
+    const productionV3 = parseDevelopmentTargetManifest(
+        productionTargetV3()
+    ) as DevelopmentTargetManifestV3;
+    // dev 였다면 임의 digest 는 TARGET_FULL_REFRESH_POLICY_MISMATCH 로 던졌다.
+    // production 은 마커를 아예 만들지 않는다(조용한 null — 가드 2종 미이식의 근거).
+    assert.equal(
+        developmentFullRefreshMarkerForTarget(productionV3),
+        null
+    );
+
+    const entries = [
+        {
+            ...evidenceEntry(PNU, PROPERTY_UNIT_ID),
+            sourceReferences: {
+                kind: 'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE',
+                captureRunId: '30118336235',
+                snapshotReferenceSha256: HASH,
+                officialComponentDigest: 'b'.repeat(64),
+            },
+        },
+        {
+            ...evidenceEntry(SECOND_PNU, SECOND_PROPERTY_UNIT_ID),
+            sourceReferences: {
+                kind: 'DEVELOPMENT_READ_ONLY_SAME_RUN_OFFICIAL_CAPTURE',
+                captureRunId: '30118336235',
+                snapshotReferenceSha256: HASH,
+                officialComponentDigest: 'c'.repeat(64),
+            },
+        },
+    ] as DevelopmentEvidenceEntry[];
+    const evidenceManifest = parseDevelopmentEvidenceManifest({
+        version: DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2,
+        databaseTarget: 'production',
+        unionId: productionV3.unionId,
+        manifestDigest: productionV3.manifestDigest,
+        entries,
+    });
+    const approvalManifest = parseDevelopmentDbApprovalManifest(
+        approval(productionV3)
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                productionV3,
+                approvalManifest,
+                evidenceManifest
+            ),
+        /EVIDENCE_SCOPE_NOT_WRITE_ELIGIBLE/
+    );
+});
+
+test('production target은 dev 승인/증거 manifest와 교차 사용할 수 없다', () => {
+    const developmentTarget = parseDevelopmentTargetManifest(target());
+    const productionTarget = parseDevelopmentTargetManifest(
+        target([PNU], 1, 'production')
+    );
+    // dev 증거(digest 는 dev target 의 것) → production target 대조 시 거부.
+    const developmentEvidence = parseDevelopmentEvidenceManifest(
+        evidence(developmentTarget)
+    );
+    const productionApproval = parseDevelopmentDbApprovalManifest(
+        approval(productionTarget)
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                productionTarget,
+                productionApproval,
+                developmentEvidence
+            ),
+        /EVIDENCE_MANIFEST_MISMATCH/
+    );
+    // dev 승인 → production target 대조 시 거부.
+    const developmentApproval = parseDevelopmentDbApprovalManifest(
+        approval(developmentTarget)
+    );
+    const productionEvidence = parseDevelopmentEvidenceManifest(
+        evidence(productionTarget)
+    );
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerManifests(
+                productionTarget,
+                developmentApproval,
+                productionEvidence
+            ),
+        /DB_APPROVAL_MANIFEST_MISMATCH/
+    );
+});
+
+test('production runtime env는 JWT_SECRET/SUPABASE_*를 선택하고 allowlist는 production 항목을 요구한다', () => {
+    const productionTarget = target([PNU], 1, 'production');
+    const env = {
+        DEV_API_JWT_SECRET: 'dev-jwt',
+        DEV_SUPABASE_URL: 'https://dev.example.supabase.co',
+        DEV_SUPABASE_SERVICE_ROLE_KEY: 'dev-service',
+        JWT_SECRET: 'prod-jwt',
+        SUPABASE_URL: 'https://prod.example.supabase.co',
+        SUPABASE_SERVICE_ROLE_KEY: 'prod-service',
+        LAND_AREA_SYNC_ENABLED: 'true',
+        LAND_AREA_SYNC_ALLOWED_TARGETS: `production:${UNION_ID}:${PNU}`,
+    };
+    const selection = validateDevelopmentRunnerEnvironment(
+        env,
+        productionTarget
+    );
+    assert.deepEqual(selection, {
+        apiJwtSecret: 'prod-jwt',
+        supabaseUrl: 'https://prod.example.supabase.co',
+        supabaseServiceRoleKey: 'prod-service',
+    });
+    // dev 항목만 실려 있으면 production target 은 거부된다 (환경 교차 재사용 차단).
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerEnvironment(
+                {
+                    ...env,
+                    LAND_AREA_SYNC_ALLOWED_TARGETS: `development:${UNION_ID}:${PNU}`,
+                },
+                productionTarget
+            ),
+        /RUNTIME_ALLOWLIST_MANIFEST_MISMATCH/
+    );
+    // 반대 방향도 같다: dev target + production allowlist.
+    assert.throws(
+        () =>
+            validateDevelopmentRunnerEnvironment(
+                {
+                    ...env,
+                    LAND_AREA_SYNC_ALLOWED_TARGETS: `production:${UNION_ID}:${PNU}`,
+                },
+                target()
+            ),
+        /RUNTIME_ALLOWLIST_MANIFEST_MISMATCH/
+    );
+    // dev target 은 dev 접속 정보를 돌려받는다.
+    assert.deepEqual(
+        validateDevelopmentRunnerEnvironment(
+            {
+                ...env,
+                LAND_AREA_SYNC_ALLOWED_TARGETS: `development:${UNION_ID}:${PNU}`,
+            },
+            target()
+        ),
+        {
+            apiJwtSecret: 'dev-jwt',
+            supabaseUrl: 'https://dev.example.supabase.co',
+            supabaseServiceRoleKey: 'dev-service',
+        }
+    );
+});
+
+test('production GIS JWT는 kid prod/iss tonghari-web/databaseTarget production을 서명한다', () => {
+    const secret = 'production-secret-value';
+    const now = new Date('2026-08-12T01:02:03.000Z');
+    const token = createDevelopmentGisSystemAdminJwt(
+        secret,
+        ACTOR_AUTH_ID,
+        now,
+        'production'
+    );
+    const decoded = jwt.verify(token, secret, {
+        algorithms: ['HS256'],
+        issuer: 'tonghari-web',
+        audience: 'tonghari-api',
+        clockTimestamp: Math.floor(now.getTime() / 1000),
+        complete: true,
+    });
+    assert.equal(decoded.header.kid, 'prod');
+    const payload = decoded.payload as jwt.JwtPayload;
+    assert.equal(payload.databaseTarget, 'production');
+    assert.equal(payload.iss, 'tonghari-web');
+    assert.equal(payload.role, 'SYSTEM_ADMIN');
+    assert.equal(payload.purpose, 'GIS_SYSTEM_ADMIN');
+    assert.equal(
+        (payload.exp ?? 0) - (payload.iat ?? 0),
+        DEVELOPMENT_GIS_JWT_TTL_SECONDS
+    );
+});
+
+test('localhost client는 target 축 JWT로 요청한다 — production이면 kid prod 토큰', async () => {
+    let authorization: string | null = null;
+    const client = new LocalhostDevelopmentLandAreaSyncClient(
+        'production-secret-value',
+        ACTOR_AUTH_ID,
+        () => new Date('2026-08-12T00:00:00.000Z'),
+        async (_url, init) => {
+            const headers = (init?.headers ?? {}) as Record<
+                string,
+                string
+            >;
+            authorization = headers.Authorization ?? null;
+            return new Response(
+                JSON.stringify({
+                    success: true,
+                    jobId: DISCOVERY_JOB_ID,
+                }),
+                {
+                    status: 202,
+                    headers: {
+                        'content-type': 'application/json',
+                    },
+                }
+            );
+        },
+        'production'
+    );
+    await client.admitDiscovery(
+        UNION_ID,
+        PNU,
+        DISCOVERY_JOB_ID,
+        undefined
+    );
+    assert.ok(authorization);
+    const token = (authorization as unknown as string).replace(
+        /^Bearer /,
+        ''
+    );
+    const decoded = jwt.verify(token, 'production-secret-value', {
+        algorithms: ['HS256'],
+        issuer: 'tonghari-web',
+        audience: 'tonghari-api',
+        clockTimestamp: Math.floor(
+            new Date('2026-08-12T00:00:00.000Z').getTime() / 1000
+        ),
+        complete: true,
+    });
+    assert.equal(decoded.header.kid, 'prod');
+    assert.equal(
+        (decoded.payload as jwt.JwtPayload).databaseTarget,
+        'production'
+    );
 });

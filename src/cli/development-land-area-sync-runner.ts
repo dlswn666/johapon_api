@@ -12,6 +12,7 @@ import {
     developmentTargetExpectedActivePnus,
     validateDevelopmentRunnerEnvironment,
     type DevelopmentRelationGisInvariantRows,
+    type LandAreaSyncRunnerDatabaseTarget,
 } from '../operations/development-land-area-sync-runner';
 import {
     formatLocalhostProbeSummary,
@@ -21,6 +22,19 @@ import {
 const PRIVATE_DIRECTORY = '.development-land-area-sync';
 const INPUT_SIZE_LIMIT = 1024 * 1024;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// target 별로 접속 가능한 Supabase 프로젝트를 exact 로 못박는다. 선언한 target 과
+// 실제 접속 URL 이 일치해야 하므로 운영 자격증명으로 dev 타깃을 돌리거나 그 반대가
+// 구조적으로 불가능하다. (채택 CLI 의 SUPABASE_URL_BY_TARGET 과 같은 계약)
+const DEVELOPMENT_PROJECT_REF = 'yxypndgipnxrdfyctmvh';
+const PRODUCTION_PROJECT_REF = 'bpdjashtxqrcgxfequgf';
+const SUPABASE_URL_BY_TARGET: Record<
+    LandAreaSyncRunnerDatabaseTarget,
+    string
+> = {
+    development: `https://${DEVELOPMENT_PROJECT_REF}.supabase.co`,
+    production: `https://${PRODUCTION_PROJECT_REF}.supabase.co`,
+};
 
 interface CliArguments {
     targetPath: string;
@@ -141,12 +155,17 @@ async function writeArtifact(
  */
 async function emitRunnerProbe(
     phase: 'STARTUP' | 'POSTFAIL',
-    actorAuthUserId: string
+    actorAuthUserId: string,
+    probeAuth: {
+        secret: string | undefined;
+        databaseTarget: LandAreaSyncRunnerDatabaseTarget;
+    }
 ): Promise<void> {
     try {
         const summary = await probeLocalhostLandAreaSyncApi({
-            secret: process.env.DEV_API_JWT_SECRET,
+            secret: probeAuth.secret,
             actorAuthUserId,
+            databaseTarget: probeAuth.databaseTarget,
         });
         process.stdout.write(
             `LAND_AREA_SYNC_RUNNER_PROBE_${phase}_EXIT_${summary.exitCode}\n`
@@ -172,16 +191,33 @@ async function main(): Promise<void> {
     const dbApproval =
         parseDevelopmentDbApprovalManifest(dbApprovalInput);
     const evidence = parseDevelopmentEvidenceManifest(evidenceInput);
-    validateDevelopmentRunnerEnvironment(process.env, target);
-    await emitRunnerProbe('STARTUP', args.actorAuthUserId);
+    const environment = validateDevelopmentRunnerEnvironment(
+        process.env,
+        target
+    );
+    // 선언한 target 과 실제 접속 프로젝트가 어긋나면 어떤 읽기도 하기 전에 멈춘다.
+    if (
+        environment.supabaseUrl.trim().replace(/\/+$/, '') !==
+        SUPABASE_URL_BY_TARGET[target.databaseTarget]
+    ) {
+        throw new Error('RUNNER_DATABASE_TARGET_MISMATCH');
+    }
+    const probeAuth = {
+        secret: environment.apiJwtSecret,
+        databaseTarget: target.databaseTarget,
+    };
+    await emitRunnerProbe('STARTUP', args.actorAuthUserId, probeAuth);
 
     const client = new LocalhostDevelopmentLandAreaSyncClient(
-        process.env.DEV_API_JWT_SECRET!,
-        args.actorAuthUserId
+        environment.apiJwtSecret,
+        args.actorAuthUserId,
+        () => new Date(),
+        fetch,
+        target.databaseTarget
     );
     const developmentDatabase = createClient(
-        process.env.DEV_SUPABASE_URL!,
-        process.env.DEV_SUPABASE_SERVICE_ROLE_KEY!,
+        environment.supabaseUrl,
+        environment.supabaseServiceRoleKey,
         {
             auth: {
                 persistSession: false,
@@ -727,7 +763,11 @@ async function main(): Promise<void> {
                 artifact.gate.failureCode
             )
         ) {
-            await emitRunnerProbe('POSTFAIL', args.actorAuthUserId);
+            await emitRunnerProbe(
+                'POSTFAIL',
+                args.actorAuthUserId,
+                probeAuth
+            );
         }
         process.exitCode = 1;
     }

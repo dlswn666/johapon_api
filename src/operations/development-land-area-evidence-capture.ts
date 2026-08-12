@@ -10,9 +10,11 @@ import {
     developmentTargetAllowsManualOverwrite,
     developmentTargetExecutionAnchors,
     developmentTargetExpectedActivePnus,
+    isLandAreaSyncRunnerDatabaseTarget,
     type DevelopmentEvidenceEntry,
     type DevelopmentEvidenceManifest,
     type DevelopmentTargetManifest,
+    type LandAreaSyncRunnerDatabaseTarget,
 } from './development-land-area-sync-runner';
 import {
     runLandAreaSyncJob,
@@ -104,7 +106,7 @@ export interface DevelopmentEvidenceCaptureRedactedIssueCount {
 
 export interface DevelopmentEvidenceCaptureAudit {
     version: typeof DEVELOPMENT_EVIDENCE_CAPTURE_AUDIT_VERSION;
-    databaseTarget: 'development';
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget;
     unionId: string;
     targetCount: number;
     expectedPropertyUnitCount: number;
@@ -302,6 +304,7 @@ export function assertDevelopmentEvidenceCaptureActiveIdentity(input: {
         throw new Error('CAPTURE_UNION_ACTIVE_PNU_SET_MISMATCH');
     }
     const pnuDigest = computeDevelopmentActivePnuDigest(
+        target.databaseTarget,
         target.unionId,
         activePnus
     );
@@ -319,7 +322,8 @@ export function assertDevelopmentEvidenceCaptureActiveIdentity(input: {
             canonicalJson({
                 version:
                     'land-area-development-active-property-identity@1',
-                databaseTarget: 'development',
+                // 환경 축 — dev 값('development')은 종전 digest 와 동일하게 유지된다.
+                databaseTarget: target.databaseTarget,
                 unionId: target.unionId.toLowerCase(),
                 rows: canonicalRows,
             })
@@ -810,7 +814,7 @@ async function captureOne(input: {
         db,
         now: input.deps.now,
         executionMode: 'READ_ONLY_CAPTURE',
-        databaseTarget: 'development',
+        databaseTarget: input.target.databaseTarget,
         assertCanaryScopeAllowed(_unionId, scannedPnus) {
             if (
                 scannedPnus.some(
@@ -912,7 +916,9 @@ export async function captureDevelopmentLandAreaEvidence(input: {
 }): Promise<DevelopmentEvidenceCaptureResult> {
     const concurrency = input.concurrency ?? 2;
     if (
-        input.target.databaseTarget !== 'development' ||
+        !isLandAreaSyncRunnerDatabaseTarget(
+            input.target.databaseTarget
+        ) ||
         !POSITIVE_INTEGER_RE.test(input.captureRunId) ||
         !Number.isSafeInteger(concurrency) ||
         concurrency < 1 ||
@@ -1189,7 +1195,7 @@ export async function captureDevelopmentLandAreaEvidence(input: {
             DEVELOPMENT_TARGET_MANIFEST_VERSION
                 ? DEVELOPMENT_EVIDENCE_MANIFEST_VERSION
                 : DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2,
-        databaseTarget: 'development',
+        databaseTarget: input.target.databaseTarget,
         unionId: input.target.unionId,
         manifestDigest: input.target.manifestDigest,
         entries,
@@ -1219,7 +1225,7 @@ export async function captureDevelopmentLandAreaEvidence(input: {
         evidence,
         audit: {
             version: DEVELOPMENT_EVIDENCE_CAPTURE_AUDIT_VERSION,
-            databaseTarget: 'development',
+            databaseTarget: input.target.databaseTarget,
             unionId: input.target.unionId,
             targetCount: input.target.targetCount,
             expectedPropertyUnitCount:

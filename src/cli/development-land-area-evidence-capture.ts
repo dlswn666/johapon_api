@@ -179,11 +179,13 @@ function assertDevelopmentReadOnlyEnvironment(): void {
 
 function failureAudit(
     captureRunId: string,
-    failureCode: string = 'CAPTURE_SETUP_REJECTED'
+    failureCode: string = 'CAPTURE_SETUP_REJECTED',
+    // target 파싱 전에 실패하면 환경을 알 수 없다 — 보수적으로 development 로 남긴다.
+    databaseTarget: DevelopmentEvidenceCaptureAudit['databaseTarget'] = 'development'
 ): DevelopmentEvidenceCaptureAudit {
     return {
         version: 'land-area-development-evidence-capture-audit@3',
-        databaseTarget: 'development',
+        databaseTarget,
         unionId: '00000000-0000-0000-0000-000000000000',
         targetCount: 0,
         expectedPropertyUnitCount: 0,
@@ -243,13 +245,19 @@ export async function runDevelopmentLandAreaEvidenceCaptureCli(
     cwd: string = process.cwd()
 ): Promise<number> {
     let parsed: ParsedArgs | null = null;
+    let parsedTarget: ReturnType<
+        typeof parseDevelopmentTargetManifest
+    > | null = null;
     try {
         parsed = parseArgs(args);
         assertDevelopmentReadOnlyEnvironment();
         const target = parseDevelopmentTargetManifest(
             await readPrivateJson(cwd, parsed.target)
         );
-        const database = getSupabaseService('development');
+        parsedTarget = target;
+        // supabase.service 가 target 별 접속 정보(DEV_SUPABASE_* / SUPABASE_*)를
+        // 이미 분리 보관한다. 캡처는 target 문서가 선언한 환경만 읽는다.
+        const database = getSupabaseService(target.databaseTarget);
         const client = database.getClient();
         const adapter = new LandAreaSyncAdapter({
             vworldRequestIntervalMs:
@@ -383,7 +391,9 @@ export async function runDevelopmentLandAreaEvidenceCaptureCli(
                     parsed.auditOut,
                     failureAudit(
                         parsed.captureRunId,
-                        failureCode
+                        failureCode,
+                        parsedTarget?.databaseTarget ??
+                            'development'
                     )
                 );
             } catch {

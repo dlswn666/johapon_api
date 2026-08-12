@@ -27,6 +27,30 @@ const LOCAL_API_ORIGIN = 'http://127.0.0.1:3100';
 const RESPONSE_SIZE_LIMIT = 256 * 1024;
 const LOCAL_API_REQUEST_TIMEOUT_MS = 60_000;
 
+/**
+ * 러너·캡처가 다룰 수 있는 DB 환경. DB 쪽 land_area_sync 승인 manifest CHECK
+ * (database_target IN ('development','production')) 와 같은 집합이어야 한다.
+ * 승인·digest·allowlist 항목이 전부 이 축으로 격리되므로 환경 간 재사용이 불가능하다.
+ */
+export const LAND_AREA_SYNC_RUNNER_DATABASE_TARGETS = [
+    'development',
+    'production',
+] as const;
+
+export type LandAreaSyncRunnerDatabaseTarget =
+    (typeof LAND_AREA_SYNC_RUNNER_DATABASE_TARGETS)[number];
+
+export function isLandAreaSyncRunnerDatabaseTarget(
+    value: unknown
+): value is LandAreaSyncRunnerDatabaseTarget {
+    return (
+        typeof value === 'string' &&
+        (
+            LAND_AREA_SYNC_RUNNER_DATABASE_TARGETS as readonly string[]
+        ).includes(value)
+    );
+}
+
 export const DEVELOPMENT_TARGET_MANIFEST_VERSION =
     'land-area-development-target-manifest@1';
 export const DEVELOPMENT_TARGET_MANIFEST_VERSION_V2 =
@@ -54,7 +78,7 @@ export const DEVELOPMENT_FULL_REFRESH_ADMISSION_CUTOFF_MS =
     225 * 60_000;
 
 interface DevelopmentTargetManifestCommon {
-    databaseTarget: 'development';
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget;
     unionId: string;
     targetCount: number;
     manifestDigest: string;
@@ -96,7 +120,7 @@ export type DevelopmentTargetManifest =
 
 export interface DevelopmentDbApprovalManifest {
     version: typeof DEVELOPMENT_DB_APPROVAL_MANIFEST_VERSION;
-    databaseTarget: 'development';
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget;
     unionId: string;
     pnus: string[];
     targetCount: number;
@@ -183,7 +207,7 @@ export interface DevelopmentEvidenceEntry {
 }
 
 interface DevelopmentEvidenceManifestCommon {
-    databaseTarget: 'development';
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget;
     unionId: string;
     manifestDigest: string;
     entries: DevelopmentEvidenceEntry[];
@@ -397,7 +421,7 @@ export interface DevelopmentRunTargetResult {
 
 export interface DevelopmentRunArtifact {
     version: typeof DEVELOPMENT_RUN_ARTIFACT_VERSION;
-    databaseTarget: 'development';
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget;
     unionId: string;
     targetCount: number;
     manifestDigest: string;
@@ -429,7 +453,7 @@ export interface DevelopmentRunArtifact {
 
 export interface DevelopmentPublicRunArtifact {
     version: typeof DEVELOPMENT_PUBLIC_RUN_ARTIFACT_VERSION;
-    databaseTarget: 'development';
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget;
     manifestLabel: string;
     aggregateCounts: {
         targetCount: number;
@@ -533,8 +557,14 @@ function isSortedUnique(values: readonly string[]): boolean {
     );
 }
 
+/**
+ * ⚠️ 여기의 databaseTarget 은 실제 환경 축이다(채택 트랙의 DB-미러 namespace
+ * 토큰과 다르다). canonical 값이 runtime allowlist(LAND_AREA_SYNC_ALLOWED_TARGETS)
+ * 의 `target:union:pnu` 항목과 문자 그대로 대조되므로, 환경이 digest 에 들어가야
+ * dev 승인·allowlist 를 운영에 재사용하는 것이 구조적으로 불가능해진다.
+ */
 function canonicalTargetValue(
-    databaseTarget: 'development',
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget,
     unionId: string,
     pnus: readonly string[]
 ): string {
@@ -544,15 +574,17 @@ function canonicalTargetValue(
 }
 
 export function computeDevelopmentTargetDigest(
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget,
     unionId: string,
     pnus: readonly string[]
 ): string {
     return createHash('sha256')
-        .update(canonicalTargetValue('development', unionId, pnus), 'utf8')
+        .update(canonicalTargetValue(databaseTarget, unionId, pnus), 'utf8')
         .digest('hex');
 }
 
 export function computeDevelopmentActivePnuDigest(
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget,
     unionId: string,
     pnus: readonly string[]
 ): string {
@@ -560,7 +592,7 @@ export function computeDevelopmentActivePnuDigest(
         .update(
             JSON.stringify({
                 version: DEVELOPMENT_ACTIVE_PNU_DIGEST_VERSION,
-                databaseTarget: 'development',
+                databaseTarget,
                 unionId: unionId.toLowerCase(),
                 pnus: [...pnus],
             }),
@@ -570,6 +602,7 @@ export function computeDevelopmentActivePnuDigest(
 }
 
 export function computeDevelopmentTargetV2ManifestDigest(input: {
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget;
     unionId: string;
     anchors: readonly string[];
     allowedScopePnus: readonly string[];
@@ -581,7 +614,7 @@ export function computeDevelopmentTargetV2ManifestDigest(input: {
 }): string {
     const canonicalManifestIdentity = JSON.stringify({
         version: DEVELOPMENT_TARGET_MANIFEST_VERSION_V2,
-        databaseTarget: 'development',
+        databaseTarget: input.databaseTarget,
         unionId: input.unionId.toLowerCase(),
         anchors: [...input.anchors],
         allowedScopePnus: [...input.allowedScopePnus],
@@ -599,6 +632,7 @@ export function computeDevelopmentTargetV2ManifestDigest(input: {
 }
 
 export function computeDevelopmentTargetV3ManifestDigest(input: {
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget;
     unionId: string;
     anchors: readonly string[];
     allowedScopePnus: readonly string[];
@@ -612,7 +646,7 @@ export function computeDevelopmentTargetV3ManifestDigest(input: {
 }): string {
     const canonicalManifestIdentity = JSON.stringify({
         version: DEVELOPMENT_TARGET_MANIFEST_VERSION_V3,
-        databaseTarget: 'development',
+        databaseTarget: input.databaseTarget,
         unionId: input.unionId.toLowerCase(),
         anchors: [...input.anchors],
         allowedScopePnus: [...input.allowedScopePnus],
@@ -691,6 +725,13 @@ export function developmentFullRefreshMarkerForTarget(
     ) {
         return null;
     }
+    // full-refresh 프로파일은 repo-pinned DEV 전용이다. production v3 target 은
+    // 마커를 아예 싣지 않아 service 의 production hard-deny 와 DB dev 전용 가드
+    // 2종(assert/revalidate_mia7_development_full_refresh_*)을 구조적으로 피한다.
+    // 마커가 없으면 same-run official evidence 는 write-eligible 하지 않다(fail-closed).
+    if (target.databaseTarget !== 'development') {
+        return null;
+    }
     const marker: LandAreaSyncDevelopmentFullRefresh = {
         profile:
             DEVELOPMENT_LAND_AREA_FULL_REFRESH_PROFILE,
@@ -715,7 +756,7 @@ function assertCommonManifest(
     value: Record<string, unknown>,
     expectedVersion: string
 ): asserts value is Record<string, unknown> & {
-    databaseTarget: 'development';
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget;
     unionId: string;
     pnus: string[];
     targetCount: number;
@@ -723,7 +764,7 @@ function assertCommonManifest(
 } {
     if (
         value.version !== expectedVersion ||
-        value.databaseTarget !== 'development' ||
+        !isLandAreaSyncRunnerDatabaseTarget(value.databaseTarget) ||
         typeof value.unionId !== 'string' ||
         !UUID_RE.test(value.unionId) ||
         !Array.isArray(value.pnus) ||
@@ -735,7 +776,11 @@ function assertCommonManifest(
         typeof value.manifestDigest !== 'string' ||
         !HEX64_RE.test(value.manifestDigest) ||
         value.manifestDigest !==
-            computeDevelopmentTargetDigest(value.unionId, value.pnus as string[])
+            computeDevelopmentTargetDigest(
+                value.databaseTarget,
+                value.unionId,
+                value.pnus as string[]
+            )
     ) {
         throw new ControlledRunnerError('TARGET_MANIFEST_INVALID');
     }
@@ -794,7 +839,7 @@ export function parseDevelopmentTargetManifest(
                 'expectedUnionActivePnuCount',
                 'allowManualOverwrite',
             ]) ||
-            value.databaseTarget !== 'development' ||
+            !isLandAreaSyncRunnerDatabaseTarget(value.databaseTarget) ||
             typeof value.unionId !== 'string' ||
             !UUID_RE.test(value.unionId) ||
             !Array.isArray(value.anchors) ||
@@ -823,6 +868,7 @@ export function parseDevelopmentTargetManifest(
             !HEX64_RE.test(value.scopeDigest) ||
             value.scopeDigest !==
                 computeDevelopmentTargetDigest(
+                    value.databaseTarget,
                     value.unionId,
                     value.allowedScopePnus as string[]
                 ) ||
@@ -830,6 +876,7 @@ export function parseDevelopmentTargetManifest(
             !HEX64_RE.test(value.manifestDigest) ||
             value.manifestDigest !==
                 computeDevelopmentTargetV2ManifestDigest({
+                    databaseTarget: value.databaseTarget,
                     unionId: value.unionId,
                     anchors: value.anchors as string[],
                     allowedScopePnus:
@@ -871,7 +918,7 @@ export function parseDevelopmentTargetManifest(
             'allowManualOverwrite',
         ]) ||
         value.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 ||
-        value.databaseTarget !== 'development' ||
+        !isLandAreaSyncRunnerDatabaseTarget(value.databaseTarget) ||
         typeof value.unionId !== 'string' ||
         !UUID_RE.test(value.unionId) ||
         !Array.isArray(value.anchors) ||
@@ -907,6 +954,7 @@ export function parseDevelopmentTargetManifest(
         !HEX64_RE.test(value.expectedUnionActivePnuDigest) ||
         value.expectedUnionActivePnuDigest !==
             computeDevelopmentActivePnuDigest(
+                value.databaseTarget as LandAreaSyncRunnerDatabaseTarget,
                 value.unionId,
                 value.expectedUnionActivePnus as string[]
             ) ||
@@ -916,6 +964,7 @@ export function parseDevelopmentTargetManifest(
         !HEX64_RE.test(value.scopeDigest) ||
         value.scopeDigest !==
             computeDevelopmentTargetDigest(
+                value.databaseTarget as LandAreaSyncRunnerDatabaseTarget,
                 value.unionId,
                 value.allowedScopePnus as string[]
             ) ||
@@ -923,6 +972,8 @@ export function parseDevelopmentTargetManifest(
         !HEX64_RE.test(value.manifestDigest) ||
         value.manifestDigest !==
             computeDevelopmentTargetV3ManifestDigest({
+                databaseTarget:
+                    value.databaseTarget as LandAreaSyncRunnerDatabaseTarget,
                 unionId: value.unionId,
                 anchors: value.anchors as string[],
                 allowedScopePnus:
@@ -1291,7 +1342,7 @@ export function parseDevelopmentEvidenceManifest(
         ]) ||
         (version !== DEVELOPMENT_EVIDENCE_MANIFEST_VERSION &&
             version !== DEVELOPMENT_EVIDENCE_MANIFEST_VERSION_V2) ||
-        value.databaseTarget !== 'development' ||
+        !isLandAreaSyncRunnerDatabaseTarget(value.databaseTarget) ||
         typeof value.unionId !== 'string' ||
         !UUID_RE.test(value.unionId) ||
         typeof value.manifestDigest !== 'string' ||
@@ -1303,7 +1354,7 @@ export function parseDevelopmentEvidenceManifest(
     }
     return {
         version,
-        databaseTarget: 'development',
+        databaseTarget: value.databaseTarget,
         unionId: value.unionId,
         manifestDigest: value.manifestDigest,
         entries: value.entries.map((entry) =>
@@ -1316,10 +1367,18 @@ function normalizedUrl(value: string): string {
     return value.trim().replace(/\/+$/, '').toLowerCase();
 }
 
+export interface DevelopmentRunnerEnvironmentSelection {
+    /** target 환경의 API JWT 서명 비밀. dev=DEV_API_JWT_SECRET, production=JWT_SECRET */
+    apiJwtSecret: string;
+    /** target 환경의 preflight/postflight 읽기용 Supabase 접속 정보 */
+    supabaseUrl: string;
+    supabaseServiceRoleKey: string;
+}
+
 export function validateDevelopmentRunnerEnvironment(
     input: DevelopmentRunnerEnvironment,
     target: DevelopmentTargetManifest
-): void {
+): DevelopmentRunnerEnvironmentSelection {
     const developmentValues = [
         input.DEV_API_JWT_SECRET,
         input.DEV_SUPABASE_URL,
@@ -1330,6 +1389,8 @@ export function validateDevelopmentRunnerEnvironment(
         input.SUPABASE_URL,
         input.SUPABASE_SERVICE_ROLE_KEY,
     ];
+    // target 과 무관하게 두 환경 세트가 모두 존재하고 서로 격리되어 있어야 한다.
+    // (EC2 컨테이너 계약 — 둘이 같으면 어느 쪽 실행이든 환경 구분이 무의미해진다.)
     if (
         developmentValues.some((value) => !value) ||
         productionValues.some((value) => !value)
@@ -1360,7 +1421,7 @@ export function validateDevelopmentRunnerEnvironment(
     const allowedScopePnus =
         developmentTargetAllowedScopePnus(target);
     const targetCanonical = canonicalTargetValue(
-        'development',
+        target.databaseTarget,
         target.unionId,
         allowedScopePnus
     );
@@ -1372,6 +1433,20 @@ export function validateDevelopmentRunnerEnvironment(
     ) {
         throw new ControlledRunnerError('RUNTIME_ALLOWLIST_MANIFEST_MISMATCH');
     }
+
+    return target.databaseTarget === 'development'
+        ? {
+              apiJwtSecret: input.DEV_API_JWT_SECRET!,
+              supabaseUrl: input.DEV_SUPABASE_URL!,
+              supabaseServiceRoleKey:
+                  input.DEV_SUPABASE_SERVICE_ROLE_KEY!,
+          }
+        : {
+              apiJwtSecret: input.JWT_SECRET!,
+              supabaseUrl: input.SUPABASE_URL!,
+              supabaseServiceRoleKey:
+                  input.SUPABASE_SERVICE_ROLE_KEY!,
+          };
 }
 
 export function validateDevelopmentRunnerManifests(
@@ -1385,7 +1460,7 @@ export function validateDevelopmentRunnerManifests(
     const allowedScopePnus =
         developmentTargetAllowedScopePnus(target);
     if (
-        dbApproval.databaseTarget !== 'development' ||
+        dbApproval.databaseTarget !== target.databaseTarget ||
         dbApproval.unionId.toLowerCase() !== target.unionId.toLowerCase() ||
         dbApproval.targetCount !== allowedScopePnus.length ||
         dbApproval.manifestDigest !==
@@ -1396,7 +1471,7 @@ export function validateDevelopmentRunnerManifests(
         throw new ControlledRunnerError('DB_APPROVAL_MANIFEST_MISMATCH');
     }
     if (
-        evidence.databaseTarget !== 'development' ||
+        evidence.databaseTarget !== target.databaseTarget ||
         evidence.unionId.toLowerCase() !== target.unionId.toLowerCase() ||
         evidence.manifestDigest !== target.manifestDigest
     ) {
@@ -1553,12 +1628,21 @@ export function validateDevelopmentRunnerManifests(
 export function createDevelopmentGisSystemAdminJwt(
     secret: string,
     actorAuthUserId: string,
-    now: Date = new Date()
+    now: Date = new Date(),
+    databaseTarget: LandAreaSyncRunnerDatabaseTarget = 'development'
 ): string {
-    if (!secret || !UUID_RE.test(actorAuthUserId)) {
+    if (
+        !secret ||
+        !UUID_RE.test(actorAuthUserId) ||
+        !isLandAreaSyncRunnerDatabaseTarget(databaseTarget)
+    ) {
         throw new ControlledRunnerError('JWT_INPUT_INVALID');
     }
     const issuedAt = Math.floor(now.getTime() / 1000);
+    // auth.service 의 환경 계약: 서명키(kid)가 환경을 확정하고 claim 은 일치 검증만
+    // 한다. dev = kid 'dev' + iss 'tonghari-web-dev' + DEV_API_JWT_SECRET,
+    // production = kid 'prod' + iss 'tonghari-web' + JWT_SECRET.
+    const development = databaseTarget === 'development';
     return jwt.sign(
         {
             sub: actorAuthUserId.toLowerCase(),
@@ -1566,8 +1650,8 @@ export function createDevelopmentGisSystemAdminJwt(
             unionId: 'system',
             role: 'SYSTEM_ADMIN',
             purpose: 'GIS_SYSTEM_ADMIN',
-            databaseTarget: 'development',
-            iss: 'tonghari-web-dev',
+            databaseTarget,
+            iss: development ? 'tonghari-web-dev' : 'tonghari-web',
             aud: 'tonghari-api',
             iat: issuedAt,
             exp: issuedAt + DEVELOPMENT_GIS_JWT_TTL_SECONDS,
@@ -1576,7 +1660,7 @@ export function createDevelopmentGisSystemAdminJwt(
         secret,
         {
             algorithm: 'HS256',
-            keyid: 'dev',
+            keyid: development ? 'dev' : 'prod',
         }
     );
 }
@@ -1619,7 +1703,8 @@ export class LocalhostDevelopmentLandAreaSyncClient
         private readonly secret: string,
         private readonly actorAuthUserId: string,
         private readonly now: () => Date = () => new Date(),
-        private readonly fetchImpl: typeof fetch = fetch
+        private readonly fetchImpl: typeof fetch = fetch,
+        private readonly databaseTarget: LandAreaSyncRunnerDatabaseTarget = 'development'
     ) {}
 
     private async request(
@@ -1629,7 +1714,8 @@ export class LocalhostDevelopmentLandAreaSyncClient
         const token = createDevelopmentGisSystemAdminJwt(
             this.secret,
             this.actorAuthUserId,
-            this.now()
+            this.now(),
+            this.databaseTarget
         );
         // 2026-08-02: 같은 컨테이너에서 guardian의 node:http health check는 매 run
         // 성공하는 반면 undici fetch 기반 요청은 서버가 요청을 수신·처리(잡 생성
@@ -2926,6 +3012,7 @@ async function readAndValidateDevelopmentSnapshot(input: {
             (input.target.version ===
                 DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 &&
                 computeDevelopmentActivePnuDigest(
+                    input.target.databaseTarget,
                     input.target.unionId,
                     activePnus
                 ) !==
@@ -3765,7 +3852,7 @@ export async function runDevelopmentLandAreaSync(input: {
 
     return {
         version: DEVELOPMENT_RUN_ARTIFACT_VERSION,
-        databaseTarget: 'development',
+        databaseTarget: input.target.databaseTarget,
         unionId: input.target.unionId,
         targetCount: input.target.targetCount,
         manifestDigest: input.target.manifestDigest,
@@ -3825,7 +3912,7 @@ export function validateDevelopmentRunArtifact(
             'gate',
         ]) ||
         value.version !== DEVELOPMENT_RUN_ARTIFACT_VERSION ||
-        value.databaseTarget !== 'development' ||
+        value.databaseTarget !== target.databaseTarget ||
         value.unionId !== target.unionId ||
         value.targetCount !== target.targetCount ||
         value.manifestDigest !== target.manifestDigest ||
@@ -4396,7 +4483,7 @@ export function validateDevelopmentRunArtifact(
 
     return {
         version: DEVELOPMENT_RUN_ARTIFACT_VERSION,
-        databaseTarget: 'development',
+        databaseTarget: target.databaseTarget,
         unionId: target.unionId,
         targetCount: target.targetCount,
         manifestDigest: target.manifestDigest,
@@ -4465,7 +4552,7 @@ export function createDevelopmentPublicRunArtifact(
     return validateDevelopmentPublicRunArtifact(
         {
             version: DEVELOPMENT_PUBLIC_RUN_ARTIFACT_VERSION,
-            databaseTarget: 'development',
+            databaseTarget: artifact.databaseTarget,
             manifestLabel,
             aggregateCounts: {
                 targetCount: artifact.targetCount,
@@ -4552,7 +4639,8 @@ export function createDevelopmentPublicRunArtifact(
 
 export function validateDevelopmentPublicRunArtifact(
     input: unknown,
-    manifestLabel: string
+    manifestLabel: string,
+    expectedDatabaseTarget: LandAreaSyncRunnerDatabaseTarget = 'development'
 ): DevelopmentPublicRunArtifact {
     const value = asRecord(input, 'PUBLIC_RUN_ARTIFACT_INVALID');
     const aggregateCounts = asRecord(
@@ -4640,7 +4728,7 @@ export function validateDevelopmentPublicRunArtifact(
             'gate',
         ]) ||
         value.version !== DEVELOPMENT_PUBLIC_RUN_ARTIFACT_VERSION ||
-        value.databaseTarget !== 'development' ||
+        value.databaseTarget !== expectedDatabaseTarget ||
         value.manifestLabel !== manifestLabel ||
         !hasExactKeys(aggregateCounts, aggregateKeys) ||
         ![

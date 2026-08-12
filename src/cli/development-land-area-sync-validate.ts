@@ -120,13 +120,15 @@ async function main(): Promise<void> {
         );
         validateDevelopmentPublicRunArtifact(
             publicArtifact,
-            manifestLabel
+            manifestLabel,
+            target.databaseTarget
         );
         const publicOutput = argument(argv, '--public-out');
         await writePublicJson(publicOutput, publicArtifact);
         validateDevelopmentPublicRunArtifact(
             await readJson(publicOutput),
-            manifestLabel
+            manifestLabel,
+            target.databaseTarget
         );
     }
     process.stdout.write('LAND_AREA_DEVELOPMENT_RUN_ARTIFACT_VALIDATED\n');
