@@ -30,9 +30,48 @@ test('enable은 canonical development allowlist의 count와 digest가 일치할 
     );
 });
 
-test('enable은 production, wildcard, duplicate, 비정규 raw allowlist를 거부한다', () => {
-    const rejected = [
+test('enable은 production canonical allowlist도 count·digest 일치 시 통과한다', () => {
+    const productionAllowlist = [
         `production:${UNION}:${PNU_A}`,
+        `production:${UNION}:${PNU_B}`,
+    ].join(',');
+    const productionDigest = createHash('sha256')
+        .update(productionAllowlist, 'utf8')
+        .digest('hex');
+    assert.deepEqual(
+        validateLandAreaSyncRuntimeAllowlist({
+            action: 'enable',
+            rawAllowedTargets: productionAllowlist,
+            expectedCount: '2',
+            expectedDigest: productionDigest,
+        }),
+        {
+            action: 'enable',
+            count: 2,
+            digest: productionDigest,
+        }
+    );
+    // 한 allowlist 에 두 환경 혼합은 거부한다 — 창은 단일 환경으로만 연다.
+    const mixed = [
+        `development:${UNION}:${PNU_A}`,
+        `production:${UNION}:${PNU_B}`,
+    ].join(',');
+    assert.throws(
+        () =>
+            validateLandAreaSyncRuntimeAllowlist({
+                action: 'enable',
+                rawAllowedTargets: mixed,
+                expectedCount: '2',
+                expectedDigest: createHash('sha256')
+                    .update(mixed, 'utf8')
+                    .digest('hex'),
+            }),
+        /단일 database target/
+    );
+});
+
+test('enable은 wildcard, duplicate, 비정규 raw allowlist를 거부한다', () => {
+    const rejected = [
         `development:*:${PNU_A}`,
         `development:${UNION}:*`,
         `development:${UNION}:${PNU_A},development:${UNION}:${PNU_A}`,

@@ -71,13 +71,17 @@ export function validateLandAreaSyncRuntimeAllowlist(
             'enable allowlist는 공백 없이 소문자 UUID와 정렬된 canonical 형식이어야 합니다.'
         );
     }
-    if (
+    // 환경 축 자체는 canary policy 파서가 exact 검증한다(development|production).
+    // 여기서는 한 allowlist 에 두 환경이 섞이는 것만 추가로 금지한다 — 창은
+    // 항상 단일 환경으로 열린다.
+    const environments = new Set(
         manifest.canonicalValue
             .split(',')
-            .some((entry) => !entry.startsWith('development:'))
-    ) {
+            .map((entry) => entry.split(':')[0])
+    );
+    if (environments.size !== 1) {
         throw new Error(
-            'runtime allowlist는 exact development target만 허용합니다.'
+            'runtime allowlist는 단일 database target 환경만 허용합니다.'
         );
     }
     if (String(manifest.count) !== expectedCount) {
