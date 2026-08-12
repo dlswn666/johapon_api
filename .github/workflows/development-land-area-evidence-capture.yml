@@ -17,6 +17,7 @@ on:
           - mia-seven-review-210-20260725
           - mia-seven-791-2280-ldareg-api-readonly-20260725
           - mia-seven-full-278-official-components-api-readonly-production-20260812
+          - mia-seven-standard-267-api-readonly-production-20260812
 
 permissions:
   contents: read
@@ -108,6 +109,14 @@ jobs:
               target_path="development-land-area-sync-manifests/mia-seven-full-278-official-components-api-readonly-production-target-20260812.json"
               target_count="278"
               property_unit_count="422"
+              ;;
+            mia-seven-standard-267-api-readonly-production-20260812)
+              # 표준 계약(DB_RESOLVER)으로 해석되는 267 anchor 부분집합 —
+              # run 31556569354 실측에서 CAPTURED 267/스캔 268 PNU/물건 306 이
+              # write-eligible 로 확인된 그 집합이다. REVIEW 11 anchor 는 제외.
+              target_path="development-land-area-sync-manifests/mia-seven-standard-267-api-readonly-production-target-20260812.json"
+              target_count="267"
+              property_unit_count="306"
               ;;
             *)
               echo "::error::Target manifest is not repository-approved."

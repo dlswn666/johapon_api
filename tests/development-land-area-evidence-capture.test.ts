@@ -1908,3 +1908,84 @@ test('미아7 production target은 dev와 동일 집합에 production 축 digest
         development.manifestDigest
     );
 });
+
+const MIA_STANDARD_267_PRODUCTION_TARGET_URL = new URL(
+    '../development-land-area-sync-manifests/mia-seven-standard-267-api-readonly-production-target-20260812.json',
+    import.meta.url
+);
+
+test('미아7 standard-267 production target은 REVIEW 11 anchor를 제외한 표준 계약 부분집합을 고정한다', () => {
+    const full = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(MIA_FULL_278_PRODUCTION_TARGET_URL, 'utf8')
+        )
+    );
+    const partial = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(
+                MIA_STANDARD_267_PRODUCTION_TARGET_URL,
+                'utf8'
+            )
+        )
+    );
+    if (
+        full.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 ||
+        partial.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v3 targets expected');
+    }
+    assert.equal(partial.databaseTarget, 'production');
+    assert.equal(partial.targetCount, 267);
+    assert.equal(partial.anchors.length, 267);
+    assert.equal(partial.allowedScopePnus.length, 268);
+    // 운영 SQL 실측(2026-08-12): 268 스코프의 활성 물건 = 306.
+    assert.equal(partial.expectedPropertyUnitCount, 306);
+    // union 수준 활성 identity 는 전체 매니페스트와 동일하게 고정한다.
+    assert.equal(partial.expectedUnionActivePropertyUnitCount, 429);
+    assert.equal(partial.expectedUnionActivePnuCount, 299);
+    assert.deepEqual(
+        partial.expectedUnionActivePnus,
+        full.expectedUnionActivePnus
+    );
+    assert.equal(
+        partial.expectedUnionActivePnuDigest,
+        full.expectedUnionActivePnuDigest
+    );
+    // anchors ⊂ full.anchors, 제외는 run 31556569354 의 REVIEW 11건 exact.
+    const excluded = full.anchors.filter(
+        (pnu) => !partial.anchors.includes(pnu)
+    );
+    assert.deepEqual(excluded, [
+        '1130510100107450049',
+        '1130510100107912155',
+        '1130510100107912211',
+        '1130510100107912227',
+        '1130510100107912244',
+        '1130510100107912267',
+        '1130510100107912313',
+        '1130510100107912315',
+        '1130510100107912338',
+        '1130510100107912343',
+        '1130510100107912700',
+    ]);
+    // 스코프 = anchors ∪ 채택 relation attached(2281). 703-130 은 제외 anchor
+    // (791-2244) 의 query-only 부속지번이므로 부분 스코프에 없어야 한다.
+    assert.deepEqual(
+        partial.allowedScopePnus.filter(
+            (pnu) => !partial.anchors.includes(pnu)
+        ),
+        ['1130510100107912281']
+    );
+    assert.ok(
+        !partial.allowedScopePnus.includes('1130510100107030130')
+    );
+    // digest 핀 — 저장소 함수 재계산 값.
+    assert.equal(
+        partial.scopeDigest,
+        '64f8396f4936c6c14146dfab38a8d4e2c5f27eae33228dcc8b3a6599b3a0bded'
+    );
+    assert.equal(
+        partial.manifestDigest,
+        '126f2e167769b0b4aa361c7a648ec1025bd28cbf4247c48a84366213ce2b2ef1'
+    );
+});
