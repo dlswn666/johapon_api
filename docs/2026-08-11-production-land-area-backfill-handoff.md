@@ -8,12 +8,44 @@
 >   `…-production-target-20260812.json` (digest 3종 재계산: 730b3757 / 1ed934de /
 >   352212dc). 운영 실측: 활성 PNU 집합 md5 가 dev 매니페스트와 exact 일치,
 >   429 물건지 / land_area 0 / 3568 도로지분 7건 확인.
-> - 캡처 워크플로 운영 read-only 경로: api `fabce86`. **다음 스텝 = 이 경로
->   디스패치**(무쓰기). 결과가 실행 창 설계를 결정한다: 전부 DB_RESOLVER 로
->   해석되면 그대로 write run 설계로, official 확장이 필요한 anchor 가 나오면
->   그 실패 코드를 보고 관계 채택(운영 이식 완료된 트랙) 또는 프로파일 이식을
->   선택한다. 캡처는 main SHA exact 일치 필요 — Docker Build and Deploy 완료 후
->   디스패치할 것.
+> - 캡처 워크플로 운영 read-only 경로: api `fabce86` (+ sanitize dev 핀 해제
+>   `478db1e`).
+>
+> **운영 캡처 실측 완료 (run 31556569354, 무쓰기):**
+>
+> - **267/278 CAPTURED — 전부 DB_RESOLVER, same-run official 0, promotionGate
+>   PASS + writeEligible=true.** full-refresh 마커 없는 표준 계약으로 운영
+>   백필의 96% 가 write-eligible 하다는 실증. 스캔 268 PNU(267 anchors +
+>   채택 relation attached 2281), 제안 물건 306.
+> - **REVIEW 11 anchor** (BUILDING_CLASSIFICATION_CONFLICT 6 /
+>   SCOPE_CACHE_SCAN_CONFLICT 6 / PROPERTY_UNIT_NOT_FOUND 4, 조합):
+>   745-49·791-2155·2211·2227·2244·2267·2313·2315·2338·2343·2700.
+>   dev·운영 DB 행 수 완전 동일(property_units/building_units/building_land_lots)
+>   — 데이터 갭이 아니라 **dev full-refresh 전용 strict 분기(LDAREG membership
+>   override·parcel singleton LADFRL) 의존** 케이스. dev 에선 이 11건도 그
+>   분기로만 풀렸다. 커버 물건 116 (자기 PNU 56 + 스코프 내 비-anchor 활성 60).
+> - 부분 매니페스트 `mia-seven-standard-267-…-20260812.json` 커밋됨(`887ea3b`,
+>   물건 306, digest 64f8396f/126f2e16).
+> - **✅ standard-267 검증 캡처 전 게이트 PASS (run 31558154416)** —
+>   CAPTURED 267/267·REVIEW 0·스캔 268/268·물건 306/306·promotionGate
+>   PASS(writeEligible)·재시도 0·운영 쓰기 0. evidence manifest sha256
+>   `ae92267be8b3519a417b3db364a836f2cc27e65ecbb6859970464fd329ab49ca`
+>   (합성 production approval 대조 포함 workflow 검증 통과).
+>   **실행 창 선행 검증 완료 — 남은 것은 아래 2개뿐.**
+>
+> **남은 것 2개:**
+>
+> 1. **실행 창 (267/306 부분 백필)** — run 워크플로에 production 경로가 아직
+>    없다(계약 테스트로 의도적 차단 중). dev full-refresh 모드처럼 **한 보호
+>    실행 안에서 캡처→러너**를 돌리는 in-run 방식이 정답이다(증거 JSON 을
+>    저장소로 반출하지 않는 유일한 경로 — 운영 증거를 repo 에 커밋하지 않는다).
+>    run 워크플로 + guardian 스크립트의 dev 핀 감사가 선행. 승인 manifest 발급
+>    (owner, 268 PNU, scope digest 64f8396f)·allowlist enable/disable 창은
+>    기존 절차 그대로. ⚠️ 한 세션에서 개폐.
+> 2. **REVIEW 11 (물건 116)** — 선택지: (a) strict 분기의 production 변형
+>    이식(무겁다 — dev 전용 가드의 재설계), (b) 대지권 재설계 신 파이프라인
+>    2단계로 이관(preview 는 운영에 이미 있음), (c) 관리자 수동 입력.
+>    부분 백필과 독립 — 나중에 결정해도 267 트랙을 막지 않는다.
 
 **목표**: 미아7 운영 물건지 **429건의 `land_area` 를 채운다.** 지금 전건 NULL 이라
 면적 기준 동의율이 아예 계산되지 않는다.
