@@ -579,3 +579,42 @@ test('image는 non-root runner private directory를 mode 700으로 준비한다'
         /chmod 700[\s\S]+\.development-land-area-sync[\s\S]+\.development-land-area-evidence-capture/
     );
 });
+
+test('미아7 production read-only 캡처 경로는 캡처 워크플로에만 있고 합성 approval은 target 환경을 따른다', () => {
+    const label =
+        'mia-seven-full-278-official-components-api-readonly-production-20260812';
+    const selection = captureWorkflow.slice(
+        captureWorkflow.indexOf(`${label})`),
+        captureWorkflow.indexOf(
+            '*)',
+            captureWorkflow.indexOf(`${label})`)
+        )
+    );
+    assert.match(captureWorkflow, new RegExp(`- ${label}`));
+    assert.match(
+        selection,
+        /mia-seven-full-278-official-components-api-readonly-production-target-20260812\.json/
+    );
+    assert.match(selection, /target_count="278"/);
+    assert.match(selection, /property_unit_count="422"/);
+    // 합성 approval 하드코딩 금지 — target 문서의 환경을 그대로 따라야 한다.
+    assert.match(
+        captureWorkflow,
+        /databaseTarget: target\.databaseTarget/
+    );
+    assert.doesNotMatch(
+        captureWorkflow,
+        /databaseTarget: "development"/
+    );
+    // production 은 write run 워크플로에 아직 없다 — 실행 창 설계 전 유출 방지.
+    assert.doesNotMatch(workflow, new RegExp(label));
+    assert.doesNotMatch(
+        workflow,
+        /production-target-20260812\.json/
+    );
+    // dev 기본값은 그대로다.
+    assert.match(
+        captureWorkflow,
+        /default: mia-seven-full-278-official-components-api-readonly-20260729/
+    );
+});
