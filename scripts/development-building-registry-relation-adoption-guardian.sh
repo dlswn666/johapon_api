@@ -261,7 +261,11 @@ stream_file "${host_phase0}" "${container_phase0}"
 write_private_line "${host_started}" "$$"
 
 set +e
-docker exec -w /app "${target_container}" \
+# 컨테이너의 평시 자세(.env)를 바꾸지 않고 이 실행에만 target 을 주입한다.
+# 미지정이면 CLI 가 development 로 폴백하므로 기존 동작은 그대로다.
+docker exec -w /app \
+  -e RELATION_ADOPTION_DATABASE_TARGET="${RELATION_ADOPTION_DATABASE_TARGET:-development}" \
+  "${target_container}" \
   node dist/cli/development-building-registry-relation-adoption.js \
   --target ".development-building-registry-relation-adoption/target-${RUN_KEY}.json" \
   --phase0-manifest ".development-building-registry-relation-adoption/phase0-manifest-${RUN_KEY}.json" \

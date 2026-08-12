@@ -10,6 +10,7 @@ on:
         default: mia-seven-791-2280-2281-20260725
         options:
           - mia-seven-791-2280-2281-20260725
+          - mia-seven-791-2280-2281-production-20260811
 
 permissions:
   contents: read
@@ -19,7 +20,13 @@ jobs:
   adopt:
     name: Adopt verified API relation in development
     runs-on: ubuntu-latest
-    environment: land-area-sync-development-write
+    # 운영 타깃은 별도 환경(land-area-sync-production-write)의 승인을 받는다.
+    # ⚠️ 그 환경은 리뷰어를 건 채로 **미리 만들어져 있어야** 한다 — GitHub 은 없는
+    #    이름을 참조하면 보호 규칙 없이 자동 생성하므로 승인 게이트가 사라진다.
+    environment: >-
+      ${{ contains(inputs.target, '-production-')
+          && 'land-area-sync-production-write'
+          || 'land-area-sync-development-write' }}
     timeout-minutes: 65
     steps:
       - name: Require approved main revision
@@ -65,12 +72,20 @@ jobs:
           TARGET_NAME: ${{ inputs.target }}
         run: |
           set -euo pipefail
+          database_target="development"
           case "${TARGET_NAME}" in
             mia-seven-791-2280-2281-20260725)
               target_path="development-building-registry-relation-adoption-manifests/mia-seven-791-2280-2281-target-20260725.json"
               phase0_manifest_path="phase0-manifests/mia-seven-791-2280-base-attached-first-observation-20260725.json"
               phase0_run_id="30146538770"
               phase0_artifact_name="land-area-phase0-mia-seven-791-2280-base-attached-first-observation-20260725-30146538770"
+              ;;
+            mia-seven-791-2280-2281-production-20260811)
+              target_path="development-building-registry-relation-adoption-manifests/mia-seven-791-2280-2281-target-production-20260811.json"
+              phase0_manifest_path="phase0-manifests/mia-seven-791-2280-base-attached-first-observation-20260725.json"
+              phase0_run_id="31467832037"
+              phase0_artifact_name="land-area-phase0-mia-seven-791-2280-base-attached-first-observation-20260725-31467832037"
+              database_target="production"
               ;;
             *)
               echo "::error::Target is not repository-approved."
@@ -100,7 +115,20 @@ jobs:
             echo "phase0_manifest_path=${phase0_manifest_path}"
             echo "phase0_run_id=${phase0_run_id}"
             echo "phase0_artifact_name=${phase0_artifact_name}"
+            echo "database_target=${database_target}"
           } >> "${GITHUB_OUTPUT}"
+
+          # 워크플로가 정한 환경과 타깃 문서가 선언한 환경이 어긋나면 여기서 멈춘다.
+          # CLI 도 같은 검사를 하지만(RELATION_RUN_DATABASE_TARGET_MISMATCH),
+          # EC2 까지 가기 전에 잘라내는 편이 낫다.
+          declared_target="$(
+            node -e 'const fs=require("fs");process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).databaseTarget??""))' \
+              "${target_path}"
+          )"
+          if [[ "${declared_target}" != "${database_target}" ]]; then
+            echo "::error::Target document declares '${declared_target}' but workflow resolved '${database_target}'."
+            exit 1
+          fi
 
       - name: Download and pin the prior Phase 0 artifact
         id: phase0
@@ -263,6 +291,7 @@ jobs:
           RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
           EXPECTED_GIT_SHA: ${{ github.sha }}
           EXPECTED_IMAGE_TAG: ghcr.io/dlswn666/alimtalk-proxy:${{ github.sha }}
+          RELATION_ADOPTION_DATABASE_TARGET: ${{ steps.target.outputs.database_target }}
         run: |
           set -Eeuo pipefail
           if [[ ! "${RUN_KEY}" =~ ^[0-9]+-[0-9]+$ ]]; then
@@ -347,7 +376,7 @@ jobs:
             "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/guardian.sh"
 
           ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
-            "RUN_KEY='${RUN_KEY}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' EXPECTED_IMAGE_TAG='${EXPECTED_IMAGE_TAG}' bash -s" <<'REMOTE_START'
+            "RUN_KEY='${RUN_KEY}' EXPECTED_GIT_SHA='${EXPECTED_GIT_SHA}' EXPECTED_IMAGE_TAG='${EXPECTED_IMAGE_TAG}' RELATION_ADOPTION_DATABASE_TARGET='${RELATION_ADOPTION_DATABASE_TARGET}' bash -s" <<'REMOTE_START'
           set -euo pipefail
           run_root="${HOME}/alimtalk-proxy/.development-building-relation-adoption-workflow/${RUN_KEY}"
           chmod 600 \
@@ -359,6 +388,7 @@ jobs:
             RUN_KEY="${RUN_KEY}" \
             EXPECTED_GIT_SHA="${EXPECTED_GIT_SHA}" \
             EXPECTED_IMAGE_TAG="${EXPECTED_IMAGE_TAG}" \
+            RELATION_ADOPTION_DATABASE_TARGET="${RELATION_ADOPTION_DATABASE_TARGET}" \
             bash "${run_root}/guardian.sh" \
             > "${run_root}/guardian.log" 2>&1 < /dev/null &
           guardian_pid="$!"

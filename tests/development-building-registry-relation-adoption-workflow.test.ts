@@ -38,9 +38,11 @@ const dockerfile = fs.readFileSync(
 );
 
 test('workflow는 main의 repository-approved 단일 target과 protected development environment만 허용한다', () => {
+    // 환경은 target 이름으로 갈린다. production 타깃은 별도 환경의 승인을 받고,
+    // 그 외에는 기존 development 환경을 그대로 쓴다.
     assert.match(
         workflow,
-        /environment: land-area-sync-development-write/
+        /contains\(inputs\.target, '-production-'\)[\s\S]{0,120}'land-area-sync-production-write'[\s\S]{0,120}'land-area-sync-development-write'/
     );
     assert.match(workflow, /GITHUB_REF.*refs\/heads\/main/);
     assert.match(workflow, /permissions:[\s\S]+contents: read[\s\S]+actions: read/);
@@ -57,11 +59,41 @@ test('workflow는 main의 repository-approved 단일 target과 protected develop
         workflow,
         /node scripts\/check-property-building-link-writers\.mjs/
     );
+    assert.match(
+        workflow,
+        /mia-seven-791-2280-2281-production-20260811/
+    );
+    assert.match(
+        workflow,
+        /development-building-registry-relation-adoption-manifests\/mia-seven-791-2280-2281-target-production-20260811\.json/
+    );
+    // 워크플로가 정한 환경과 타깃 문서의 선언이 어긋나면 EC2 로 가기 전에 멈춘다.
+    assert.match(
+        workflow,
+        /declared_target\}" != "\$\{database_target\}/
+    );
     assert.doesNotMatch(workflow, /type: string/);
+    // Supabase 자격증명은 워크플로가 아니라 EC2 컨테이너 env 에서 온다.
+    // 여기에 시크릿이 등장하면 안 된다.
     assert.doesNotMatch(
         workflow,
         /PROD_SUPABASE|SUPABASE_URL:.*secrets|SERVICE_ROLE_KEY:.*secrets/
     );
+});
+
+test('production 타깃은 오늘 캡처한 Phase 0 run/artifact 를 pin 하고, target 은 실행 시에만 주입된다', () => {
+    assert.match(workflow, /phase0_run_id="31467832037"/);
+    assert.match(
+        workflow,
+        /land-area-phase0-mia-seven-791-2280-base-attached-first-observation-20260725-31467832037/
+    );
+    // 컨테이너 평시 자세(.env)를 바꾸지 않고 이 실행에만 주입한다.
+    assert.match(
+        guardian,
+        /docker exec -w \/app[\s\S]{0,120}-e RELATION_ADOPTION_DATABASE_TARGET="\$\{RELATION_ADOPTION_DATABASE_TARGET:-development\}"/
+    );
+    // 미지정이면 development 폴백이라 기존 dev 실행 경로는 그대로다.
+    assert.match(workflow, /database_target="development"/);
 });
 
 test('prior Phase 0 artifact는 성공 run, exact artifact name과 SHA, repository manifest를 모두 pin한다', () => {
