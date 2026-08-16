@@ -17,6 +17,34 @@ const GIS_JOB_TYPES = [
     'LAND_AREA_SYNC',
 ] as const;
 
+function lookupAbortSignal(res: Response): AbortSignal | undefined {
+    const execution = res.locals?.landRightLookupExecution as
+        | { signal?: unknown }
+        | undefined;
+    return execution?.signal instanceof AbortSignal
+        ? execution.signal
+        : undefined;
+}
+
+function stopForLookupAbort(
+    res: Response,
+    signal: AbortSignal | undefined
+): boolean {
+    if (!signal?.aborted) return false;
+    if (
+        signal.reason !== 'CLIENT_DISCONNECTED' &&
+        !res.destroyed &&
+        !res.headersSent
+    ) {
+        res.status(503).json({
+            success: false,
+            code: 'AUTHORIZATION_DEADLINE_EXCEEDED',
+            error: '현재 권한 확인 시간이 초과되었습니다.',
+        });
+    }
+    return true;
+}
+
 /**
  * GIS 변경·가격·상태 라우트의 시스템관리자 경계.
  * 서명된 claim을 먼저 확인하고 운영 DB의 현재 역할·차단 상태를 다시 검증한다.
@@ -26,6 +54,9 @@ export async function gisSystemAdminMiddleware(
     res: Response,
     next: NextFunction
 ): Promise<void> {
+    const signal = lookupAbortSignal(res);
+    if (stopForLookupAbort(res, signal)) return;
+
     const requestedUnionId =
         typeof req.body?.unionId === 'string' && req.body.unionId.trim()
             ? req.body.unionId.trim()
@@ -52,13 +83,17 @@ export async function gisSystemAdminMiddleware(
     try {
         const client = getSupabaseService(req.user!.databaseTarget).getClient();
         // JWT userId는 auth.users UUID다. users.id(VARCHAR)와 직접 비교하지 않는다.
-        const { data: links, error: linkError } = await client
+        let linkQuery = client
             .from('user_auth_links')
             .select('user_id')
             .eq('auth_user_id', req.user!.userId);
+        if (signal) linkQuery = linkQuery.abortSignal(signal);
+        const { data: links, error: linkError } = await linkQuery;
+
+        if (stopForLookupAbort(res, signal)) return;
 
         if (linkError) {
-            logger.error(`인증 사용자 링크 조회 실패 (${req.user!.userId})`, linkError);
+            logger.error('GIS_AUTH_LINK_LOOKUP_FAILED');
             res.status(503).json({
                 success: false,
                 code: 'AUTHORIZATION_LOOKUP_FAILED',
@@ -79,16 +114,20 @@ export async function gisSystemAdminMiddleware(
             return;
         }
 
-        const { data: actor, error: actorError } = await client
+        let actorQuery = client
             .from('users')
             .select('id, role, is_blocked')
             .in('id', linkedUserIds)
             .eq('role', 'SYSTEM_ADMIN')
-            .limit(1)
-            .maybeSingle();
+            .limit(1);
+        if (signal) actorQuery = actorQuery.abortSignal(signal);
+        const { data: actor, error: actorError } =
+            await actorQuery.maybeSingle();
+
+        if (stopForLookupAbort(res, signal)) return;
 
         if (actorError) {
-            logger.error(`시스템관리자 조회 실패 (${req.user!.userId})`, actorError);
+            logger.error('GIS_SYSTEM_ADMIN_LOOKUP_FAILED');
             res.status(503).json({
                 success: false,
                 code: 'AUTHORIZATION_LOOKUP_FAILED',
@@ -118,14 +157,18 @@ export async function gisSystemAdminMiddleware(
         req.user!.actorUserId = actor.id;
 
         if (requestedUnionId) {
-            const { data: union, error: unionError } = await client
+            let unionQuery = client
                 .from('unions')
                 .select('id')
-                .eq('id', requestedUnionId)
-                .maybeSingle();
+                .eq('id', requestedUnionId);
+            if (signal) unionQuery = unionQuery.abortSignal(signal);
+            const { data: union, error: unionError } =
+                await unionQuery.maybeSingle();
+
+            if (stopForLookupAbort(res, signal)) return;
 
             if (unionError) {
-                logger.error(`정비사업 범위 조회 실패 (${requestedUnionId})`, unionError);
+                logger.error('GIS_UNION_SCOPE_LOOKUP_FAILED');
                 res.status(503).json({
                     success: false,
                     code: 'UNION_SCOPE_LOOKUP_FAILED',
@@ -145,15 +188,19 @@ export async function gisSystemAdminMiddleware(
         }
 
         if (req.params.jobId) {
-            const { data: job, error: jobError } = await client
+            let jobQuery = client
                 .from('sync_jobs')
                 .select('id, union_id, job_type')
                 .eq('id', req.params.jobId)
-                .in('job_type', [...GIS_JOB_TYPES])
-                .maybeSingle();
+                .in('job_type', [...GIS_JOB_TYPES]);
+            if (signal) jobQuery = jobQuery.abortSignal(signal);
+            const { data: job, error: jobError } =
+                await jobQuery.maybeSingle();
+
+            if (stopForLookupAbort(res, signal)) return;
 
             if (jobError) {
-                logger.error(`GIS 작업 범위 조회 실패 (${req.params.jobId})`, jobError);
+                logger.error('GIS_JOB_SCOPE_LOOKUP_FAILED');
                 res.status(503).json({
                     success: false,
                     code: 'JOB_SCOPE_LOOKUP_FAILED',
@@ -182,8 +229,9 @@ export async function gisSystemAdminMiddleware(
         }
 
         next();
-    } catch (error) {
-        logger.error('GIS 권한 검증 중 예외', error);
+    } catch {
+        if (stopForLookupAbort(res, signal)) return;
+        logger.error('GIS_AUTHORIZATION_UNEXPECTED_ERROR');
         res.status(503).json({
             success: false,
             code: 'AUTHORIZATION_LOOKUP_FAILED',
