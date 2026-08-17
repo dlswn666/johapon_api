@@ -45,6 +45,7 @@ function createFakeClient(plan: QueryPlan) {
                 eq: () => builder,
                 in: () => builder,
                 limit: () => builder,
+                abortSignal: () => builder,
                 maybeSingle: async () => result(),
                 then: (resolve, reject) => Promise.resolve(result()).then(resolve, reject),
             };
@@ -146,4 +147,69 @@ test('권한 조회 오류와 작업 조합 불일치는 fail-closed한다', asy
     );
     assert.equal(jobMismatch.state.status, 403);
     assert.equal(jobMismatch.nextCalled, false);
+});
+
+test('권한·사용자·조합 조회 오류 로그는 UUID와 Supabase 원문 없이 stable code만 남긴다', async (t) => {
+    const authUuid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const unionUuid = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const rawError = 'raw-supabase-secret-error';
+    const captured: string[] = [];
+    t.mock.method(console, 'error', (...args: unknown[]) => {
+        captured.push(args.map(String).join(' '));
+    });
+    const overrides = {
+        body: { unionId: unionUuid },
+        user: {
+            unionId: unionUuid,
+            userId: authUuid,
+            databaseTarget: 'production' as const,
+            legacyProductionToken: true,
+        },
+    } as Partial<Request>;
+
+    await runMiddleware(
+        {
+            user_auth_links: {
+                data: null,
+                error: { message: rawError },
+            },
+        },
+        overrides
+    );
+    await runMiddleware(
+        {
+            user_auth_links: {
+                data: [{ user_id: 'varchar-user-id' }],
+                error: null,
+            },
+            users: { data: null, error: { message: rawError } },
+        },
+        overrides
+    );
+    await runMiddleware(
+        {
+            user_auth_links: {
+                data: [{ user_id: 'varchar-user-id' }],
+                error: null,
+            },
+            users: {
+                data: {
+                    id: 'varchar-user-id',
+                    role: 'SYSTEM_ADMIN',
+                    is_blocked: false,
+                },
+                error: null,
+            },
+            unions: { data: null, error: { message: rawError } },
+        },
+        overrides
+    );
+
+    const output = captured.join('\n');
+    assert.match(output, /GIS_AUTH_LINK_LOOKUP_FAILED/);
+    assert.match(output, /GIS_SYSTEM_ADMIN_LOOKUP_FAILED/);
+    assert.match(output, /GIS_UNION_SCOPE_LOOKUP_FAILED/);
+    assert.doesNotMatch(output, new RegExp(authUuid, 'i'));
+    assert.doesNotMatch(output, new RegExp(unionUuid, 'i'));
+    assert.doesNotMatch(output, new RegExp(rawError, 'i'));
 });

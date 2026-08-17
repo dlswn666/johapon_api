@@ -1,4 +1,4 @@
-import { Response, Router } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import { gisQueueService } from '../services/gis.queue.service';
 import { gisService } from '../services/gis.service';
 import { gisInspectService } from '../services/gis-inspect.service';
@@ -33,6 +33,12 @@ import {
 import { env } from '../config/env';
 import { createLogger } from '../utils/logger';
 import type { LandAreaSyncPreview } from '../types/land-area-sync-job.types';
+import type { LandRightLookupSuccessResponse } from '../types/land-right-lookup.types';
+import {
+    createSupabaseLandRightLookupRepository,
+    LandRightLookupError,
+    lookupLandRightTransient,
+} from '../services/land-right-lookup/transient';
 
 const router = Router();
 const logger = createLogger('GIS-ROUTE');
@@ -52,6 +58,189 @@ function isUuid(v: unknown): v is string {
 function isPnu(v: unknown): v is string {
     return typeof v === 'string' && PNU_RE.test(v);
 }
+
+function landRightLookupNoStore(
+    _req: Request,
+    res: Response,
+    next: NextFunction
+): void {
+    res.set('Cache-Control', 'no-store');
+    next();
+}
+
+export const LAND_RIGHT_LOOKUP_DEADLINE_MS = 50_000;
+
+interface LandRightLookupExecutionContext {
+    signal: AbortSignal;
+    cleanup: () => void;
+}
+
+export function createLandRightLookupExecutionContextMiddleware(
+    deadlineMs = LAND_RIGHT_LOOKUP_DEADLINE_MS
+): (req: Request, res: Response, next: NextFunction) => void {
+    if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0) {
+        throw new Error('land-right lookup deadline 설정이 올바르지 않습니다.');
+    }
+
+    return (req, res, next) => {
+        const controller = new AbortController();
+        let cleaned = false;
+        let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+        const cleanup = () => {
+            if (cleaned) return;
+            cleaned = true;
+            if (deadlineTimer) clearTimeout(deadlineTimer);
+            req.off('aborted', abortForDisconnect);
+            res.off('close', abortForDisconnect);
+            res.off('finish', cleanup);
+        };
+        const abortForDisconnect = () => {
+            if (!controller.signal.aborted) {
+                controller.abort('CLIENT_DISCONNECTED');
+            }
+            cleanup();
+        };
+        deadlineTimer = setTimeout(() => {
+            if (!controller.signal.aborted) {
+                controller.abort('LOOKUP_DEADLINE_EXCEEDED');
+            }
+            cleanup();
+        }, deadlineMs);
+        deadlineTimer.unref?.();
+
+        req.once('aborted', abortForDisconnect);
+        res.once('close', abortForDisconnect);
+        res.once('finish', cleanup);
+        res.locals.landRightLookupExecution = {
+            signal: controller.signal,
+            cleanup,
+        } satisfies LandRightLookupExecutionContext;
+
+        if (req.aborted || req.destroyed || res.destroyed) {
+            abortForDisconnect();
+            return;
+        }
+        next();
+    };
+}
+
+const landRightLookupExecutionContext =
+    createLandRightLookupExecutionContextMiddleware();
+
+function landRightLookupClientDisconnected(
+    req: Request,
+    res: Response,
+    execution: LandRightLookupExecutionContext
+): boolean {
+    return (
+        req.aborted ||
+        req.destroyed ||
+        res.destroyed ||
+        (execution.signal.aborted &&
+            execution.signal.reason === 'CLIENT_DISCONNECTED')
+    );
+}
+
+function validateLandRightLookupRequest(
+    req: Request,
+    res: Response,
+    next: NextFunction
+): void {
+    const body =
+        req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+            ? (req.body as Record<string, unknown>)
+            : {};
+    const allowedKeys = new Set(['unionId', 'propertyUnitId']);
+    const unionId =
+        typeof body.unionId === 'string'
+            ? body.unionId.trim().toLowerCase()
+            : '';
+    const propertyUnitId =
+        typeof body.propertyUnitId === 'string'
+            ? body.propertyUnitId.trim().toLowerCase()
+            : '';
+    if (
+        Object.keys(body).some((key) => !allowedKeys.has(key)) ||
+        !isUuid(unionId) ||
+        !isUuid(propertyUnitId)
+    ) {
+        res.status(400).json({
+            success: false,
+            code: 'INVALID_REQUEST',
+            error: 'unionId와 propertyUnitId 형식이 올바르지 않습니다.',
+        });
+        return;
+    }
+    req.body = { unionId, propertyUnitId };
+    next();
+}
+
+/**
+ * 대지권 공식자료 단건 조회.
+ *
+ * 결과는 응답 메모리에서만 사용하고 DB·queue에 저장하지 않는다. pnu/source 같은 공식
+ * identity는 client 입력을 받지 않고 propertyUnitId로 서버에서 다시 찾는다.
+ */
+router.post(
+    '/land-right/lookup',
+    landRightLookupNoStore,
+    landRightLookupExecutionContext,
+    authMiddleware,
+    validateLandRightLookupRequest,
+    gisSystemAdminMiddleware,
+    async (req, res) => {
+        const unionId = req.body.unionId as string;
+        const propertyUnitId = req.body.propertyUnitId as string;
+
+        const execution = res.locals
+            .landRightLookupExecution as LandRightLookupExecutionContext;
+        try {
+            const client = getSupabaseService(
+                req.user!.databaseTarget
+            ).getClient();
+            const data = await lookupLandRightTransient(
+                { unionId, propertyUnitId },
+                {
+                    repository:
+                        createSupabaseLandRightLookupRepository(client),
+                    auth: {
+                        key: env.VWORLD_API_KEY,
+                        domain: env.VWORLD_API_DOMAIN,
+                    },
+                    signal: execution.signal,
+                }
+            );
+            if (landRightLookupClientDisconnected(req, res, execution)) {
+                return;
+            }
+            const response: LandRightLookupSuccessResponse = {
+                success: true,
+                data,
+            };
+            return res.json(response);
+        } catch (error) {
+            if (landRightLookupClientDisconnected(req, res, execution)) {
+                return;
+            }
+            if (error instanceof LandRightLookupError) {
+                return res.status(error.status).json({
+                    success: false,
+                    code: error.code,
+                    error: error.message,
+                });
+            }
+            // provider body·PNU·actor를 error log에 전달하지 않는다.
+            logger.error('대지권 공식자료 transient 조회 실패');
+            return res.status(503).json({
+                success: false,
+                code: 'LAND_RIGHT_LOOKUP_FAILED',
+                error: '공식자료를 조회할 수 없습니다.',
+            });
+        } finally {
+            execution.cleanup();
+        }
+    }
+);
 
 function hasWorkerFinalization(
     landAreaSync: Partial<LandAreaSyncPreview> | null
