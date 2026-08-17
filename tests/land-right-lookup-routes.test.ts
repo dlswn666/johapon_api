@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import express, {
+    Router,
+    type RequestHandler,
+    type Router as ExpressRouter,
+} from 'express';
 import jwt from 'jsonwebtoken';
 import type { NextFunction, Request, Response } from 'express';
 
@@ -97,6 +104,22 @@ async function loadLookupHandlers(): Promise<RouteHandler[]> {
             }>;
         }
     ).stack.find((candidate) => candidate.route?.path === '/land-right/lookup');
+    assert.ok(layer?.route);
+    return layer.route.stack.map(({ handle }) => handle);
+}
+
+async function loadRouteHandlers(path: string): Promise<RouteHandler[]> {
+    const { default: router } = await import('../src/routes/gis');
+    const layer = (
+        router as unknown as {
+            stack: Array<{
+                route?: {
+                    path: string;
+                    stack: Array<{ handle: RouteHandler }>;
+                };
+            }>;
+        }
+    ).stack.find((candidate) => candidate.route?.path === path);
     assert.ok(layer?.route);
     return layer.route.stack.map(({ handle }) => handle);
 }
@@ -247,6 +270,37 @@ function createResponse() {
     return { response: response as unknown as Response, state };
 }
 
+async function listenRouter(router: ExpressRouter): Promise<{
+    origin: string;
+    close: () => Promise<void>;
+}> {
+    const app = express();
+    app.use(express.json());
+    app.use('/api/gis', router);
+    const server: Server = createServer(app);
+    await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+            server.off('error', reject);
+            resolve();
+        });
+    });
+    const address = server.address() as AddressInfo;
+    return {
+        origin: `http://127.0.0.1:${address.port}`,
+        close: async () => {
+            const closed = new Promise<void>((resolve, reject) => {
+                server.close((error) => {
+                    if (error) reject(error);
+                    else resolve();
+                });
+            });
+            server.closeAllConnections();
+            await closed;
+        },
+    };
+}
+
 async function invokeMiddleware(
     handler: RouteHandler,
     req: Request,
@@ -329,6 +383,88 @@ test('실제 route stack은 인증 실패 전에도 no-store를 설정하고 uni
         (mismatchRes.state.body as { code: string }).code,
         'UNION_SCOPE_MISMATCH'
     );
+});
+
+test('lookup과 기존 GIS route는 격리된 development target 인증을 함께 유지한다', async () => {
+    const [lookupHandlers, syncHandlers, middleware, gisRouteModule] = await Promise.all([
+        loadLookupHandlers(),
+        loadRouteHandlers('/sync'),
+        import('../src/middleware/auth'),
+        import('../src/routes/gis'),
+    ]);
+
+    assert.equal(lookupHandlers[2], middleware.databaseTargetAuthMiddleware);
+    assert.equal(syncHandlers[0], middleware.databaseTargetAuthMiddleware);
+    const targetAwarePaths = (
+        gisRouteModule.default as unknown as {
+            stack: Array<{
+                route?: {
+                    path: string;
+                    stack: Array<{ handle: RouteHandler }>;
+                };
+            }>;
+        }
+    ).stack
+        .filter((layer) =>
+            layer.route?.stack.some(
+                ({ handle }) =>
+                    handle === middleware.databaseTargetAuthMiddleware
+            )
+        )
+        .map((layer) => layer.route!.path);
+    assert.ok(targetAwarePaths.includes('/land-right/lookup'));
+    assert.ok(targetAwarePaths.includes('/sync'));
+
+    const representativeReq = createRequest(signDevelopmentToken(), {
+        unionId: UNION_ID,
+        addresses: [],
+    });
+    const representativeRes = createResponse();
+    assert.equal(
+        await invokeMiddleware(
+            syncHandlers[0],
+            representativeReq,
+            representativeRes.response
+        ),
+        true
+    );
+    assert.equal(representativeReq.user?.databaseTarget, 'development');
+
+    const server = await listenRouter(gisRouteModule.default);
+    try {
+        const wrongTargetToken = jwt.sign(
+            {
+                unionId: UNION_ID,
+                userId: 'auth-user-a',
+                databaseTarget: 'production',
+                iss: 'tonghari-web',
+                aud: 'tonghari-api',
+                purpose: 'GIS_SYSTEM_ADMIN',
+            },
+            DEVELOPMENT_SECRET,
+            { algorithm: 'HS256', expiresIn: '5m', keyid: 'dev' }
+        );
+        const response = await fetch(
+            `${server.origin}/api/gis/land-right/lookup`,
+            {
+                method: 'POST',
+                headers: {
+                    authorization: `Bearer ${wrongTargetToken}`,
+                    'content-type': 'application/json',
+                },
+                body: JSON.stringify({
+                    unionId: UNION_ID,
+                    propertyUnitId: PROPERTY_ID,
+                }),
+            }
+        );
+        const body = await response.json() as { code: string };
+        assert.equal(response.status, 401);
+        assert.equal(body.code, 'TOKEN_ENVIRONMENT_INVALID');
+        assert.equal(response.headers.get('cache-control'), 'no-store');
+    } finally {
+        await server.close();
+    }
 });
 
 test('실제 execution middleware는 client disconnect를 동일 AbortSignal에 연결한다', async () => {
@@ -557,6 +693,107 @@ test('실제 SYSTEM_ADMIN middleware와 handler는 token의 development client�
         ).getClient = originalProductionGetClient;
         landRightNedClient.fetchLdareg = originalLdareg;
         landRightNedClient.fetchLadfrl = originalLadfrl;
+    }
+});
+
+test('실제 HTTP route는 provider가 끝나지 않아도 deadline 결과를 Web timeout 전에 응답한다', async () => {
+    const handlers = await loadLookupHandlers();
+    const { createLandRightLookupExecutionContextMiddleware } = await import(
+        '../src/routes/gis'
+    );
+    const { getSupabaseService } = await import('../src/services/supabase.service');
+    const { landRightNedClient } = await import(
+        '../src/services/land-right-lookup/ned'
+    );
+    const development = createFakeClient();
+    const production = createFakeClient();
+    const developmentService = getSupabaseService('development');
+    const productionService = getSupabaseService('production');
+    const originalDevelopmentGetClient = developmentService.getClient;
+    const originalProductionGetClient = productionService.getClient;
+    const originalLdareg = landRightNedClient.fetchLdareg;
+    const originalLadfrl = landRightNedClient.fetchLadfrl;
+    let ldaregCalls = 0;
+    let ladfrlCalls = 0;
+    const router = Router();
+    const captured: { request?: Request } = {};
+    router.use((req, _res, next) => {
+        captured.request = req;
+        next();
+    });
+    router.post(
+        '/land-right/lookup',
+        handlers[0] as RequestHandler,
+        createLandRightLookupExecutionContextMiddleware(40),
+        ...(handlers.slice(2) as RequestHandler[])
+    );
+    let server: Awaited<ReturnType<typeof listenRouter>> | undefined;
+    try {
+        (
+            developmentService as unknown as { getClient: () => unknown }
+        ).getClient = () => development.client;
+        (
+            productionService as unknown as { getClient: () => unknown }
+        ).getClient = () => production.client;
+        landRightNedClient.fetchLdareg = () => {
+            ldaregCalls += 1;
+            return new Promise<never>(() => undefined);
+        };
+        landRightNedClient.fetchLadfrl = async () => {
+            ladfrlCalls += 1;
+            return { status: 'NO_DATA', records: [] };
+        };
+        server = await listenRouter(router);
+        const startedAt = Date.now();
+        const response = await fetch(
+            `${server.origin}/api/gis/land-right/lookup`,
+            {
+                method: 'POST',
+                headers: {
+                    authorization: `Bearer ${signDevelopmentToken()}`,
+                    'content-type': 'application/json',
+                },
+                body: JSON.stringify({
+                    unionId: UNION_ID,
+                    propertyUnitId: PROPERTY_ID,
+                }),
+                signal: AbortSignal.timeout(2_000),
+            }
+        );
+        const elapsedMs = Date.now() - startedAt;
+        const body = await response.json() as {
+            success: boolean;
+            data: { status: string; code: string };
+        };
+
+        assert.equal(response.status, 200);
+        assert.equal(body.success, true);
+        assert.equal(body.data.status, 'INCOMPLETE');
+        assert.equal(body.data.code, 'LOOKUP_DEADLINE_EXCEEDED');
+        assert.ok(elapsedMs < 1_000, `deadline 응답 지연: ${elapsedMs}ms`);
+        assert.equal(ldaregCalls, 1);
+        assert.equal(ladfrlCalls, 0);
+        assert.equal(captured.request?.destroyed, true);
+        assert.equal(captured.request?.aborted, false);
+        assert.ok(development.traces.includes('property_units'));
+        assert.deepEqual(production.traces, []);
+    } finally {
+        try {
+            if (server) await server.close();
+        } finally {
+            (
+                developmentService as unknown as {
+                    getClient: typeof originalDevelopmentGetClient;
+                }
+            ).getClient = originalDevelopmentGetClient;
+            (
+                productionService as unknown as {
+                    getClient: typeof originalProductionGetClient;
+                }
+            ).getClient = originalProductionGetClient;
+            landRightNedClient.fetchLdareg = originalLdareg;
+            landRightNedClient.fetchLadfrl = originalLadfrl;
+        }
     }
 });
 

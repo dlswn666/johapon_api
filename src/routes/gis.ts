@@ -132,9 +132,10 @@ function landRightLookupClientDisconnected(
     res: Response,
     execution: LandRightLookupExecutionContext
 ): boolean {
+    // IncomingMessage는 정상적으로 body를 모두 읽은 뒤에도 비동기 조회 중 auto-destroy돼
+    // req.destroyed=true가 될 수 있다. 실제 이탈은 aborted/response socket/signal로만 판정한다.
     return (
         req.aborted ||
-        req.destroyed ||
         res.destroyed ||
         (execution.signal.aborted &&
             execution.signal.reason === 'CLIENT_DISCONNECTED')
