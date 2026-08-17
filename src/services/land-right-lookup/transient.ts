@@ -165,24 +165,38 @@ export function createSupabaseLandRightLookupRepository(
 
         async findGroupRelations(unionId, groups, signal) {
             if (groups.length === 0) return [];
-            const basePnus = [...new Set(groups.map((group) => group.basePnu))];
-            const managementPks = [
-                ...new Set(groups.map((group) => group.managementPk)),
-            ];
-            let query = client
-                .from('building_registry_land_lot_relations')
-                .select(
-                    'union_id, base_pnu, attached_pnu, mgm_bldrgst_pk, projection_status, is_active'
-                )
-                .eq('union_id', unionId)
-                .eq('is_active', true)
-                .in('base_pnu', basePnus)
-                .in('mgm_bldrgst_pk', managementPks)
-                .limit(MAX_LAND_RIGHT_RELATION_ROWS + 1);
-            if (signal) query = query.abortSignal(signal);
-            const { data, error } = await query;
-            if (error) throw databaseReadFailure();
-            return Array.isArray(data) ? (data as RelationRow[]) : [];
+            const managementPksByBase = new Map<string, Set<string>>();
+            for (const group of groups) {
+                const managementPks =
+                    managementPksByBase.get(group.basePnu) ?? new Set<string>();
+                managementPks.add(group.managementPk);
+                managementPksByBase.set(group.basePnu, managementPks);
+            }
+
+            const rows: RelationRow[] = [];
+            for (const [basePnu, managementPks] of managementPksByBase) {
+                let query = client
+                    .from('building_registry_land_lot_relations')
+                    .select(
+                        'union_id, base_pnu, attached_pnu, mgm_bldrgst_pk, projection_status, is_active'
+                    )
+                    .eq('union_id', unionId)
+                    .eq('is_active', true)
+                    .eq('base_pnu', basePnu)
+                    .in('mgm_bldrgst_pk', [...managementPks])
+                    .limit(MAX_LAND_RIGHT_RELATION_ROWS + 1);
+                if (signal) query = query.abortSignal(signal);
+                const { data, error } = await query;
+                if (error) throw databaseReadFailure();
+                if (Array.isArray(data)) rows.push(...(data as RelationRow[]));
+
+                // 호출 계층이 limit 초과를 INCOMPLETE로 닫을 수 있도록 sentinel 1행까지만
+                // 보존한다. 다른 기준 PNU를 더 읽어도 판정은 달라지지 않는다.
+                if (rows.length > MAX_LAND_RIGHT_RELATION_ROWS) {
+                    return rows.slice(0, MAX_LAND_RIGHT_RELATION_ROWS + 1);
+                }
+            }
+            return rows;
         },
 
         async findLandLots(unionId, pnus, signal) {

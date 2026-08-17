@@ -5,6 +5,7 @@ import type {
     LandRightLookupRepository,
 } from '../src/services/land-right-lookup/transient';
 import {
+    createSupabaseLandRightLookupRepository,
     LandRightLookupError,
     MAX_LAND_RIGHT_SCOPE_PNUS,
     lookupLandRightTransient,
@@ -16,6 +17,53 @@ const PROPERTY_ID = '22222222-2222-4222-8222-222222222222';
 const BASE_PNU = '1168010100107360024';
 const ATTACHED_PNU = '1168010100107360025';
 const SIBLING_PNU = '1168010100107360026';
+
+function relationQueryClient(rows: Record<string, unknown>[]) {
+    return {
+        from(table: string) {
+            assert.equal(table, 'building_registry_land_lot_relations');
+            const equals = new Map<string, unknown>();
+            const members = new Map<string, unknown[]>();
+            let rowLimit = Number.POSITIVE_INFINITY;
+            const builder: Record<string, unknown> &
+                PromiseLike<{ data: unknown[]; error: null }> = {
+                select: () => builder,
+                eq: (column: string, value: unknown) => {
+                    equals.set(column, value);
+                    return builder;
+                },
+                in: (column: string, values: unknown[]) => {
+                    members.set(column, values);
+                    return builder;
+                },
+                limit: (value: number) => {
+                    rowLimit = value;
+                    return builder;
+                },
+                abortSignal: () => builder,
+                then: (resolve, reject) => {
+                    const data = rows
+                        .filter((row) =>
+                            [...equals].every(
+                                ([column, value]) => row[column] === value
+                            )
+                        )
+                        .filter((row) =>
+                            [...members].every(([column, values]) =>
+                                values.includes(row[column])
+                            )
+                        )
+                        .slice(0, rowLimit);
+                    return Promise.resolve({ data, error: null }).then(
+                        resolve,
+                        reject
+                    );
+                },
+            };
+            return builder;
+        },
+    };
+}
 
 const baseProperty = {
     id: PROPERTY_ID,
@@ -91,6 +139,43 @@ const success = (
                       ownerName: '응답하면 안 되는 필드',
                   },
               ],
+});
+
+test('group relation 조회는 (기준 PNU, 관리번호) exact pair를 교차곱 limit과 분리한다', async () => {
+    const exactA = {
+        union_id: UNION_ID,
+        base_pnu: BASE_PNU,
+        attached_pnu: ATTACHED_PNU,
+        mgm_bldrgst_pk: 'root-a',
+        projection_status: 'LINKED',
+        is_active: true,
+    };
+    const exactB = {
+        ...exactA,
+        base_pnu: SIBLING_PNU,
+        attached_pnu: '1168010100107360027',
+        mgm_bldrgst_pk: 'root-b',
+    };
+    const crossProductRows = Array.from({ length: 101 }, (_, index) => ({
+        ...exactA,
+        attached_pnu: `116801010010737${String(index).padStart(4, '0')}`,
+        mgm_bldrgst_pk: 'root-b',
+    }));
+    const client = relationQueryClient([
+        ...crossProductRows,
+        exactA,
+        exactB,
+    ]);
+    const lookupRepository = createSupabaseLandRightLookupRepository(
+        client as Parameters<typeof createSupabaseLandRightLookupRepository>[0]
+    );
+
+    const result = await lookupRepository.findGroupRelations(UNION_ID, [
+        { basePnu: BASE_PNU, managementPk: 'root-a' },
+        { basePnu: SIBLING_PNU, managementPk: 'root-b' },
+    ]);
+
+    assert.deepEqual(result, [exactA, exactB]);
 });
 
 test('attached 시작 PNU에서 같은 관리번호의 기준·형제 부속까지만 조회한다', async () => {
