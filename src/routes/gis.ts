@@ -39,6 +39,10 @@ import {
     LandRightLookupError,
     lookupLandRightTransient,
 } from '../services/land-right-lookup/transient';
+import {
+    buildingHubAuthFromEnv,
+    landAreaSyncAdapter,
+} from '../services/land-area-sync/adapter';
 
 const router = Router();
 const logger = createLogger('GIS-ROUTE');
@@ -196,9 +200,13 @@ router.post(
         const execution = res.locals
             .landRightLookupExecution as LandRightLookupExecutionContext;
         try {
-            const client = getSupabaseService(
+            const database = getSupabaseService(
                 req.user!.databaseTarget
-            ).getClient();
+            );
+            const client = database.getClient();
+            const buildingHubAuth = env.DATA_PORTAL_API_KEY
+                ? buildingHubAuthFromEnv()
+                : null;
             const data = await lookupLandRightTransient(
                 { unionId, propertyUnitId },
                 {
@@ -208,6 +216,37 @@ router.post(
                         key: env.VWORLD_API_KEY,
                         domain: env.VWORLD_API_DOMAIN,
                     },
+                    ...(buildingHubAuth
+                        ? {
+                              scopeConfirmation: {
+                                  buildingHub: {
+                                      scanTitle: (pnu, signal) =>
+                                          landAreaSyncAdapter.scanTitle(
+                                              pnu,
+                                              buildingHubAuth,
+                                              { signal }
+                                          ),
+                                      scanAttached: (pnu, signal) =>
+                                          landAreaSyncAdapter.scanAttached(
+                                              pnu,
+                                              buildingHubAuth,
+                                              { signal }
+                                          ),
+                                      scanBasis: (pnu, signal) =>
+                                          landAreaSyncAdapter.scanBasis(
+                                              pnu,
+                                              buildingHubAuth,
+                                              { signal }
+                                          ),
+                                  },
+                                  callResolver: (params, signal) =>
+                                      database.resolveLandAreaSyncScope(
+                                          params,
+                                          signal
+                                      ),
+                              },
+                          }
+                        : {}),
                     signal: execution.signal,
                 }
             );

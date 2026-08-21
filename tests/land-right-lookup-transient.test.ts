@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type {
+    LandRightLookupScopeConfirmationDeps,
     LandRightLookupNed,
     LandRightLookupRepository,
 } from '../src/services/land-right-lookup/transient';
@@ -11,12 +12,29 @@ import {
     lookupLandRightTransient,
 } from '../src/services/land-right-lookup/transient';
 import type { NedFetchResult } from '../src/services/land-right-lookup/ned';
+import { HOUSING_PURPOSE_ALLOWLIST } from '../src/services/land-area-sync/housing-purpose-allowlist.fixture';
+import type {
+    BrAtchJibunRow,
+    BrBasisOulnRow,
+    BrTitleRow,
+    ProviderIssue,
+    StrictScan,
+} from '../src/types/land-area-sync.types';
 
 const UNION_ID = '11111111-1111-4111-8111-111111111111';
 const PROPERTY_ID = '22222222-2222-4222-8222-222222222222';
 const BASE_PNU = '1168010100107360024';
 const ATTACHED_PNU = '1168010100107360025';
 const SIBLING_PNU = '1168010100107360026';
+const OFFICIAL_ATTACHED_PNU = '1168010100107360027';
+const ROOT_PK = '1002003004005';
+const DB_SCOPE_HASH = 'a'.repeat(64);
+const DETACHED = HOUSING_PURPOSE_ALLOWLIST.find(
+    (pair) => pair.category === 'DETACHED'
+)!;
+const MULTIPLEX = HOUSING_PURPOSE_ALLOWLIST.find(
+    (pair) => pair.category === 'MULTIPLEX'
+)!;
 
 function relationQueryClient(rows: Record<string, unknown>[]) {
     return {
@@ -68,11 +86,13 @@ function relationQueryClient(rows: Record<string, unknown>[]) {
 const baseProperty = {
     id: PROPERTY_ID,
     union_id: UNION_ID,
+    building_unit_id: null,
     pnu: ATTACHED_PNU,
     property_address_jibun: '서울시 테스트 736-25',
     dong: '101동',
     ho: '201호',
     land_area: null,
+    land_area_source: null,
     is_deleted: false,
 };
 
@@ -89,6 +109,22 @@ function repository(
                 pnu,
                 address: `주소-${pnu.slice(-4)}`,
             })),
+        findPropertyMembership: async (_unionId, pnus) =>
+            pnus.includes(ATTACHED_PNU)
+                ? [
+                      {
+                          id: PROPERTY_ID,
+                          union_id: UNION_ID,
+                          building_unit_id: null,
+                          pnu: ATTACHED_PNU,
+                          is_deleted: false,
+                          dong: baseProperty.dong,
+                          ho: baseProperty.ho,
+                          land_area: null,
+                          land_area_source: null,
+                      },
+                  ]
+                : [],
         ...overrides,
     };
 }
@@ -140,6 +176,159 @@ const success = (
                   },
               ],
 });
+
+function complete<T>(rows: T[]): StrictScan<T> {
+    return {
+        state: 'COMPLETE',
+        rows,
+        totalCount: rows.length,
+        pagesFetched: 1,
+    };
+}
+
+function completeZero<T>(): StrictScan<T> {
+    return {
+        state: 'COMPLETE_ZERO',
+        rows: [],
+        totalCount: 0,
+        pagesFetched: 1,
+    };
+}
+
+function incomplete<T>(endpoint: ProviderIssue['endpoint']): StrictScan<T> {
+    return {
+        state: 'INCOMPLETE',
+        issue: {
+            kind: 'PAGINATION_MISMATCH',
+            endpoint,
+            message: '테스트 불완전 응답',
+        },
+    };
+}
+
+function titleRow(
+    bylotCnt: string,
+    pair = DETACHED,
+    rootPk = ROOT_PK,
+    pnu = ATTACHED_PNU
+): BrTitleRow {
+    return {
+        mgmBldrgstPk: rootPk,
+        bylotCnt,
+        regstrGbCd: pair.regstrGbCd,
+        mainPurpsCd: pair.mainPurpsCd,
+        mainPurpsCdNm: pair.mainPurpsCdNm,
+        sigunguCd: pnu.slice(0, 5),
+        bjdongCd: pnu.slice(5, 10),
+        platGbCd: pnu.slice(10, 11) === '2' ? '1' : '0',
+        bun: pnu.slice(11, 15),
+        ji: pnu.slice(15, 19),
+    };
+}
+
+function attachedRow(
+    basePnu: string,
+    attachedPnu: string,
+    rootPk = ROOT_PK
+): BrAtchJibunRow {
+    const split = (pnu: string) => ({
+        sigunguCd: pnu.slice(0, 5),
+        bjdongCd: pnu.slice(5, 10),
+        platGbCd: pnu.slice(10, 11) === '2' ? '1' : '0',
+        bun: pnu.slice(11, 15),
+        ji: pnu.slice(15, 19),
+    });
+    const base = split(basePnu);
+    const attached = split(attachedPnu);
+    return {
+        mgmBldrgstPk: rootPk,
+        sigunguCd: base.sigunguCd,
+        bjdongCd: base.bjdongCd,
+        platGbCd: base.platGbCd,
+        bun: base.bun,
+        ji: base.ji,
+        atchSigunguCd: attached.sigunguCd,
+        atchBjdongCd: attached.bjdongCd,
+        atchPlatGbCd: attached.platGbCd,
+        atchBun: attached.bun,
+        atchJi: attached.ji,
+    };
+}
+
+function scopeResolverData(overrides: Record<string, unknown> = {}) {
+    return {
+        dbState: 'NO_EVIDENCE',
+        rootBuildingIdentities: [ROOT_PK],
+        componentPnus: [ATTACHED_PNU],
+        linkedBasePnus: [],
+        linkedPnus: [],
+        linkedEvidenceKeys: [],
+        pendingEvidenceKeys: [],
+        blockingEvidence: [],
+        openUnresolvedEvidenceKeys: [],
+        componentTruncated: false,
+        propertyMembership: [
+            {
+                propertyUnitId: PROPERTY_ID,
+                pnu: ATTACHED_PNU,
+                buildingUnitId: null,
+            },
+        ],
+        dbScopeHash: DB_SCOPE_HASH,
+        ...overrides,
+    };
+}
+
+function scopeConfirmation(
+    input: {
+        title?: StrictScan<BrTitleRow>;
+        attached?: StrictScan<BrAtchJibunRow>;
+        basis?: StrictScan<BrBasisOulnRow>;
+        resolver?:
+            | unknown
+            | ((anchorPnu: string) => unknown);
+    } = {}
+): LandRightLookupScopeConfirmationDeps & {
+    calls: string[];
+} {
+    const calls: string[] = [];
+    return {
+        calls,
+        buildingHub: {
+            async scanTitle(pnu) {
+                calls.push(`title:${pnu}`);
+                return input.title ?? complete([titleRow('0')]);
+            },
+            async scanAttached(pnu) {
+                calls.push(`attached:${pnu}`);
+                return input.attached ?? completeZero();
+            },
+            async scanBasis(pnu) {
+                calls.push(`basis:${pnu}`);
+                return input.basis ?? completeZero();
+            },
+        },
+        async callResolver(params) {
+            calls.push(`resolver:${params.p_anchor_pnu}`);
+            const configured = input.resolver;
+            return {
+                data:
+                    typeof configured === 'function'
+                        ? configured(params.p_anchor_pnu)
+                        : configured ??
+                          scopeResolverData({
+                              componentPnus: [params.p_anchor_pnu],
+                              propertyMembership:
+                                  params.p_anchor_pnu === ATTACHED_PNU
+                                      ? scopeResolverData()
+                                            .propertyMembership
+                                      : [],
+                          }),
+                error: null,
+            };
+        },
+    };
+}
 
 test('group relation 조회는 (기준 PNU, 관리번호) exact pair를 교차곱 limit과 분리한다', async () => {
     const exactA = {
@@ -290,6 +479,544 @@ test('active 기준·부속 relation이 0건이면 공식자료가 있어도 Cod
     assert.ok(result.warnings.includes('NO_ACTIVE_BASE_ATTACHED_RELATION'));
     assert.equal(result.ldareg.length, 1);
     assert.equal(result.ladfrl.length, 1);
+});
+
+test('relation 0 + strict target-only 근거는 자동 SUCCESS가 아니라 exact scope 확인 후보만 반환한다', async () => {
+    const official = ned(success);
+    const proof = scopeConfirmation();
+    const result = await lookupLandRightTransient(
+        { unionId: UNION_ID, propertyUnitId: PROPERTY_ID },
+        {
+            repository: repository(),
+            ned: official.value,
+            auth: { key: 'server-only', domain: 'admin.example.com' },
+            scopeConfirmation: proof,
+        }
+    );
+
+    assert.equal(result.status, 'INCOMPLETE');
+    assert.equal(result.code, 'PROPERTY_SCOPE_INCOMPLETE');
+    assert.deepEqual(result.scopeResolution, {
+        state: 'SCOPE_CONFIRMATION_REQUIRED',
+        strategy: 'LADFRL',
+        evidenceDigest: result.scopeResolution?.evidenceDigest,
+        dbState: 'NO_EVIDENCE',
+        reverseLookup: 'UNPROVEN',
+        basePnuCount: 1,
+        scopePnuCount: 1,
+        propertyUnitCount: 1,
+        buildingRootCount: 1,
+    });
+    assert.match(
+        result.scopeResolution?.evidenceDigest ?? '',
+        /^sha256:[a-f0-9]{64}$/
+    );
+    assert.deepEqual(result.warnings, [
+        'NO_ACTIVE_BASE_ATTACHED_RELATION',
+        'SCOPE_REVERSE_LOOKUP_UNPROVEN',
+    ]);
+    assert.deepEqual(result.parcels, [
+        {
+            pnu: ATTACHED_PNU,
+            role: 'BASE',
+            address: `주소-${ATTACHED_PNU.slice(-4)}`,
+            scopeGroup: 'official-group-1',
+        },
+    ]);
+    assert.ok(result.warnings.includes('NO_ACTIVE_BASE_ATTACHED_RELATION'));
+    assert.ok(result.warnings.includes('SCOPE_REVERSE_LOOKUP_UNPROVEN'));
+    assert.deepEqual(proof.calls, [
+        `title:${ATTACHED_PNU}`,
+        `resolver:${ATTACHED_PNU}`,
+        `attached:${ATTACHED_PNU}`,
+        `resolver:${ATTACHED_PNU}`,
+    ]);
+    assert.equal(
+        proof.calls.some((call) => call.startsWith('basis:')),
+        false,
+        'TITLE_ONLY 정책은 basis를 조용히 호출하지 않는다'
+    );
+    assert.equal(official.calls.length, 2);
+    assert.doesNotMatch(JSON.stringify(result.scopeResolution), new RegExp(ROOT_PK));
+});
+
+test('relation 0 title row의 요청 PNU 귀속이 없거나 다르면 scope 확인 후보를 발급하지 않는다', async () => {
+    const missingIdentity = titleRow('0');
+    delete missingIdentity.sigunguCd;
+    delete missingIdentity.bjdongCd;
+    delete missingIdentity.platGbCd;
+    delete missingIdentity.bun;
+    delete missingIdentity.ji;
+
+    for (const title of [
+        complete([missingIdentity]),
+        complete([titleRow('0', DETACHED, ROOT_PK, BASE_PNU)]),
+    ]) {
+        const result = await lookupLandRightTransient(
+            { unionId: UNION_ID, propertyUnitId: PROPERTY_ID },
+            {
+                repository: repository(),
+                ned: ned(success).value,
+                auth: { key: 'server-only', domain: 'admin.example.com' },
+                scopeConfirmation: scopeConfirmation({ title }),
+            }
+        );
+
+        assert.equal(result.scopeResolution, undefined);
+        assert.ok(result.warnings.includes('SCOPE_CONFIRMATION_EVIDENCE_CONFLICT'));
+    }
+});
+
+test('relation 0 + strict attached component는 모든 PNU 공식자료를 조회하되 확인 전 INCOMPLETE다', async () => {
+    const official = ned(success);
+    const proof = scopeConfirmation({
+        title: complete([titleRow('1', MULTIPLEX)]),
+        attached: complete([
+            attachedRow(ATTACHED_PNU, OFFICIAL_ATTACHED_PNU),
+        ]),
+    });
+    const result = await lookupLandRightTransient(
+        { unionId: UNION_ID, propertyUnitId: PROPERTY_ID },
+        {
+            repository: repository(),
+            ned: official.value,
+            auth: { key: 'server-only', domain: 'admin.example.com' },
+            scopeConfirmation: proof,
+        }
+    );
+
+    assert.equal(result.status, 'INCOMPLETE');
+    assert.equal(result.scopeResolution?.state, 'SCOPE_CONFIRMATION_REQUIRED');
+    assert.equal(result.scopeResolution?.strategy, 'LDAREG');
+    assert.equal(result.scopeResolution?.scopePnuCount, 2);
+    assert.equal(result.scopeResolution?.basePnuCount, 1);
+    assert.equal(official.calls.length, 4);
+    assert.deepEqual(
+        [...new Set(official.calls.map((call) => call.pnu))].sort(),
+        [ATTACHED_PNU, OFFICIAL_ATTACHED_PNU].sort()
+    );
+    assert.deepEqual(
+        result.parcels.map(({ pnu, role, scopeGroup }) => ({
+            pnu,
+            role,
+            scopeGroup,
+        })),
+        [
+            {
+                pnu: ATTACHED_PNU,
+                role: 'BASE',
+                scopeGroup: 'official-group-1',
+            },
+            {
+                pnu: OFFICIAL_ATTACHED_PNU,
+                role: 'ATTACHED',
+                scopeGroup: 'official-group-1',
+            },
+        ]
+    );
+    assert.doesNotMatch(JSON.stringify(result.scopeResolution), new RegExp(ROOT_PK));
+});
+
+test('LDAREG official component는 resolver와 fresh SELECT가 일치하는 복수 active property membership을 digest에 묶는다', async () => {
+    const secondPropertyId = '33333333-3333-4333-8333-333333333333';
+    let secondLandArea: string | null = null;
+    const resolverMembership = [
+        {
+            propertyUnitId: PROPERTY_ID,
+            pnu: ATTACHED_PNU,
+            buildingUnitId: null,
+        },
+        {
+            propertyUnitId: secondPropertyId,
+            pnu: ATTACHED_PNU,
+            buildingUnitId: null,
+        },
+    ];
+    const lookupRepository = repository({
+                findPropertyMembership: async () => [
+                    {
+                        id: PROPERTY_ID,
+                        union_id: UNION_ID,
+                        building_unit_id: null,
+                        pnu: ATTACHED_PNU,
+                        is_deleted: false,
+                        dong: baseProperty.dong,
+                        ho: baseProperty.ho,
+                        land_area: null,
+                        land_area_source: null,
+                    },
+                    {
+                        id: secondPropertyId,
+                        union_id: UNION_ID,
+                        building_unit_id: null,
+                        pnu: ATTACHED_PNU,
+                        is_deleted: false,
+                        dong: null,
+                        ho: '202호',
+                        land_area: secondLandArea,
+                        land_area_source:
+                            secondLandArea === null ? null : 'MANUAL',
+                    },
+                ],
+            });
+    const proof = scopeConfirmation({
+        title: complete([titleRow('1', MULTIPLEX)]),
+        attached: complete([
+            attachedRow(
+                ATTACHED_PNU,
+                OFFICIAL_ATTACHED_PNU
+            ),
+        ]),
+        resolver: (anchorPnu) =>
+            scopeResolverData({
+                componentPnus: [anchorPnu],
+                propertyMembership:
+                    anchorPnu === ATTACHED_PNU
+                        ? resolverMembership
+                        : [],
+            }),
+    });
+    const result = await lookupLandRightTransient(
+        { unionId: UNION_ID, propertyUnitId: PROPERTY_ID },
+        {
+            repository: lookupRepository,
+            ned: ned(success).value,
+            auth: { key: 'server-only', domain: 'admin.example.com' },
+            scopeConfirmation: proof,
+        }
+    );
+
+    assert.equal(result.scopeResolution?.strategy, 'LDAREG');
+    assert.equal(result.scopeResolution?.scopePnuCount, 2);
+    assert.equal(result.scopeResolution?.propertyUnitCount, 2);
+    assert.doesNotMatch(
+        JSON.stringify(result.scopeResolution),
+        new RegExp(secondPropertyId)
+    );
+
+    secondLandArea = '42.0000';
+    const afterSiblingWrite = await lookupLandRightTransient(
+        { unionId: UNION_ID, propertyUnitId: PROPERTY_ID },
+        {
+            repository: lookupRepository,
+            ned: ned(success).value,
+            auth: { key: 'server-only', domain: 'admin.example.com' },
+            scopeConfirmation: proof,
+        }
+    );
+    assert.equal(
+        afterSiblingWrite.scopeResolution?.evidenceDigest,
+        result.scopeResolution?.evidenceDigest,
+        '다른 scope member의 MANUAL write는 공식 scope digest를 바꾸지 않는다'
+    );
+});
+
+test('scope 근거가 닫혀도 NED source가 FAILED면 confirmation projection을 제거한다', async () => {
+    const result = await lookupLandRightTransient(
+        { unionId: UNION_ID, propertyUnitId: PROPERTY_ID },
+        {
+            repository: repository(),
+            ned: ned((source, pnu) =>
+                source === 'ldareg'
+                    ? { status: 'FAILED', records: [], code: 'TIMEOUT' }
+                    : success(source, pnu)
+            ).value,
+            auth: { key: 'server-only', domain: 'admin.example.com' },
+            scopeConfirmation: scopeConfirmation(),
+        }
+    );
+
+    assert.equal(result.status, 'FAILED');
+    assert.equal(result.scopeResolution, undefined);
+    assert.ok(
+        result.warnings.includes(
+            'SCOPE_CONFIRMATION_EVIDENCE_UNAVAILABLE'
+        )
+    );
+    assert.equal(
+        result.warnings.includes('SCOPE_REVERSE_LOOKUP_UNPROVEN'),
+        false
+    );
+});
+
+test('confirmation strategy source가 NO_DATA면 projection을 제거하고 HOLD한다', async () => {
+    const official = ned((source, pnu) =>
+        source === 'ladfrl'
+            ? { status: 'NO_DATA', records: [] }
+            : success(source, pnu)
+    );
+    const result = await lookupLandRightTransient(
+        { unionId: UNION_ID, propertyUnitId: PROPERTY_ID },
+        {
+            repository: repository(),
+            ned: official.value,
+            auth: { key: 'server-only', domain: 'admin.example.com' },
+            scopeConfirmation: scopeConfirmation(),
+        }
+    );
+
+    assert.equal(result.status, 'INCOMPLETE');
+    assert.equal(result.code, 'PROPERTY_SCOPE_INCOMPLETE');
+    assert.equal(result.sources.ladfrl.status, 'NO_DATA');
+    assert.equal(result.scopeResolution, undefined);
+    assert.ok(
+        result.warnings.includes(
+            'SCOPE_CONFIRMATION_EVIDENCE_UNAVAILABLE'
+        )
+    );
+    assert.equal(
+        result.warnings.includes('SCOPE_REVERSE_LOOKUP_UNPROVEN'),
+        false
+    );
+});
+
+test('pending/blocking/open·복수 root·invalid membership·strict scan 불완전은 scope 확인 후보를 만들지 않는다', async () => {
+    const cases: Array<{
+        name: string;
+        proof: LandRightLookupScopeConfirmationDeps;
+        lookupRepository?: LandRightLookupRepository;
+    }> = [
+        {
+            name: 'pending',
+            proof: scopeConfirmation({
+                resolver: scopeResolverData({
+                    dbState: 'PENDING',
+                    pendingEvidenceKeys: ['API_RELATION:pending'],
+                }),
+            }),
+        },
+        {
+            name: 'malformed raw resolver array',
+            proof: scopeConfirmation({
+                resolver: scopeResolverData({
+                    pendingEvidenceKeys: [123],
+                }),
+            }),
+        },
+        {
+            name: 'blocking/open',
+            proof: scopeConfirmation({
+                resolver: scopeResolverData({
+                    dbState: 'BLOCKING_EVIDENCE',
+                    blockingEvidence: [
+                        {
+                            sourceKind: 'API_RELATION',
+                            sourceId: 'opaque',
+                            state: 'CONFLICT',
+                        },
+                    ],
+                    openUnresolvedEvidenceKeys: ['API_RELATION:open'],
+                }),
+            }),
+        },
+        {
+            name: 'multiple roots',
+            proof: scopeConfirmation({
+                title: complete([
+                    titleRow('0'),
+                    titleRow('0', DETACHED, '9008007006005'),
+                ]),
+            }),
+        },
+        {
+            name: 'target membership missing',
+            proof: scopeConfirmation({
+                resolver: scopeResolverData({
+                    propertyMembership: [
+                        {
+                            propertyUnitId:
+                                '33333333-3333-4333-8333-333333333333',
+                            pnu: ATTACHED_PNU,
+                            buildingUnitId: null,
+                        },
+                    ],
+                }),
+            }),
+        },
+        {
+            name: 'attached incomplete',
+            proof: scopeConfirmation({
+                attached: incomplete('getBrAtchJibunInfo'),
+            }),
+        },
+        {
+            name: 'target tuple drift',
+            proof: scopeConfirmation(),
+            lookupRepository: repository({
+                findPropertyMembership: async () => [
+                    {
+                        id: PROPERTY_ID,
+                        union_id: UNION_ID,
+                        building_unit_id: null,
+                        pnu: ATTACHED_PNU,
+                        is_deleted: false,
+                        dong: '변경동',
+                        ho: baseProperty.ho,
+                        land_area: null,
+                        land_area_source: null,
+                    },
+                ],
+            }),
+        },
+        {
+            name: 'LADFRL multiple active properties',
+            proof: scopeConfirmation({
+                resolver: scopeResolverData({
+                    propertyMembership: [
+                        {
+                            propertyUnitId: PROPERTY_ID,
+                            pnu: ATTACHED_PNU,
+                            buildingUnitId: null,
+                        },
+                        {
+                            propertyUnitId:
+                                '33333333-3333-4333-8333-333333333333',
+                            pnu: ATTACHED_PNU,
+                            buildingUnitId: null,
+                        },
+                    ],
+                }),
+            }),
+            lookupRepository: repository({
+                findPropertyMembership: async () => [
+                    {
+                        id: PROPERTY_ID,
+                        union_id: UNION_ID,
+                        building_unit_id: null,
+                        pnu: ATTACHED_PNU,
+                        is_deleted: false,
+                        dong: baseProperty.dong,
+                        ho: baseProperty.ho,
+                        land_area: null,
+                        land_area_source: null,
+                    },
+                    {
+                        id: '33333333-3333-4333-8333-333333333333',
+                        union_id: UNION_ID,
+                        building_unit_id: null,
+                        pnu: ATTACHED_PNU,
+                        is_deleted: false,
+                        dong: null,
+                        ho: null,
+                        land_area: null,
+                        land_area_source: null,
+                    },
+                ],
+            }),
+        },
+        {
+            name: 'target PNU drift inside official component',
+            proof: scopeConfirmation({
+                title: complete([titleRow('1', MULTIPLEX)]),
+                attached: complete([
+                    attachedRow(
+                        ATTACHED_PNU,
+                        OFFICIAL_ATTACHED_PNU
+                    ),
+                ]),
+                resolver: (anchorPnu) =>
+                    scopeResolverData({
+                        componentPnus: [anchorPnu],
+                        propertyMembership:
+                            anchorPnu === OFFICIAL_ATTACHED_PNU
+                                ? [
+                                      {
+                                          propertyUnitId: PROPERTY_ID,
+                                          pnu: OFFICIAL_ATTACHED_PNU,
+                                          buildingUnitId: null,
+                                      },
+                                  ]
+                                : [],
+                    }),
+            }),
+            lookupRepository: repository({
+                findPropertyMembership: async () => [
+                    {
+                        id: PROPERTY_ID,
+                        union_id: UNION_ID,
+                        building_unit_id: null,
+                        pnu: OFFICIAL_ATTACHED_PNU,
+                        is_deleted: false,
+                        dong: baseProperty.dong,
+                        ho: baseProperty.ho,
+                        land_area: null,
+                        land_area_source: null,
+                    },
+                ],
+            }),
+        },
+    ];
+
+    for (const item of cases) {
+        const result = await lookupLandRightTransient(
+            { unionId: UNION_ID, propertyUnitId: PROPERTY_ID },
+            {
+                repository: item.lookupRepository ?? repository(),
+                ned: ned(success).value,
+                auth: { key: 'server-only', domain: 'admin.example.com' },
+                scopeConfirmation: item.proof,
+            }
+        );
+        assert.equal(result.status, 'INCOMPLETE', item.name);
+        assert.equal(result.scopeResolution, undefined, item.name);
+    }
+});
+
+test('공식 attached component가 20 PNU 상한을 넘으면 NED 호출 없이 INCOMPLETE로 닫는다', async () => {
+    const attachedPnus = Array.from({ length: MAX_LAND_RIGHT_SCOPE_PNUS }, (_, index) =>
+        `116801010010737${String(index + 1).padStart(4, '0')}`
+    );
+    const proof = scopeConfirmation({
+        title: complete([
+            titleRow(String(attachedPnus.length), MULTIPLEX),
+        ]),
+        attached: complete(
+            attachedPnus.map((pnu) => attachedRow(ATTACHED_PNU, pnu))
+        ),
+    });
+    const official = ned(success);
+    const result = await lookupLandRightTransient(
+        { unionId: UNION_ID, propertyUnitId: PROPERTY_ID },
+        {
+            repository: repository(),
+            ned: official.value,
+            auth: { key: 'server-only', domain: 'admin.example.com' },
+            scopeConfirmation: proof,
+        }
+    );
+
+    assert.equal(result.status, 'INCOMPLETE');
+    assert.equal(result.code, 'PROPERTY_SCOPE_LIMIT_EXCEEDED');
+    assert.equal(result.scopeResolution, undefined);
+    assert.equal(official.calls.length, 0);
+});
+
+test('기존 LINKED relation SUCCESS 경로는 scope confirmation RPC/HUB를 호출하지 않는다', async () => {
+    const relation = {
+        union_id: UNION_ID,
+        base_pnu: BASE_PNU,
+        attached_pnu: ATTACHED_PNU,
+        mgm_bldrgst_pk: 'root-a',
+        projection_status: 'LINKED',
+        is_active: true,
+    };
+    const proof = scopeConfirmation();
+    const result = await lookupLandRightTransient(
+        { unionId: UNION_ID, propertyUnitId: PROPERTY_ID },
+        {
+            repository: repository({
+                findDirectRelations: async () => [relation],
+                findGroupRelations: async () => [relation],
+            }),
+            ned: ned(success).value,
+            auth: { key: 'server-only', domain: 'admin.example.com' },
+            scopeConfirmation: proof,
+        }
+    );
+
+    assert.equal(result.status, 'SUCCESS');
+    assert.equal(result.scopeResolution, undefined);
+    assert.deepEqual(proof.calls, []);
 });
 
 test('request-level cap이 발생하면 앞선 성공 rows도 반환하지 않는다', async () => {

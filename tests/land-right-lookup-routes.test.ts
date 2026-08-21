@@ -54,7 +54,7 @@ test('대지권 조회는 /api/gis 외부 경로에서 no-store·인증·입력�
     assert.match(route, /req\.once\('aborted', abortForDisconnect\)/);
 });
 
-test('transient 조회 경로는 provider identity를 서버 환경에서만 받고 writer·queue·job을 사용하지 않는다', async () => {
+test('transient 조회 경로는 server provider + 기존 read-only resolver만 쓰고 writer·queue·job을 만들지 않는다', async () => {
     const [route, transient] = await Promise.all([
         readFile('src/routes/gis.ts', 'utf8'),
         readFile('src/services/land-right-lookup/transient.ts', 'utf8'),
@@ -66,6 +66,8 @@ test('transient 조회 경로는 provider identity를 서버 환경에서만 받
 
     assert.match(lookupRoute, /key: env\.VWORLD_API_KEY/);
     assert.match(lookupRoute, /domain: env\.VWORLD_API_DOMAIN/);
+    assert.match(lookupRoute, /buildingHubAuthFromEnv\(\)/);
+    assert.match(lookupRoute, /database\.resolveLandAreaSyncScope/);
     assert.doesNotMatch(lookupRoute, /req\.body\.(pnu|key|source)/);
     assert.doesNotMatch(
         transient,
@@ -84,6 +86,64 @@ test('transient 조회 경로는 provider identity를 서버 환경에서만 받
         2
     );
     assert.match(transient, /MAX_LAND_RIGHT_SCOPE_PNUS = 20/);
+});
+
+test('scope resolver RPC는 immutable abortSignal builder 반환값을 await한다', async () => {
+    const { SupabaseService } = await import('../src/services/supabase.service');
+    const controller = new AbortController();
+    let initialAwaited = false;
+    let abortedAwaited = false;
+
+    const abortedBuilder = {
+        then(resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) {
+            abortedAwaited = true;
+            return Promise.resolve({ data: { dbState: 'NO_EVIDENCE' }, error: null }).then(
+                resolve,
+                reject
+            );
+        },
+    };
+    const initialBuilder = {
+        abortSignal(signal: AbortSignal) {
+            assert.equal(signal, controller.signal);
+            return abortedBuilder;
+        },
+        then(resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) {
+            initialAwaited = true;
+            return Promise.resolve({ data: null, error: null }).then(resolve, reject);
+        },
+    };
+    const service = new SupabaseService(
+        'https://abort-builder.supabase.co',
+        'abort-builder-test-key'
+    );
+    (service as unknown as { client: unknown }).client = {
+        rpc(name: string, params: Record<string, unknown>) {
+            assert.equal(name, 'resolve_land_area_sync_scope_v1');
+            assert.deepEqual(params, {
+                p_union_id: UNION_ID,
+                p_anchor_pnu: PNU,
+                p_root_mgm_bldrgst_pks: ['opaque-root'],
+            });
+            return initialBuilder;
+        },
+    };
+
+    const result = await service.resolveLandAreaSyncScope(
+        {
+            p_union_id: UNION_ID,
+            p_anchor_pnu: PNU,
+            p_root_mgm_bldrgst_pks: ['opaque-root'],
+        },
+        controller.signal
+    );
+
+    assert.equal(initialAwaited, false);
+    assert.equal(abortedAwaited, true);
+    assert.deepEqual(result, {
+        data: { dbState: 'NO_EVIDENCE' },
+        error: null,
+    });
 });
 
 type RouteHandler = (
@@ -678,6 +738,19 @@ test('실제 SYSTEM_ADMIN middleware와 handler는 token의 development client�
                 data: { warnings: string[] };
             }).data.warnings.includes('NO_ACTIVE_BASE_ATTACHED_RELATION')
         );
+        assert.equal(
+            (res.state.body as {
+                data: { scopeResolution?: unknown };
+            }).data.scopeResolution,
+            undefined
+        );
+        assert.ok(
+            (res.state.body as {
+                data: { warnings: string[] };
+            }).data.warnings.includes(
+                'SCOPE_CONFIRMATION_EVIDENCE_UNAVAILABLE'
+            )
+        );
         assert.ok(development.traces.includes('property_units'));
         assert.deepEqual(production.traces, []);
     } finally {
@@ -693,6 +766,129 @@ test('실제 SYSTEM_ADMIN middleware와 handler는 token의 development client�
         ).getClient = originalProductionGetClient;
         landRightNedClient.fetchLdareg = originalLdareg;
         landRightNedClient.fetchLadfrl = originalLadfrl;
+    }
+});
+
+test('route Building HUB strict scan 실패는 기존 relation0 NED 응답을 유지하고 projection만 생략한다', async () => {
+    const handlers = await loadLookupHandlers();
+    const { env } = await import('../src/config/env');
+    const { getSupabaseService } = await import('../src/services/supabase.service');
+    const { landAreaSyncAdapter } = await import(
+        '../src/services/land-area-sync/adapter'
+    );
+    const { landRightNedClient } = await import(
+        '../src/services/land-right-lookup/ned'
+    );
+    const development = createFakeClient();
+    const service = getSupabaseService('development');
+    const originalGetClient = service.getClient;
+    const originalResolve = service.resolveLandAreaSyncScope;
+    const originalTitle = landAreaSyncAdapter.scanTitle;
+    const originalAttached = landAreaSyncAdapter.scanAttached;
+    const originalBasis = landAreaSyncAdapter.scanBasis;
+    const originalLdareg = landRightNedClient.fetchLdareg;
+    const originalLadfrl = landRightNedClient.fetchLadfrl;
+    const originalHubKey = env.DATA_PORTAL_API_KEY;
+    let titleCalls = 0;
+    let attachedCalls = 0;
+    let resolverCalls = 0;
+
+    (service as unknown as { getClient: () => unknown }).getClient =
+        () => development.client;
+    service.resolveLandAreaSyncScope = async () => {
+        resolverCalls += 1;
+        return { data: null, error: null };
+    };
+    landAreaSyncAdapter.scanTitle = async () => {
+        titleCalls += 1;
+        return {
+            state: 'FAILED',
+            issue: {
+                kind: 'HTTP_ERROR',
+                endpoint: 'getBrTitleInfo',
+                message: '고정 실패',
+                httpStatus: 503,
+            },
+        };
+    };
+    landAreaSyncAdapter.scanAttached = async () => {
+        attachedCalls += 1;
+        return {
+            state: 'COMPLETE_ZERO',
+            rows: [],
+            totalCount: 0,
+            pagesFetched: 1,
+        };
+    };
+    landAreaSyncAdapter.scanBasis = async () => ({
+        state: 'COMPLETE_ZERO',
+        rows: [],
+        totalCount: 0,
+        pagesFetched: 1,
+    });
+    landRightNedClient.fetchLdareg = async () => ({
+        status: 'NO_DATA',
+        records: [],
+    });
+    landRightNedClient.fetchLadfrl = async () => ({
+        status: 'NO_DATA',
+        records: [],
+    });
+    env.DATA_PORTAL_API_KEY = 'configured-test-key';
+
+    try {
+        const req = createRequest(signDevelopmentToken(), {
+            unionId: UNION_ID,
+            propertyUnitId: PROPERTY_ID,
+        });
+        const res = createResponse();
+        for (const index of [0, 1, 2, 3, 4]) {
+            assert.equal(
+                await invokeMiddleware(handlers[index], req, res.response),
+                true
+            );
+        }
+        await handlers[5](
+            req,
+            res.response,
+            (() => undefined) as NextFunction
+        );
+
+        const body = res.state.body as {
+            success: boolean;
+            data: {
+                status: string;
+                warnings: string[];
+                scopeResolution?: unknown;
+            };
+        };
+        assert.equal(res.state.status, 200);
+        assert.equal(body.success, true);
+        assert.equal(body.data.status, 'INCOMPLETE');
+        assert.equal(body.data.scopeResolution, undefined);
+        assert.ok(
+            body.data.warnings.includes(
+                'NO_ACTIVE_BASE_ATTACHED_RELATION'
+            )
+        );
+        assert.ok(
+            body.data.warnings.includes(
+                'SCOPE_CONFIRMATION_EVIDENCE_UNAVAILABLE'
+            )
+        );
+        assert.equal(titleCalls, 1);
+        assert.equal(attachedCalls, 0);
+        assert.equal(resolverCalls, 0);
+    } finally {
+        (service as unknown as { getClient: typeof originalGetClient }).getClient =
+            originalGetClient;
+        service.resolveLandAreaSyncScope = originalResolve;
+        landAreaSyncAdapter.scanTitle = originalTitle;
+        landAreaSyncAdapter.scanAttached = originalAttached;
+        landAreaSyncAdapter.scanBasis = originalBasis;
+        landRightNedClient.fetchLdareg = originalLdareg;
+        landRightNedClient.fetchLadfrl = originalLadfrl;
+        env.DATA_PORTAL_API_KEY = originalHubKey;
     }
 });
 

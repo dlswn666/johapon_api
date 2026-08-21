@@ -2,10 +2,11 @@
  * 대지권 공식자료 단건 transient 조회.
  *
  * SYSTEM_ADMIN 인증은 route middleware가 담당한다. 이 계층은 요청 물건지의 union/PNU와
- * 기준·부속 relation을 read-only로 다시 확인한 뒤 NED를 조회한다. DB write/RPC/queue는
- * 사용하지 않으며 조회 결과도 저장하지 않는다.
+ * 기준·부속 relation과 service-role read-only scope resolver를 다시 확인한 뒤 NED를
+ * 조회한다. DB write/queue/job은 사용하지 않으며 조회 결과도 저장하지 않는다.
  */
 
+import { hash as cryptoHash } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
     LandRightLadfrlRecord,
@@ -13,9 +14,16 @@ import type {
     LandRightLookupData,
     LandRightLookupParcel,
     LandRightLookupPropertyUnit,
+    LandRightLookupScopeResolution,
     LandRightLookupSourceScan,
     LandRightLookupStatus,
 } from '../../types/land-right-lookup.types';
+import type {
+    BrAtchJibunRow,
+    BrBasisOulnRow,
+    BrTitleRow,
+    StrictScan,
+} from '../../types/land-area-sync.types';
 import type {
     NedFetchResult,
     NedScanOptions,
@@ -26,6 +34,22 @@ import {
     landRightNedClient,
     type LandRightLookupTerminalCode,
 } from './ned';
+import {
+    callParcelScopeResolver,
+    computePropertyMembershipHash,
+    resolveParcelScopeCompleteness,
+    resolveSameRunOfficialReadOnlyComponent,
+    type DbScopeResolution,
+} from '../land-area-sync/scope';
+import {
+    BYLOT_SOURCE_POLICY,
+    bylotBasisFallbackPlan,
+} from '../land-area-sync/bylot';
+import {
+    isOptionalRegistryManagementPkValid,
+    normalizeRegistryManagementPk,
+} from '../land-area-sync/registry-pk';
+import { buildingHubRowsMatchPnu } from '../gis-shared/pnu';
 
 const UUID_RE =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -33,16 +57,33 @@ const PNU_RE = /^\d{10}[12]\d{8}$/;
 const MAX_PUBLIC_SCALAR_LENGTH = 500;
 export const MAX_LAND_RIGHT_SCOPE_PNUS = 20;
 export const MAX_LAND_RIGHT_RELATION_ROWS = 100;
+const SCOPE_EVIDENCE_DIGEST_VERSION =
+    'land-right-lookup/scope-evidence@1';
+const HEX_64_RE = /^[a-f0-9]{64}$/i;
 
 interface PropertyUnitRow {
     id: unknown;
     union_id: unknown;
+    building_unit_id: unknown;
     pnu: unknown;
     property_address_jibun: unknown;
     dong: unknown;
     ho: unknown;
     land_area: unknown;
+    land_area_source: unknown;
     is_deleted: unknown;
+}
+
+interface PropertyMembershipRow {
+    id: unknown;
+    union_id: unknown;
+    building_unit_id: unknown;
+    pnu: unknown;
+    is_deleted: unknown;
+    dong: unknown;
+    ho: unknown;
+    land_area: unknown;
+    land_area_source: unknown;
 }
 
 interface RelationRow {
@@ -86,6 +127,11 @@ export interface LandRightLookupRepository {
         pnus: string[],
         signal?: AbortSignal
     ): Promise<LandLotRow[]>;
+    findPropertyMembership(
+        unionId: string,
+        pnus: string[],
+        signal?: AbortSignal
+    ): Promise<PropertyMembershipRow[]>;
 }
 
 export interface LandRightLookupNed {
@@ -101,10 +147,42 @@ export interface LandRightLookupNed {
     ): Promise<NedFetchResult>;
 }
 
+export interface LandRightLookupBuildingHub {
+    scanTitle(
+        pnu: string,
+        signal?: AbortSignal
+    ): Promise<StrictScan<BrTitleRow>>;
+    scanAttached(
+        pnu: string,
+        signal?: AbortSignal
+    ): Promise<StrictScan<BrAtchJibunRow>>;
+    scanBasis(
+        pnu: string,
+        signal?: AbortSignal
+    ): Promise<StrictScan<BrBasisOulnRow>>;
+}
+
+/**
+ * read-only scope resolver와 Building HUB strict adapter를 한 묶음으로 주입한다.
+ * 둘 중 하나만 사용할 수 없도록 하여 relation SELECT만으로 확인 후보를 발급하지 않는다.
+ */
+export interface LandRightLookupScopeConfirmationDeps {
+    buildingHub: LandRightLookupBuildingHub;
+    callResolver(
+        params: {
+            p_union_id: string;
+            p_anchor_pnu: string;
+            p_root_mgm_bldrgst_pks: string[];
+        },
+        signal?: AbortSignal
+    ): Promise<{ data: unknown; error: { message: string } | null }>;
+}
+
 export interface LandRightLookupDeps {
     repository: LandRightLookupRepository;
     ned?: LandRightLookupNed;
     auth: VworldAuth;
+    scopeConfirmation?: LandRightLookupScopeConfirmationDeps;
     signal?: AbortSignal;
 }
 
@@ -136,7 +214,7 @@ export function createSupabaseLandRightLookupRepository(
             let query = client
                 .from('property_units')
                 .select(
-                    'id, union_id, pnu, property_address_jibun, dong, ho, land_area, is_deleted'
+                    'id, union_id, building_unit_id, pnu, property_address_jibun, dong, ho, land_area, land_area_source, is_deleted'
                 )
                 .eq('id', propertyUnitId)
                 .eq('union_id', unionId)
@@ -210,6 +288,24 @@ export function createSupabaseLandRightLookupRepository(
             const { data, error } = await query;
             if (error) throw databaseReadFailure();
             return Array.isArray(data) ? (data as LandLotRow[]) : [];
+        },
+
+        async findPropertyMembership(unionId, pnus, signal) {
+            if (pnus.length === 0) return [];
+            let query = client
+                .from('property_units')
+                .select(
+                    'id, union_id, building_unit_id, pnu, is_deleted, dong, ho, land_area, land_area_source'
+                )
+                .eq('union_id', unionId)
+                .eq('is_deleted', false)
+                .in('pnu', pnus);
+            if (signal) query = query.abortSignal(signal);
+            const { data, error } = await query;
+            if (error) throw databaseReadFailure();
+            return Array.isArray(data)
+                ? (data as PropertyMembershipRow[])
+                : [];
         },
     };
 }
@@ -498,6 +594,668 @@ function sourceWarnings(
     return [...warnings];
 }
 
+interface OfficialScopeCandidate {
+    canonicalBasePnu: string;
+    memberPnus: string[];
+    resolution: LandRightLookupScopeResolution;
+}
+
+type OfficialScopeEvidenceOutcome =
+    | { kind: 'CANDIDATE'; candidate: OfficialScopeCandidate }
+    | {
+          kind: 'HOLD';
+          warning:
+              | 'SCOPE_CONFIRMATION_EVIDENCE_UNAVAILABLE'
+              | 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT';
+      }
+    | { kind: 'LIMIT_EXCEEDED' };
+
+interface CanonicalPropertyMembership {
+    propertyUnitId: string;
+    pnu: string;
+    buildingIdentity: string | null;
+    dong: string | null;
+    ho: string | null;
+    landArea: string | null;
+    landAreaSource: string | null;
+}
+
+function canonicalOptionalDbScalar(
+    value: unknown
+): { valid: true; value: string | null } | { valid: false } {
+    if (value === null || value === undefined) {
+        return { valid: true, value: null };
+    }
+    if (typeof value !== 'string' && typeof value !== 'number') {
+        return { valid: false };
+    }
+    const normalized = String(value).trim();
+    if (normalized.length > MAX_PUBLIC_SCALAR_LENGTH) {
+        return { valid: false };
+    }
+    return {
+        valid: true,
+        value: normalized || null,
+    };
+}
+
+function normalizeActivePropertyMembership(
+    rows: PropertyMembershipRow[],
+    unionId: string,
+    memberPnus: readonly string[],
+    targetPropertyUnitId: string
+): CanonicalPropertyMembership[] | null {
+    const memberSet = new Set(memberPnus);
+    const normalized: CanonicalPropertyMembership[] = [];
+    const propertyIds = new Set<string>();
+    for (const row of rows) {
+        const rowUnionId = nullableString(row.union_id)?.toLowerCase();
+        const propertyUnitId = nullableString(row.id)?.toLowerCase();
+        const pnu = nullableString(row.pnu);
+        const rawBuildingUnitId = nullableString(row.building_unit_id);
+        const buildingIdentity = rawBuildingUnitId?.toLowerCase() ?? null;
+        const dong = canonicalOptionalDbScalar(row.dong);
+        const ho = canonicalOptionalDbScalar(row.ho);
+        const landArea = canonicalOptionalDbScalar(row.land_area);
+        const landAreaSource = canonicalOptionalDbScalar(
+            row.land_area_source
+        );
+        if (
+            rowUnionId !== unionId ||
+            row.is_deleted !== false ||
+            !propertyUnitId ||
+            !UUID_RE.test(propertyUnitId) ||
+            !pnu ||
+            !PNU_RE.test(pnu) ||
+            !memberSet.has(pnu) ||
+            (buildingIdentity !== null && !UUID_RE.test(buildingIdentity)) ||
+            !dong.valid ||
+            !ho.valid ||
+            !landArea.valid ||
+            !landAreaSource.valid ||
+            propertyIds.has(propertyUnitId)
+        ) {
+            return null;
+        }
+        propertyIds.add(propertyUnitId);
+        normalized.push({
+            propertyUnitId,
+            pnu,
+            buildingIdentity,
+            dong: dong.value,
+            ho: ho.value,
+            landArea: landArea.value,
+            landAreaSource: landAreaSource.value,
+        });
+    }
+    normalized.sort((left, right) =>
+        left.propertyUnitId.localeCompare(right.propertyUnitId)
+    );
+    return normalized.length > 0 &&
+        normalized.filter(
+            (row) => row.propertyUnitId === targetPropertyUnitId
+        ).length === 1
+        ? normalized
+        : null;
+}
+
+function normalizeResolverMembership(
+    membership: unknown[],
+    expectedPnu: string
+): Array<{
+    propertyUnitId: string;
+    pnu: string;
+    buildingIdentity: string | null;
+}> | null {
+    const normalized: Array<{
+        propertyUnitId: string;
+        pnu: string;
+        buildingIdentity: string | null;
+    }> = [];
+    const propertyIds = new Set<string>();
+    for (const raw of membership) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+        const row = raw as Record<string, unknown>;
+        if (
+            Object.keys(row).some(
+                (key) =>
+                    key !== 'propertyUnitId' &&
+                    key !== 'pnu' &&
+                    key !== 'buildingUnitId'
+            )
+        ) {
+            return null;
+        }
+        const propertyUnitId = nullableString(
+            row.propertyUnitId
+        )?.toLowerCase();
+        const pnu = nullableString(row.pnu);
+        const rawBuildingUnitId = nullableString(row.buildingUnitId);
+        const buildingIdentity = rawBuildingUnitId?.toLowerCase() ?? null;
+        if (
+            !propertyUnitId ||
+            !UUID_RE.test(propertyUnitId) ||
+            propertyIds.has(propertyUnitId) ||
+            pnu !== expectedPnu ||
+            (buildingIdentity !== null && !UUID_RE.test(buildingIdentity))
+        ) {
+            return null;
+        }
+        propertyIds.add(propertyUnitId);
+        normalized.push({ propertyUnitId, pnu, buildingIdentity });
+    }
+    return normalized.sort((left, right) =>
+        left.propertyUnitId.localeCompare(right.propertyUnitId)
+    );
+}
+
+function strictTitleRoot(
+    title: StrictScan<BrTitleRow>
+): string | null {
+    if (title.state !== 'COMPLETE') return null;
+    const selfRoots = new Set<string>();
+    const resolverRoots = new Set<string>();
+    for (const row of title.rows) {
+        const self = normalizeRegistryManagementPk(row.mgmBldrgstPk);
+        if (!self || !isOptionalRegistryManagementPkValid(row.mgmUpBldrgstPk)) {
+            return null;
+        }
+        const root =
+            normalizeRegistryManagementPk(row.mgmUpBldrgstPk) ?? self;
+        selfRoots.add(self);
+        resolverRoots.add(root);
+    }
+    if (
+        selfRoots.size !== 1 ||
+        resolverRoots.size !== 1 ||
+        [...selfRoots][0] !== [...resolverRoots][0]
+    ) {
+        return null;
+    }
+    return [...resolverRoots][0];
+}
+
+function dbScopeIsExactNoEvidence(
+    scope: DbScopeResolution,
+    expectedPnu: string,
+    rootPk: string
+): boolean {
+    const normalizedRoots = scope.rootBuildingIdentities
+        .map(normalizeRegistryManagementPk)
+        .filter((value): value is string => value !== null);
+    return (
+        scope.dbState === 'NO_EVIDENCE' &&
+        !scope.componentTruncated &&
+        scope.componentPnus.length === 1 &&
+        scope.componentPnus[0] === expectedPnu &&
+        scope.linkedBasePnus.length === 0 &&
+        scope.linkedPnus.length === 0 &&
+        scope.linkedEvidenceKeys.length === 0 &&
+        scope.pendingEvidenceKeys.length === 0 &&
+        scope.blockingEvidence.length === 0 &&
+        scope.openUnresolvedEvidenceKeys.length === 0 &&
+        normalizedRoots.length === scope.rootBuildingIdentities.length &&
+        normalizedRoots.length === 1 &&
+        normalizedRoots[0] === rootPk &&
+        HEX_64_RE.test(scope.dbScopeHash)
+    );
+}
+
+function strictScanSummary<T>(scan: StrictScan<T>): {
+    state: 'COMPLETE' | 'COMPLETE_ZERO';
+    totalCount: number;
+    pagesFetched: number;
+} | null {
+    return scan.state === 'COMPLETE' || scan.state === 'COMPLETE_ZERO'
+        ? {
+              state: scan.state,
+              totalCount: scan.totalCount,
+              pagesFetched: scan.pagesFetched,
+          }
+        : null;
+}
+
+function rawDbScopeContractIsSafe(data: unknown): boolean {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    const row = data as Record<string, unknown>;
+    const stringArrays = [
+        row.rootBuildingIdentities,
+        row.componentPnus,
+        row.linkedBasePnus,
+        row.linkedPnus,
+        row.linkedEvidenceKeys,
+        row.pendingEvidenceKeys,
+        row.openUnresolvedEvidenceKeys,
+    ];
+    if (
+        typeof row.dbState !== 'string' ||
+        typeof row.dbScopeHash !== 'string' ||
+        typeof row.componentTruncated !== 'boolean' ||
+        !stringArrays.every(
+            (value) =>
+                Array.isArray(value) &&
+                value.every((item) => typeof item === 'string')
+        ) ||
+        !Array.isArray(row.propertyMembership) ||
+        !Array.isArray(row.blockingEvidence)
+    ) {
+        return false;
+    }
+    return row.blockingEvidence.every((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            return false;
+        }
+        const evidence = item as Record<string, unknown>;
+        return (
+            typeof evidence.sourceKind === 'string' &&
+            typeof evidence.sourceId === 'string' &&
+            typeof evidence.state === 'string' &&
+            (evidence.reasonCode === undefined ||
+                typeof evidence.reasonCode === 'string')
+        );
+    });
+}
+
+function buildScopeEvidenceDigest(input: {
+    anchorPnu: string;
+    memberPnus: string[];
+    rootPk: string;
+    strategy: 'LDAREG' | 'LADFRL';
+    initialDbScopeHash: string;
+    memberDbScopeHashes: Array<{ pnu: string; dbScopeHash: string }>;
+    externalScopeDigest: string;
+    officialComponentDigest: string | null;
+    membership: CanonicalPropertyMembership[];
+    title: StrictScan<BrTitleRow>;
+    attached: StrictScan<BrAtchJibunRow>;
+    basis?: StrictScan<BrBasisOulnRow>;
+}): string {
+    const stableMembership = input.membership.map((row) => ({
+        propertyUnitId: row.propertyUnitId,
+        pnu: row.pnu,
+        buildingIdentity: row.buildingIdentity,
+        dong: row.dong,
+        ho: row.ho,
+    }));
+    const digest = cryptoHash(
+        'sha256',
+        JSON.stringify({
+            version: SCOPE_EVIDENCE_DIGEST_VERSION,
+            anchorPnu: input.anchorPnu,
+            memberPnus: [...input.memberPnus].sort(),
+            rootPk: input.rootPk,
+            strategy: input.strategy,
+            initialDbScopeHash: input.initialDbScopeHash.toLowerCase(),
+            memberDbScopeHashes: [...input.memberDbScopeHashes]
+                .map((entry) => ({
+                    pnu: entry.pnu,
+                    dbScopeHash: entry.dbScopeHash.toLowerCase(),
+                }))
+                .sort((left, right) => left.pnu.localeCompare(right.pnu)),
+            externalScopeDigest: input.externalScopeDigest.toLowerCase(),
+            officialComponentDigest:
+                input.officialComponentDigest?.toLowerCase() ?? null,
+            propertyMembershipHash:
+                computePropertyMembershipHash(stableMembership),
+            propertyMembership: stableMembership,
+            scans: {
+                title: strictScanSummary(input.title),
+                attached: strictScanSummary(input.attached),
+                basis: input.basis
+                    ? strictScanSummary(input.basis)
+                    : null,
+            },
+        }),
+        'hex'
+    );
+    return `sha256:${digest}`;
+}
+
+async function resolveScopeForPnu(
+    unionId: string,
+    pnu: string,
+    rootPk: string,
+    deps: LandRightLookupScopeConfirmationDeps,
+    signal?: AbortSignal
+): Promise<DbScopeResolution> {
+    return callParcelScopeResolver(
+        {
+            unionId,
+            anchorPnu: pnu,
+            rootMgmBldrgstPks: [rootPk],
+        },
+        {
+            callResolver: async (params) => {
+                const result = await awaitLookupStep(
+                    deps.callResolver(params, signal),
+                    signal
+                );
+                if (
+                    result.error === null &&
+                    !rawDbScopeContractIsSafe(result.data)
+                ) {
+                    return {
+                        data: null,
+                        error: {
+                            message: 'scope resolver 응답 계약이 올바르지 않습니다.',
+                        },
+                    };
+                }
+                return result;
+            },
+        }
+    );
+}
+
+async function resolveOfficialScopeEvidence(
+    input: {
+        unionId: string;
+        propertyUnitId: string;
+        propertyPnu: string;
+        expectedBuildingUnitId: string | null;
+        expectedDong: string | null;
+        expectedHo: string | null;
+        expectedLandAreaSource: string | null;
+    },
+    deps: LandRightLookupDeps
+): Promise<OfficialScopeEvidenceOutcome> {
+    const confirmation = deps.scopeConfirmation;
+    if (!confirmation) {
+        return {
+            kind: 'HOLD',
+            warning: 'SCOPE_CONFIRMATION_EVIDENCE_UNAVAILABLE',
+        };
+    }
+
+    const title = await awaitLookupStep(
+        confirmation.buildingHub.scanTitle(input.propertyPnu, deps.signal),
+        deps.signal
+    );
+    const titlePnuExact =
+        title.state === 'COMPLETE' &&
+        buildingHubRowsMatchPnu(
+            title.rows as Array<Record<string, unknown>>,
+            input.propertyPnu
+        );
+    const rootPk = titlePnuExact ? strictTitleRoot(title) : null;
+    if (!rootPk) {
+        return {
+            kind: 'HOLD',
+            warning:
+                title.state === 'FAILED' || title.state === 'INCOMPLETE'
+                    ? 'SCOPE_CONFIRMATION_EVIDENCE_UNAVAILABLE'
+                    : 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+        };
+    }
+
+    const initialDbScope = await resolveScopeForPnu(
+        input.unionId,
+        input.propertyPnu,
+        rootPk,
+        confirmation,
+        deps.signal
+    );
+    if (!dbScopeIsExactNoEvidence(initialDbScope, input.propertyPnu, rootPk)) {
+        return {
+            kind: 'HOLD',
+            warning: 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+        };
+    }
+
+    const attached = await awaitLookupStep(
+        confirmation.buildingHub.scanAttached(
+            input.propertyPnu,
+            deps.signal
+        ),
+        deps.signal
+    );
+    const policy = BYLOT_SOURCE_POLICY.policy;
+    let basis: StrictScan<BrBasisOulnRow> | undefined;
+    const basisPlan = bylotBasisFallbackPlan(
+        [
+            {
+                pnu: input.propertyPnu,
+                titleRows: title.state === 'COMPLETE' ? title.rows : [],
+            },
+        ],
+        policy
+    );
+    if (basisPlan.includes(input.propertyPnu)) {
+        basis = await awaitLookupStep(
+            confirmation.buildingHub.scanBasis(
+                input.propertyPnu,
+                deps.signal
+            ),
+            deps.signal
+        );
+    }
+
+    const baseScan = {
+        pnu: input.propertyPnu,
+        title,
+        attached,
+        ...(basis ? { basis } : {}),
+    };
+    const gate = resolveParcelScopeCompleteness({
+        dbScope: initialDbScope,
+        baseScans: [baseScan],
+        policy,
+    });
+
+    let memberPnus: string[];
+    let officialComponentDigest: string | null = null;
+    if (
+        gate.state === 'SINGLE_SCOPE_CONFIRMATION_REQUIRED' &&
+        gate.issues.length === 0 &&
+        gate.classification.kind === 'CLASSIFIED' &&
+        attached.state === 'COMPLETE_ZERO'
+    ) {
+        memberPnus = [input.propertyPnu];
+    } else {
+        const component = resolveSameRunOfficialReadOnlyComponent({
+            anchorPnu: input.propertyPnu,
+            dbScope: initialDbScope,
+            baseScans: [baseScan],
+            policy,
+        });
+        if (!component || gate.classification.kind !== 'CLASSIFIED') {
+            return {
+                kind: 'HOLD',
+                warning:
+                    gate.state === 'FAILED'
+                        ? 'SCOPE_CONFIRMATION_EVIDENCE_UNAVAILABLE'
+                        : 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+            };
+        }
+        memberPnus = [...component.memberPnus].sort();
+        officialComponentDigest = component.officialComponentDigest;
+    }
+
+    memberPnus = [...new Set(memberPnus)].sort();
+    if (
+        memberPnus.length === 0 ||
+        !memberPnus.includes(input.propertyPnu)
+    ) {
+        return {
+            kind: 'HOLD',
+            warning: 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+        };
+    }
+    if (memberPnus.length > MAX_LAND_RIGHT_SCOPE_PNUS) {
+        return { kind: 'LIMIT_EXCEEDED' };
+    }
+
+    const rawMembership = await awaitLookupStep(
+        deps.repository.findPropertyMembership(
+            input.unionId,
+            memberPnus,
+            deps.signal
+        ),
+        deps.signal
+    );
+    const membership = normalizeActivePropertyMembership(
+        rawMembership,
+        input.unionId,
+        memberPnus,
+        input.propertyUnitId
+    );
+    if (!membership) {
+        return {
+            kind: 'HOLD',
+            warning: 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+        };
+    }
+    const targetMembership = membership.find(
+        (row) => row.propertyUnitId === input.propertyUnitId
+    );
+    if (
+        !targetMembership ||
+        targetMembership.pnu !== input.propertyPnu ||
+        targetMembership.buildingIdentity !== input.expectedBuildingUnitId ||
+        targetMembership.dong !== input.expectedDong ||
+        targetMembership.ho !== input.expectedHo ||
+        targetMembership.landArea !== null ||
+        targetMembership.landAreaSource !== input.expectedLandAreaSource
+    ) {
+        return {
+            kind: 'HOLD',
+            warning: 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+        };
+    }
+
+    const membershipByPnu = new Map<
+        string,
+        Array<{
+            propertyUnitId: string;
+            pnu: string;
+            buildingIdentity: string | null;
+        }>
+    >();
+    for (const row of membership) {
+        const values = membershipByPnu.get(row.pnu) ?? [];
+        values.push({
+            propertyUnitId: row.propertyUnitId,
+            pnu: row.pnu,
+            buildingIdentity: row.buildingIdentity,
+        });
+        membershipByPnu.set(row.pnu, values);
+    }
+
+    const initialResolverMembership = normalizeResolverMembership(
+        initialDbScope.propertyMembership,
+        input.propertyPnu
+    );
+    if (
+        initialResolverMembership === null ||
+        computePropertyMembershipHash(initialResolverMembership) !==
+            computePropertyMembershipHash(
+                membershipByPnu.get(input.propertyPnu) ?? []
+            )
+    ) {
+        return {
+            kind: 'HOLD',
+            warning: 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+        };
+    }
+
+    const memberDbScopeHashes: Array<{
+        pnu: string;
+        dbScopeHash: string;
+    }> = [];
+    for (const pnu of memberPnus) {
+        const scope = await resolveScopeForPnu(
+            input.unionId,
+            pnu,
+            rootPk,
+            confirmation,
+            deps.signal
+        );
+        if (!dbScopeIsExactNoEvidence(scope, pnu, rootPk)) {
+            return {
+                kind: 'HOLD',
+                warning: 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+            };
+        }
+        const resolverMembership = normalizeResolverMembership(
+            scope.propertyMembership,
+            pnu
+        );
+        if (
+            resolverMembership === null ||
+            computePropertyMembershipHash(resolverMembership) !==
+                computePropertyMembershipHash(membershipByPnu.get(pnu) ?? [])
+        ) {
+            return {
+                kind: 'HOLD',
+                warning: 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+            };
+        }
+        if (
+            pnu === input.propertyPnu &&
+            scope.dbScopeHash.toLowerCase() !==
+                initialDbScope.dbScopeHash.toLowerCase()
+        ) {
+            return {
+                kind: 'HOLD',
+                warning: 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+            };
+        }
+        memberDbScopeHashes.push({ pnu, dbScopeHash: scope.dbScopeHash });
+    }
+
+    if (
+        gate.classification.kind !== 'CLASSIFIED' ||
+        !HEX_64_RE.test(gate.externalScopeDigest)
+    ) {
+        return {
+            kind: 'HOLD',
+            warning: 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+        };
+    }
+    const strategy = gate.classification.family;
+    if (
+        strategy === 'LADFRL' &&
+        (memberPnus.length !== 1 || membership.length !== 1)
+    ) {
+        return {
+            kind: 'HOLD',
+            warning: 'SCOPE_CONFIRMATION_EVIDENCE_CONFLICT',
+        };
+    }
+
+    return {
+        kind: 'CANDIDATE',
+        candidate: {
+            canonicalBasePnu: input.propertyPnu,
+            memberPnus,
+            resolution: {
+                state: 'SCOPE_CONFIRMATION_REQUIRED',
+                strategy,
+                evidenceDigest: buildScopeEvidenceDigest({
+                    anchorPnu: input.propertyPnu,
+                    memberPnus,
+                    rootPk,
+                    strategy,
+                    initialDbScopeHash: initialDbScope.dbScopeHash,
+                    memberDbScopeHashes,
+                    externalScopeDigest: gate.externalScopeDigest,
+                    officialComponentDigest,
+                    membership,
+                    title,
+                    attached,
+                    ...(basis ? { basis } : {}),
+                }),
+                dbState: 'NO_EVIDENCE',
+                reverseLookup: 'UNPROVEN',
+                basePnuCount: 1,
+                scopePnuCount: memberPnus.length,
+                propertyUnitCount: membership.length,
+                buildingRootCount: 1,
+            },
+        },
+    };
+}
+
 /**
  * 한 물건지의 공식자료를 메모리에서만 조회한다. 조회 상태와 원문 투영은 반환하지만 어떠한
  * DB/queue 객체도 생성·갱신하지 않는다.
@@ -622,6 +1380,7 @@ export async function lookupLandRightTransient(
     }
 
     const warnings = new Set<string>();
+    let officialScopeCandidate: OfficialScopeCandidate | null = null;
     const directRelations = rawDirectRelations
         .map((relation) => relationValues(relation, unionId))
         .filter(
@@ -757,6 +1516,70 @@ export async function lookupLandRightTransient(
         groupRelations = [...deduped.values()];
     } else {
         warnings.add('NO_ACTIVE_BASE_ATTACHED_RELATION');
+        try {
+            const scopeEvidence = await resolveOfficialScopeEvidence(
+                {
+                    unionId,
+                    propertyUnitId,
+                    propertyPnu,
+                    expectedBuildingUnitId:
+                        nullableString(row.building_unit_id)?.toLowerCase() ??
+                        null,
+                    expectedDong: propertyUnit.dong,
+                    expectedHo: propertyUnit.ho,
+                    expectedLandAreaSource: nullableString(
+                        row.land_area_source
+                    ),
+                },
+                deps
+            );
+            if (scopeEvidence.kind === 'LIMIT_EXCEEDED') {
+                return terminalIncomplete(
+                    propertyUnit,
+                    'PROPERTY_SCOPE_LIMIT_EXCEEDED',
+                    {
+                        pnu: propertyPnu,
+                        role: 'UNKNOWN',
+                        address: propertyUnit.address,
+                        scopeGroup: null,
+                    }
+                );
+            }
+            if (scopeEvidence.kind === 'CANDIDATE') {
+                officialScopeCandidate = scopeEvidence.candidate;
+            } else {
+                warnings.add(scopeEvidence.warning);
+            }
+        } catch (error) {
+            const interrupted = lookupAbortCode(deps.signal);
+            if (interrupted) {
+                return interruptedLookup(
+                    propertyUnitId,
+                    new LookupInterruptedError(interrupted),
+                    propertyUnit,
+                    {
+                        pnu: propertyPnu,
+                        role: 'UNKNOWN',
+                        address: propertyUnit.address,
+                        scopeGroup: null,
+                    }
+                );
+            }
+            if (error instanceof LookupInterruptedError) {
+                return interruptedLookup(
+                    propertyUnitId,
+                    error,
+                    propertyUnit,
+                    {
+                        pnu: propertyPnu,
+                        role: 'UNKNOWN',
+                        address: propertyUnit.address,
+                        scopeGroup: null,
+                    }
+                );
+            }
+            warnings.add('SCOPE_CONFIRMATION_EVIDENCE_UNAVAILABLE');
+        }
     }
 
     if (
@@ -785,7 +1608,29 @@ export async function lookupLandRightTransient(
     const parcelDrafts: Array<
         Omit<LandRightLookupParcel, 'address'>
     > = [];
-    if (sortedGroupKeys.length === 0) {
+    if (
+        sortedGroupKeys.length === 0 &&
+        officialScopeCandidate
+    ) {
+        const canonicalBasePnu =
+            officialScopeCandidate.canonicalBasePnu;
+        const orderedPnus = [
+            canonicalBasePnu,
+            ...officialScopeCandidate.memberPnus.filter(
+                (pnu) => pnu !== canonicalBasePnu
+            ),
+        ];
+        for (const pnu of orderedPnus) {
+            parcelDrafts.push({
+                pnu,
+                role:
+                    pnu === canonicalBasePnu
+                        ? 'BASE'
+                        : 'ATTACHED',
+                scopeGroup: 'official-group-1',
+            });
+        }
+    } else if (sortedGroupKeys.length === 0) {
         parcelDrafts.push({
             pnu: propertyPnu,
             role: 'UNKNOWN',
@@ -972,6 +1817,25 @@ export async function lookupLandRightTransient(
     for (const warning of sourceWarnings('LADFRL', ladfrlResults)) {
         warnings.add(warning);
     }
+    const candidateStrategyStatus =
+        officialScopeCandidate?.resolution.strategy === 'LDAREG'
+            ? ldaregStatus
+            : officialScopeCandidate?.resolution.strategy === 'LADFRL'
+              ? ladfrlStatus
+              : null;
+    if (
+        officialScopeCandidate &&
+        (candidateStrategyStatus !== 'SUCCESS' ||
+            ldaregStatus === 'FAILED' ||
+            ldaregStatus === 'INCOMPLETE' ||
+            ladfrlStatus === 'FAILED' ||
+            ladfrlStatus === 'INCOMPLETE')
+    ) {
+        officialScopeCandidate = null;
+        warnings.add('SCOPE_CONFIRMATION_EVIDENCE_UNAVAILABLE');
+    } else if (officialScopeCandidate) {
+        warnings.add('SCOPE_REVERSE_LOOKUP_UNPROVEN');
+    }
 
     const code =
         status === 'FAILED'
@@ -1007,6 +1871,9 @@ export async function lookupLandRightTransient(
                 scans: toSourceScans(scanPnus, ladfrlResults),
             },
         },
+        ...(officialScopeCandidate
+            ? { scopeResolution: officialScopeCandidate.resolution }
+            : {}),
         warnings: [...warnings].sort(),
     };
 }

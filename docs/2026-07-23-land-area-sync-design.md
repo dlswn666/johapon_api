@@ -824,6 +824,55 @@ API는 apply 직전에 DB/external/combined hash, strategy, scanned PNU, propert
 - 관계 없음과 same-run `ATTACHED_COMPLETE_ZERO`를 결합해도 자동 단독 판정은 하지 않음
 - resolver와 sync는 관계를 만들거나 LINKED로 승격하지 않는다.
 
+### 11.1 SYSTEM_ADMIN transient 조회의 scope 확인 후보
+
+`POST /api/gis/land-right/lookup`은 active 기준·부속 relation이 0건인 물건지를
+자동 `SUCCESS` 또는 singleton으로 승격하지 않는다. 다만 관리자가 Codex의 exact
+manifest를 검토할 수 있도록 다음 acceptance를 모두 만족한 같은 요청의 read-only 근거만
+`data.scopeResolution`에 추가할 수 있다.
+
+- anchor title을 strict scan하고 모든 row의 direct PNU 또는 5-part 지번이 요청 PNU에 exact
+  귀속되며, 정규화된 building root가 정확히 1개일 때만 그 root로
+  `resolve_land_area_sync_scope_v1`을 호출한다. PNU identity 누락·충돌·다른 PNU row는 후보를
+  만들지 않는다.
+- resolver는 `NO_EVIDENCE`, non-truncated, pending/blocking/open evidence 0건이어야 하며,
+  anchor property membership은 현재 요청 물건지를 포함한 유효한 양수 집합이어야 한다.
+- 현재 source 정책에 따라 title의 resolved `bylotCnt`를 사용하고, 정책이 선택한 경우에만
+  basis fallback을 strict scan한다. `TITLE_ONLY` 정책에서 basis를 조용히 호출하지 않는다.
+- attached strict scan이 `COMPLETE_ZERO`이면 scope PNU 1건, `COMPLETE`이면 exact
+  `(base PNU, 관리 root)` component의 모든 PNU를 scope로 삼는다. 후자는 기존
+  `resolveSameRunOfficialReadOnlyComponent()`가 허용하는 모순 없는 LDAREG component만
+  후보가 된다.
+- official component가 정해진 뒤 각 member PNU를 같은 root 집합으로 resolver에 다시
+  넣는다. 어느 한 PNU라도 PENDING/blocking/open/truncated/LINKED 또는 root/component
+  모순이면 후보를 만들지 않는다. 같은 시점의 exact member PNU 범위 활성
+  `property_units` SELECT와 PNU별 resolver membership hash도 일치해야 한다.
+- 대상 property는 fresh membership에 정확히 1번 존재하고 최초 lookup의 PNU,
+  building-unit, canonical 동·호, `land_area=null`, `land_area_source` tuple과 같아야 한다.
+  LADFRL 후보는 scope PNU 1건·property unit 1건일 때만 허용한다.
+- `FAILED/INCOMPLETE`, 복수 root, PENDING/blocking/open evidence, invalid membership,
+  bylot/attached 불일치, 분류 충돌은 후보를 만들지 않는다.
+- 후보가 생겨도 lookup의 기존 `INCOMPLETE / PROPERTY_SCOPE_INCOMPLETE`와
+  `NO_ACTIVE_BASE_ATTACHED_RELATION` 경고는 유지한다. additive 상태는
+  `SCOPE_CONFIRMATION_REQUIRED`이며, Building HUB에 reverse lookup이 없어 다른 건물의
+  부속 PNU가 아님을 서버만으로 증명할 수 없다는 `reverseLookup=UNPROVEN`을 명시한다.
+- `scopeResolution`은 strategy, `sha256:<lowercase-64hex>` evidence digest,
+  base/scope/property/root count만
+  공개한다. 관리 PK, resolver membership, provider raw body, PII는 공개하지 않는다.
+  digest는 정렬된 exact scope PNU membership, strict scan summary, DB/external scope hash,
+  property identity membership hash(`propertyUnitId`, PNU, building identity, canonical 동·호)를
+  결합한다. `land_area/source`는 target의 별도 NULL tuple gate로 검증하되 digest에는 넣지 않아,
+  같은 manifest의 앞선 단건 MANUAL 저장이 sibling scope digest를 연쇄 변경하지 않게 한다.
+- `scopeResolution`이 존재할 때 warnings는
+  `NO_ACTIVE_BASE_ATTACHED_RELATION`, `SCOPE_REVERSE_LOOKUP_UNPROVEN` 두 고정 코드만
+  포함한다. NED source가 FAILED/INCOMPLETE이면 projection을 제거한다.
+- 공식 component 후보의 모든 PNU에 대해 LDAREG/LADFRL을 기존 request budget과 동일한
+  AbortSignal 안에서 조회한다. 20 PNU 상한을 넘으면 provider를 호출하지 않고 INCOMPLETE로
+  닫는다.
+
+이 응답은 승인 가능한 증거 envelope일 뿐 확인 자체가 아니다. 운영 UPDATE는 별도 exact
+manifest 승인과 fresh re-read가 같은 digest/membership을 재현한 뒤에만 한 행씩 수행한다.
+
 ## 12. LDAREG 파싱·identity·매칭
 
 ### 12.1 비율 parser

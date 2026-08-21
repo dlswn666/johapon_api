@@ -1429,13 +1429,16 @@ export class SupabaseService {
      * bounded connected component + evidence 를 §11 JSON·dbScopeHash 로 반환한다.
      */
     async resolveLandAreaSyncScope(
-        params: ResolveScopeParams
+        params: ResolveScopeParams,
+        signal?: AbortSignal
     ): Promise<{ data: unknown; error: { message: string } | null }> {
-        const { data, error } = await this.client.rpc('resolve_land_area_sync_scope_v1', {
+        let request = this.client.rpc('resolve_land_area_sync_scope_v1', {
             p_union_id: params.p_union_id,
             p_anchor_pnu: params.p_anchor_pnu,
             p_root_mgm_bldrgst_pks: params.p_root_mgm_bldrgst_pks,
         });
+        if (signal) request = request.abortSignal(signal);
+        const { data, error } = await request;
         return { data, error: error ? { message: error.message } : null };
     }
 
