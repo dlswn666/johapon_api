@@ -780,6 +780,34 @@ class GisService {
 
         const platGbCd =
             pnuParts.landGbn === '1' ? '0' : pnuParts.landGbn === '2' ? '1' : undefined;
+
+        const rows = await this.fetchBuildingRegistryPages(endpoint, pnuParts, label, pnu, platGbCd);
+
+        // 대장 레코드의 대지구분이 PNU 11자리와 어긋난 필지(산→대지 전환 이력 등)
+        // 는 platGbCd 필터로 0건이 될 수 있다. 그 경우 무필터로 1회 폴백해
+        // 기존(무필터) 동작 대비 데이터 소실이 없게 한다.
+        if (rows.length === 0 && platGbCd !== undefined) {
+            const fallbackRows = await this.fetchBuildingRegistryPages(
+                endpoint, pnuParts, label, pnu, undefined
+            );
+            if (fallbackRows.length > 0) {
+                logger.warn(
+                    `Building registry ${label} platGbCd mismatch fallback used (PNU: ${pnu}, platGbCd: ${platGbCd}, rows: ${fallbackRows.length})`
+                );
+            }
+            return fallbackRows;
+        }
+
+        return rows;
+    }
+
+    private async fetchBuildingRegistryPages(
+        endpoint: string,
+        pnuParts: NonNullable<ReturnType<GisService['parsePNU']>>,
+        label: string,
+        pnu: string,
+        platGbCd: string | undefined
+    ): Promise<unknown[]> {
         const numOfRows = 1000;
         const maxPages = 30;
         const rows: unknown[] = [];
@@ -803,7 +831,9 @@ class GisService {
 
                 const body = response.data.response?.body;
                 const pageRows = this.toArray<unknown>(body?.items?.item);
-                totalCount = this.parseNumber(body?.totalCount) ?? pageRows.length;
+                // 이후 페이지에서 totalCount 파싱이 실패해도 앞서 파싱한 값을
+                // 보존한다 — 페이지 행수로 덮으면 조기 종료로 조용히 잘린다.
+                totalCount = this.parseNumber(body?.totalCount) ?? totalCount ?? pageRows.length;
                 rows.push(...pageRows);
 
                 if (pageRows.length === 0 || rows.length >= totalCount || pageRows.length < numOfRows) {
