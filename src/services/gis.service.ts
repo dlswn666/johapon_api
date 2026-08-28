@@ -758,59 +758,92 @@ class GisService {
     }
 
     /**
+     * 건축물대장(BldRgstHub) 공통 페이지네이션 조회.
+     *
+     * 기존 단발 호출은 totalCount 를 확인하지 않아 1,000세대 초과 단지의
+     * 전유부가 조용히 잘렸다(2026-07-21 재건축 갭 감사 확정 결함). 전 페이지를
+     * totalCount 까지 수집하고, 중간 페이지 오류 시에는 기존 계약대로 [] 를
+     * 반환한다(부분 수집을 성공으로 위장하지 않는다 — fail-closed).
+     *
+     * platGbCd: PNU 11번째 자리(1=대지, 2=산)를 대장 코드(0=대지, 1=산)로
+     * 변환해 전달한다. 미전달 시 같은 번지의 대지/산 레코드가 섞인다.
+     */
+    private async fetchAllBuildingRegistryRows(
+        endpoint: string,
+        pnu: string,
+        label: string
+    ): Promise<unknown[]> {
+        if (!this.dataPortalApiKey) throw new Error('DATA_PORTAL_API_KEY is not configured.');
+
+        const pnuParts = this.parsePNU(pnu);
+        if (!pnuParts) return [];
+
+        const platGbCd =
+            pnuParts.landGbn === '1' ? '0' : pnuParts.landGbn === '2' ? '1' : undefined;
+        const numOfRows = 1000;
+        const maxPages = 30;
+        const rows: unknown[] = [];
+        let totalCount: number | null = null;
+
+        for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
+            try {
+                const response = await axios.get(endpoint, {
+                    params: {
+                        serviceKey: this.dataPortalApiKey,
+                        sigunguCd: pnuParts.sigunguCd,
+                        bjdongCd: pnuParts.bjdongCd,
+                        ...(platGbCd !== undefined ? { platGbCd } : {}),
+                        bun: pnuParts.bun,
+                        ji: pnuParts.ji,
+                        numOfRows,
+                        pageNo,
+                        _type: 'json',
+                    },
+                });
+
+                const body = response.data.response?.body;
+                const pageRows = this.toArray<unknown>(body?.items?.item);
+                totalCount = this.parseNumber(body?.totalCount) ?? pageRows.length;
+                rows.push(...pageRows);
+
+                if (pageRows.length === 0 || rows.length >= totalCount || pageRows.length < numOfRows) {
+                    return rows;
+                }
+            } catch (error) {
+                logger.error(
+                    `Building registry ${label} fetch error (PNU: ${pnu}, page: ${pageNo})`,
+                    error
+                );
+                return [];
+            }
+        }
+
+        logger.warn(
+            `Building registry ${label} page limit reached (PNU: ${pnu}, totalCount: ${totalCount ?? 'unknown'}, collected: ${rows.length})`
+        );
+        return rows;
+    }
+
+    /**
      * 표제부 조회 (공공데이터포털)
      */
     async getBuildingTitle(pnu: string): Promise<unknown[]> {
-        if (!this.dataPortalApiKey) throw new Error('DATA_PORTAL_API_KEY is not configured.');
-
-        try {
-            const pnuParts = this.parsePNU(pnu);
-            if (!pnuParts) return [];
-
-            const response = await axios.get('http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo', {
-                params: {
-                    serviceKey: this.dataPortalApiKey,
-                    sigunguCd: pnuParts.sigunguCd,
-                    bjdongCd: pnuParts.bjdongCd,
-                    bun: pnuParts.bun,
-                    ji: pnuParts.ji,
-                    numOfRows: 100,
-                    _type: 'json',
-                },
-            });
-            return response.data.response?.body?.items?.item || [];
-        } catch (error) {
-            logger.error(`Building registry title info fetch error (PNU: ${pnu})`, error);
-            return [];
-        }
+        return this.fetchAllBuildingRegistryRows(
+            'http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo',
+            pnu,
+            'title info'
+        );
     }
 
     /**
      * 전유부 조회 (호수 리스트)
      */
     async getBuildingUnits(pnu: string): Promise<unknown[]> {
-        if (!this.dataPortalApiKey) throw new Error('DATA_PORTAL_API_KEY is not configured.');
-
-        try {
-            const pnuParts = this.parsePNU(pnu);
-            if (!pnuParts) return [];
-
-            const response = await axios.get('http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo', {
-                params: {
-                    serviceKey: this.dataPortalApiKey,
-                    sigunguCd: pnuParts.sigunguCd,
-                    bjdongCd: pnuParts.bjdongCd,
-                    bun: pnuParts.bun,
-                    ji: pnuParts.ji,
-                    numOfRows: 1000,
-                    _type: 'json',
-                },
-            });
-            return response.data.response?.body?.items?.item || [];
-        } catch (error) {
-            logger.error(`Building registry unit info fetch error (PNU: ${pnu})`, error);
-            return [];
-        }
+        return this.fetchAllBuildingRegistryRows(
+            'http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo',
+            pnu,
+            'unit info'
+        );
     }
 
     /**
