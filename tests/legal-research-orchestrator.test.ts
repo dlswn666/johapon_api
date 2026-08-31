@@ -607,6 +607,68 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.equal(packet.cases.length, 1);
     });
 
+    it('같은 exact 법령명의 여러 anchor를 모두 합쳐 판례 참조조문과 대조한다', async () => {
+        const electronicVoteArticle: CurrentLawDetail['articles'][number] = {
+            articleNumber: '45',
+            title: '총회의 의결',
+            content: '제45조 총회의 전자투표와 의결 방법을 정한다.',
+            isArticle: true,
+            paragraphs: [],
+        };
+        const summary = makeCase(605, '2026-08-20');
+        const packet = await buildOrchestrator([summary], {
+            currentLawDetail: {
+                ...lawDetail,
+                articles: [...lawDetail.articles, electronicVoteArticle],
+            },
+            detailFactory(value) {
+                return {
+                    ...detailFor(value),
+                    holdings: '총회 전자투표의 의결 방법이 문제된 사안',
+                    summary: '전자투표 절차를 준수하여야 한다는 판결요지',
+                    referenceProvisions: '도시 및 주거환경정비법 제45조',
+                    fullText: '총회 전자투표 절차에 관한 판례 전문 내용',
+                };
+            },
+        }).research({
+            ...input,
+            question: '조합 총회 전자투표 의결 방법은?',
+            researchPlan: {
+                ...input.researchPlan,
+                issues: [
+                    ...input.researchPlan.issues,
+                    {
+                        issueId: 'ISSUE-2',
+                        issue: '총회 전자투표 의결 방법',
+                        requestedOutcome: 'procedure',
+                    },
+                ],
+                lawAnchors: [
+                    input.researchPlan.lawAnchors[0],
+                    {
+                        issueIds: ['ISSUE-2'],
+                        exactName: lawSummary.name,
+                        lawType: '법률',
+                        articleLabels: ['제45조'],
+                        issueTerms: ['전자투표'],
+                    },
+                ],
+                caseQueries: [{
+                    issueIds: ['ISSUE-1', 'ISSUE-2'],
+                    lawNames: [lawSummary.name],
+                    articleLabels: ['제45조'],
+                    issueTerms: ['전자투표'],
+                }],
+            },
+        });
+
+        assert.equal(packet.laws.length, 2);
+        assert.deepEqual(packet.cases.map((legalCase) => legalCase.caseSerialId), ['605']);
+        assert.deepEqual(packet.cases[0].relevance.matchedProvisions, [
+            '도시 및 주거환경정비법 제45조',
+        ]);
+    });
+
     it('법령 identity는 일치하지만 지정 조문이 없으면 tool 오류가 아닌 근거 부족 패킷으로 닫는다', async () => {
         const provider = new FakeProvider([makeCase(601, '2026-08-20')], {
             currentLawDetail: {
@@ -946,6 +1008,199 @@ describe('LegalResearchOrchestratorV1', () => {
                 .map((summary) => summary.caseSerialId)
         );
         assert.equal(packet.caseSearchAudit.upstreamComplete, true);
+    });
+
+    it('stream provenance로 교집합, 쟁점어, 법령명-only 순서로 상세조회하고 최종 결과는 최신순으로 정렬한다', async () => {
+        const intersection = makeCase(6100, '2026-06-01');
+        const issueOnly = makeCase(6200, '2026-07-01');
+        const lawOnly = makeCase(6300, '2026-08-01');
+        const allCases = [intersection, issueOnly, lawOnly];
+        const detailIds: string[] = [];
+        const provider: LegalResearchProviderV1 = {
+            async searchCurrentLaws() {
+                return { totalCount: 1, page: 1, items: [lawSummary] };
+            },
+            async getCurrentLawDetail() {
+                return lawDetail;
+            },
+            async searchCurrentOrdinances() {
+                throw new Error('자치법규 검색은 호출되지 않아야 합니다.');
+            },
+            async getCurrentOrdinanceDetail() {
+                throw new Error('자치법규 상세는 호출되지 않아야 합니다.');
+            },
+            async searchCases(search) {
+                if (search.referenceLawName) {
+                    return { totalCount: 2, page: 1, items: [lawOnly, intersection] };
+                }
+                return { totalCount: 2, page: 1, items: [issueOnly, intersection] };
+            },
+            async getCaseDetail({ caseSerialId }) {
+                detailIds.push(caseSerialId);
+                const summary = allCases.find((candidate) =>
+                    candidate.caseSerialId === caseSerialId);
+                if (!summary) throw new Error('missing provenance fixture case');
+                return detailFor(summary);
+            },
+        };
+
+        const packet = await buildOrchestratorWithProvider(provider).research(input);
+
+        assert.deepEqual(detailIds, [
+            intersection.caseSerialId,
+            issueOnly.caseSerialId,
+            lawOnly.caseSerialId,
+        ]);
+        assert.deepEqual(packet.cases.map((legalCase) => legalCase.caseSerialId), [
+            lawOnly.caseSerialId,
+            issueOnly.caseSerialId,
+            intersection.caseSerialId,
+        ]);
+        assert.equal(packet.caseSearchAudit.upstreamComplete, true);
+    });
+
+    it('다중 쟁점 stream에서는 선택적 검색 후보를 포괄 교집합보다 먼저 검증한다', async () => {
+        const broadIntersection = Array.from({ length: 100 }, (_, index) =>
+            makeCase(6400 + index, '2026-08-30'));
+        const broadIssueOnly = Array.from({ length: 20 }, (_, index) =>
+            makeCase(6600 + index, '2026-08-29'));
+        const selective = Array.from({ length: 10 }, (_, index) =>
+            makeCase(6800 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
+        const allCases = [...broadIntersection, ...broadIssueOnly, ...selective];
+        const detailIds: string[] = [];
+        const provider: LegalResearchProviderV1 = {
+            async searchCurrentLaws() {
+                return { totalCount: 1, page: 1, items: [lawSummary] };
+            },
+            async getCurrentLawDetail() {
+                return lawDetail;
+            },
+            async searchCurrentOrdinances() {
+                throw new Error('자치법규 검색은 호출되지 않아야 합니다.');
+            },
+            async getCurrentOrdinanceDetail() {
+                throw new Error('자치법규 상세는 호출되지 않아야 합니다.');
+            },
+            async searchCases(search) {
+                if (search.referenceLawName) {
+                    return {
+                        totalCount: broadIntersection.length,
+                        page: 1,
+                        items: broadIntersection,
+                    };
+                }
+                if (search.query === '조합설립') {
+                    return { totalCount: selective.length, page: 1, items: selective };
+                }
+                if (search.query === '요건') {
+                    return {
+                        totalCount: broadIssueOnly.length,
+                        page: 1,
+                        items: broadIssueOnly,
+                    };
+                }
+                return {
+                    totalCount: broadIntersection.length,
+                    page: 1,
+                    items: broadIntersection,
+                };
+            },
+            async getCaseDetail({ caseSerialId }) {
+                detailIds.push(caseSerialId);
+                const summary = allCases.find((candidate) =>
+                    candidate.caseSerialId === caseSerialId);
+                if (!summary) throw new Error('missing multi-stream fixture case');
+                const detail = detailFor(summary);
+                return selective.includes(summary)
+                    ? detail
+                    : { ...detail, referenceProvisions: '도시 및 주거환경정비법 제35조의2' };
+            },
+        };
+        const multiIssueInput: LegalResearchInputV1 = {
+            ...input,
+            researchPlan: {
+                ...input.researchPlan,
+                caseQueries: [{
+                    ...input.researchPlan.caseQueries[0],
+                    issueTerms: ['조합설립', '동의', '요건'],
+                }],
+            },
+        };
+
+        const packet = await buildOrchestratorWithProvider(provider).research(multiIssueInput);
+
+        assert.deepEqual(detailIds.slice(0, 10), selective.map((item) => item.caseSerialId));
+        assert.equal(detailIds.length, 120);
+        assert.deepEqual(
+            packet.cases.map((legalCase) => legalCase.caseSerialId),
+            selective.map((item) => item.caseSerialId)
+        );
+        assert.equal(packet.caseSearchAudit.candidateCount, 120);
+        assert.equal(packet.caseSearchAudit.upstreamComplete, false);
+    });
+
+    it('120건 예산에서 쟁점어 후보를 법령명-only 후보보다 먼저 검증해 적격 10건을 보존한다', async () => {
+        const lawOnly = Array.from({ length: 120 }, (_, index) =>
+            makeCase(7000 + index, '2026-08-30'));
+        const issueCandidates = Array.from({ length: 10 }, (_, index) =>
+            makeCase(8000 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
+        const allCases = [...lawOnly, ...issueCandidates];
+        const detailIds: string[] = [];
+        const searchCalls: string[] = [];
+        const provider: LegalResearchProviderV1 = {
+            async searchCurrentLaws() {
+                return { totalCount: 1, page: 1, items: [lawSummary] };
+            },
+            async getCurrentLawDetail() {
+                return lawDetail;
+            },
+            async searchCurrentOrdinances() {
+                throw new Error('자치법규 검색은 호출되지 않아야 합니다.');
+            },
+            async getCurrentOrdinanceDetail() {
+                throw new Error('자치법규 상세는 호출되지 않아야 합니다.');
+            },
+            async searchCases(search) {
+                const page = search.page ?? 1;
+                if (search.referenceLawName) {
+                    searchCalls.push(`law:${page}`);
+                    return {
+                        totalCount: lawOnly.length,
+                        page,
+                        items: page === 1 ? lawOnly.slice(0, 100) : lawOnly.slice(100),
+                    };
+                }
+                searchCalls.push(`issue:${page}`);
+                return {
+                    totalCount: issueCandidates.length,
+                    page,
+                    items: page === 1 ? issueCandidates : [],
+                };
+            },
+            async getCaseDetail({ caseSerialId }) {
+                detailIds.push(caseSerialId);
+                const summary = allCases.find((candidate) =>
+                    candidate.caseSerialId === caseSerialId);
+                if (!summary) throw new Error('missing recall fixture case');
+                const detail = detailFor(summary);
+                return lawOnly.includes(summary)
+                    ? { ...detail, referenceProvisions: '도시 및 주거환경정비법 제35조의2' }
+                    : detail;
+            },
+        };
+
+        const packet = await buildOrchestratorWithProvider(provider).research(input);
+
+        assert.deepEqual(detailIds.slice(0, 10), issueCandidates.map((item) => item.caseSerialId));
+        assert.ok(searchCalls.includes('law:2'));
+        assert.equal(detailIds.length, 120);
+        assert.equal(packet.cases.length, 10);
+        assert.deepEqual(
+            packet.cases.map((legalCase) => legalCase.caseSerialId),
+            issueCandidates.map((item) => item.caseSerialId)
+        );
+        assert.equal(packet.caseSearchAudit.candidateCount, 120);
+        assert.equal(packet.caseSearchAudit.upstreamComplete, false);
     });
 
     it('상세 후보 120건 상한에 도달하면 더 오래된 후보를 채우지 않고 upstream_incomplete로 닫는다', async () => {

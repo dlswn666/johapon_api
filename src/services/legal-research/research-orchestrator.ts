@@ -97,6 +97,11 @@ interface CaseSearchStreamState {
     seenCaseSerialIds: Set<string>;
 }
 
+interface CaseSearchPageWithProvenance {
+    stream: Omit<SearchCasesInput, 'page'>;
+    page: ProviderSearchPage<CaseSummary>;
+}
+
 function hashText(value: string): string {
     const hash = createHash('sha256');
     hash.write(value, 'utf8');
@@ -858,7 +863,9 @@ export class LegalResearchOrchestratorV1 {
             throw new LegalOpenApiError('INVALID_REQUEST');
         }
 
-        const pages: Array<ProviderSearchPage<CaseSummary>> = [];
+        // 동일 판례가 법령명 stream과 쟁점어 stream 중 어디에서 발견됐는지
+        // 상세조회 우선순위에 사용하므로 page와 검색 provenance를 함께 보존한다.
+        const pages: CaseSearchPageWithProvenance[] = [];
         const streamStates: CaseSearchStreamState[] = [];
         let searchRequestCount = 0;
         let searchIncomplete = false;
@@ -867,7 +874,7 @@ export class LegalResearchOrchestratorV1 {
             const page = await this.provider.searchCases({ ...stream, page: 1 }, signal);
             assertCasePageOrder(page, 1, asOfDate);
             searchRequestCount += 1;
-            pages.push(page);
+            pages.push({ stream, page });
             streamStates.push({
                 input: stream,
                 nextPage: 2,
@@ -881,12 +888,58 @@ export class LegalResearchOrchestratorV1 {
 
         const orderedSummaries = (): CaseSummary[] => {
             const uniqueSummaries = new Map<string, CaseSummary>();
-            for (const summary of pages.flatMap((page) => page.items).sort(compareProviderCases)) {
+            for (const summary of pages
+                .flatMap(({ page }) => page.items)
+                .sort(compareProviderCases)) {
                 if (!uniqueSummaries.has(summary.caseSerialId)) {
                     uniqueSummaries.set(summary.caseSerialId, summary);
                 }
             }
             return [...uniqueSummaries.values()].sort(compareProviderCases);
+        };
+
+        const prioritizedSummaries = (): CaseSummary[] => {
+            const provenance = new Map<string, {
+                lawName: boolean;
+                minIssueTotalCount: number | null;
+            }>();
+            for (const { stream, page } of pages) {
+                for (const summary of page.items) {
+                    const found = provenance.get(summary.caseSerialId) ?? {
+                        lawName: false,
+                        minIssueTotalCount: null,
+                    };
+                    found.lawName ||= typeof stream.referenceLawName === 'string';
+                    if (typeof stream.query === 'string') {
+                        found.minIssueTotalCount = found.minIssueTotalCount === null
+                            ? page.totalCount
+                            : Math.min(found.minIssueTotalCount, page.totalCount);
+                    }
+                    provenance.set(summary.caseSerialId, found);
+                }
+            }
+            return orderedSummaries().sort((left, right) => {
+                const leftFound = provenance.get(left.caseSerialId);
+                const rightFound = provenance.get(right.caseSerialId);
+                const leftHasIssue = leftFound?.minIssueTotalCount !== null
+                    && leftFound?.minIssueTotalCount !== undefined;
+                const rightHasIssue = rightFound?.minIssueTotalCount !== null
+                    && rightFound?.minIssueTotalCount !== undefined;
+
+                // 상세조회 예산은 검색 결과가 적은 선택적 쟁점 stream부터 쓴다.
+                // 포괄 쟁점+법령명 교집합이 선택적 쟁점 후보를 밀어내지 않도록
+                // issue 선택도를 교집합 여부보다 먼저 비교한다.
+                if (leftHasIssue !== rightHasIssue) return leftHasIssue ? -1 : 1;
+                if (leftHasIssue && rightHasIssue) {
+                    const specificity = leftFound!.minIssueTotalCount!
+                        - rightFound!.minIssueTotalCount!;
+                    if (specificity !== 0) return specificity;
+                }
+                if (leftFound?.lawName !== rightFound?.lawName) {
+                    return leftFound?.lawName ? -1 : 1;
+                }
+                return compareProviderCases(left, right);
+            });
         };
 
         const fetchNextPages = async (
@@ -926,7 +979,7 @@ export class LegalResearchOrchestratorV1 {
                     ) ?? state.oldestFetchedDate;
                     page.items.forEach((item) =>
                         state.seenCaseSerialIds.add(item.caseSerialId));
-                    pages.push(page);
+                    pages.push({ stream: state.input, page });
                     fetchedAny ||= page.items.length > 0;
 
                     if (page.items.length === 0 && state.fetchedCount < state.totalCount) {
@@ -954,14 +1007,67 @@ export class LegalResearchOrchestratorV1 {
         const processedSerialIds = new Set<string>();
         let detailFailureCount = 0;
         let detailLimitReached = false;
-        let stopAfterLatestTen = false;
         let latestTenProven = false;
 
-        while (!stopAfterLatestTen) {
-            const summaries = orderedSummaries();
-            const pending = summaries.filter(
+        while (true) {
+            const chronologicalSummaries = orderedSummaries();
+            const chronologicalPending = chronologicalSummaries.filter(
                 (summary) => !processedSerialIds.has(summary.caseSerialId)
             );
+
+            const selected = selectRelevantCasesV1(candidates, {
+                upstreamComplete: false,
+                lawNameQueries,
+                issueQueries,
+            }).cases;
+            const boundary = selected.length === 10
+                ? selected[selected.length - 1]
+                : null;
+            const boundarySummary: CaseSummary | null = boundary
+                ? {
+                    caseSerialId: boundary.caseSerialId,
+                    caseName: boundary.caseName,
+                    decisionDate: boundary.decisionDate,
+                }
+                : null;
+            if (boundary && boundarySummary) {
+                // tier 우선 탐색으로 먼저 10건을 확보했더라도 최종 결과의 최신순을
+                // 증명하려면 현재 10번째보다 최신인 미처리 목록 후보를 먼저 검증한다.
+                const newerPending = chronologicalPending.filter((summary) =>
+                    compareProviderCases(summary, boundarySummary) < 0);
+                if (newerPending.length === 0) {
+                    const hiddenNewerPossible = streamStates.some((state) =>
+                        !state.exhausted
+                        && (
+                            state.oldestFetchedDate === null
+                            || state.oldestFetchedDate >= boundary.decisionDate
+                        ));
+                    if (hiddenNewerPossible) {
+                        const fetchedAny = await fetchNextPages((state) =>
+                            !state.exhausted
+                            && (
+                                state.oldestFetchedDate === null
+                                || state.oldestFetchedDate >= boundary.decisionDate
+                            ));
+                        if (fetchedAny) continue;
+                        break;
+                    }
+                    latestTenProven = true;
+                    break;
+                }
+            }
+
+            const prioritizedPending = prioritizedSummaries().filter(
+                (summary) => !processedSerialIds.has(summary.caseSerialId)
+            );
+            const pending = boundarySummary
+                ? [
+                    ...chronologicalPending.filter((summary) =>
+                        compareProviderCases(summary, boundarySummary) < 0),
+                    ...prioritizedPending.filter((summary) =>
+                        compareProviderCases(summary, boundarySummary) >= 0),
+                ]
+                : prioritizedPending;
 
             if (pending.length === 0) {
                 if (streamStates.every((state) => state.exhausted)) break;
@@ -1015,44 +1121,6 @@ export class LegalResearchOrchestratorV1 {
                 }
             });
 
-            const selected = selectRelevantCasesV1(candidates, {
-                upstreamComplete: false,
-                lawNameQueries,
-                issueQueries,
-            }).cases;
-            if (selected.length === 10) {
-                const boundary = selected[selected.length - 1];
-                const nextSummary = orderedSummaries().find(
-                    (summary) => !processedSerialIds.has(summary.caseSerialId)
-                );
-                if (
-                    !nextSummary
-                    || compareProviderCases(nextSummary, {
-                        caseSerialId: boundary.caseSerialId,
-                        caseName: boundary.caseName,
-                        decisionDate: boundary.decisionDate,
-                    }) > 0
-                ) {
-                    const hiddenNewerPossible = streamStates.some((state) =>
-                        !state.exhausted
-                        && (
-                            state.oldestFetchedDate === null
-                            || state.oldestFetchedDate >= boundary.decisionDate
-                        ));
-                    if (hiddenNewerPossible) {
-                        const fetchedAny = await fetchNextPages((state) =>
-                            !state.exhausted
-                            && (
-                                state.oldestFetchedDate === null
-                                || state.oldestFetchedDate >= boundary.decisionDate
-                            ));
-                        if (!fetchedAny) stopAfterLatestTen = true;
-                    } else {
-                        latestTenProven = true;
-                        stopAfterLatestTen = true;
-                    }
-                }
-            }
         }
 
         const allFetchedProcessed = orderedSummaries().every(
@@ -1147,34 +1215,40 @@ export class LegalResearchOrchestratorV1 {
                     .map(canonicalArticleLabel)
                     .filter((label): label is string => label !== null)
             );
-            const sourcePool: LawSourceV1[] = [];
+            const sourcePool = new Map<string, LawSourceV1>();
             for (const lawName of query.lawNames) {
-                const resolved = resolvedLaws.find((law) =>
-                    exactLegalToken(law.exactName, lawName));
-                if (!resolved) continue;
-
                 const referencedArticles = new Set(
                     exactReferenceArticles(referenced, lawName)
                 );
                 if (referencedArticles.size === 0) continue;
 
-                sourcePool.push(...resolved.sources.filter((source) =>
-                    referencedArticles.has(source.provision.article)
-                    && (
-                        requestedArticles.size === 0
-                        || requestedArticles.has(source.provision.article)
-                    )));
+                for (const resolved of resolvedLaws.filter((law) =>
+                    exactLegalToken(law.exactName, lawName))) {
+                    for (const source of resolved.sources) {
+                        if (
+                            referencedArticles.has(source.provision.article)
+                            && (
+                                requestedArticles.size === 0
+                                || requestedArticles.has(source.provision.article)
+                            )
+                        ) {
+                            sourcePool.set(source.sourceId, source);
+                        }
+                    }
+                }
             }
-            if (sourcePool.length === 0) continue;
+            if (sourcePool.size === 0) continue;
+
+            const matchedSources = [...sourcePool.values()];
 
             matchedIssueIds = unique([...matchedIssueIds, ...query.issueIds]);
             matchedProvisions = unique([
                 ...matchedProvisions,
-                ...sourcePool.map((source) => `${source.title} ${source.provision.article}`),
+                ...matchedSources.map((source) => `${source.title} ${source.provision.article}`),
             ]);
             controllingDates = unique([
                 ...controllingDates,
-                ...sourcePool.map((source) => source.articleEffectiveFrom ?? source.effectiveFrom),
+                ...matchedSources.map((source) => source.articleEffectiveFrom ?? source.effectiveFrom),
             ]);
         }
 
