@@ -731,17 +731,17 @@ export class SupabaseService {
 
             if (!(await this.upsertBuildingLandLotMapping(pnu, resolvedBuildingId))) allOk = false;
 
-            if (dong.externalRef) {
-                await this.upsertBuildingExternalRefs([
-                    {
+            if (dong.externalRefs.length > 0) {
+                await this.upsertBuildingExternalRefs(
+                    dong.externalRefs.map((ref) => ({
                         buildingId: resolvedBuildingId,
-                        source: dong.externalRef.source,
-                        externalId: dong.externalRef.externalId,
-                        externalName: dong.externalRef.externalName,
-                        pnu: dong.externalRef.pnu ?? pnu,
-                        metadata: dong.externalRef.metadata,
-                    },
-                ]);
+                        source: ref.source,
+                        externalId: ref.externalId,
+                        externalName: ref.externalName,
+                        pnu: ref.pnu ?? pnu,
+                        metadata: ref.metadata,
+                    }))
+                );
             }
 
             if (dong.units.length > 0) {

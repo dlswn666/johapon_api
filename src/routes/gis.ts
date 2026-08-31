@@ -687,12 +687,25 @@ router.post('/add-address', authMiddleware, gisSystemAdminMiddleware, async (req
         const landInfo = await gisService.getFullLandInfo(pnu, address);
 
         // 2. 건물 정보 조회 (소유주 수 추정을 위해 land_lots 저장 전에 조회)
-        let buildingInfo = null;
+        // 재건축 P2 — 표제부 전체를 순회해 동(棟) 배열로 받는다.
+        let buildingDongs: Awaited<ReturnType<typeof gisService.getBuildingDongs>> = [];
+        const hasBuilding = () => buildingDongs.some((d) => d.buildingType !== 'NONE');
+        const totalUnitCount = () => buildingDongs.reduce((sum, d) => sum + d.units.length, 0);
+        // 필지 대표 동 — 응답 계약(building.type/name/floorCount)을 유지하기 위한 파생값.
+        // 세대가 가장 많은 동(복리시설 제외)을 대표로 본다.
+        const primaryDong = () => {
+            const candidates = buildingDongs.filter((d) => !d.isWelfareFacility && d.buildingType !== 'NONE');
+            const pool = candidates.length > 0 ? candidates : buildingDongs;
+            return pool.reduce<(typeof buildingDongs)[number] | null>(
+                (best, d) => (best === null || d.units.length > best.units.length ? d : best),
+                null
+            );
+        };
         try {
-            buildingInfo = await gisService.getBuildingInfo(pnu);
-            if (buildingInfo && buildingInfo.buildingType !== 'NONE') {
+            buildingDongs = await gisService.getBuildingDongs(pnu);
+            if (hasBuilding()) {
                 logger.debug(
-                    `Building info found for PNU: ${pnu} (type: ${buildingInfo.buildingType}, units: ${buildingInfo.units.length})`
+                    `Building info found for PNU: ${pnu} (dongs: ${buildingDongs.length}, units: ${totalUnitCount()})`
                 );
             }
         } catch (buildingError) {
@@ -701,15 +714,18 @@ router.post('/add-address', authMiddleware, gisSystemAdminMiddleware, async (req
 
         // 3. 소유주 수 추정 (토지대장에서 조회된 값이 0인 경우, 건물 정보 기반으로 추정)
         let estimatedOwnerCount = landInfo.ownerCount;
-        if (estimatedOwnerCount === 0 && buildingInfo && buildingInfo.buildingType !== 'NONE') {
-            if (buildingInfo.buildingType === 'DETACHED_HOUSE') {
+        if (estimatedOwnerCount === 0 && hasBuilding()) {
+            if (buildingDongs.some((d) => d.buildingType === 'DETACHED_HOUSE')) {
                 // 단독주택은 소유주 1명으로 추정
                 estimatedOwnerCount = 1;
                 logger.info(`Owner count estimated for DETACHED_HOUSE: 1`);
             } else {
                 // 다세대(VILLA, APARTMENT, COMMERCIAL, MIXED)는 세대 수로 추정
-                estimatedOwnerCount = buildingInfo.units.length || 1;
-                logger.info(`Owner count estimated from units (${buildingInfo.buildingType}): ${estimatedOwnerCount}`);
+                // 동이 여럿이면 전 동을 합산한다(필지 기준 추정이므로).
+                estimatedOwnerCount = totalUnitCount() || 1;
+                logger.info(
+                    `Owner count estimated from units (${primaryDong()?.buildingType}): ${estimatedOwnerCount}`
+                );
             }
         }
 
@@ -733,9 +749,9 @@ router.post('/add-address', authMiddleware, gisSystemAdminMiddleware, async (req
         }
 
         // 5. 건물 정보 저장
-        if (buildingInfo && buildingInfo.buildingType !== 'NONE') {
+        if (hasBuilding()) {
             try {
-                const buildingSaved = await database.saveBuildingWithUnits(pnu, buildingInfo);
+                const buildingSaved = await database.saveBuildingDongs(pnu, buildingDongs);
                 if (!buildingSaved) {
                     logger.warn(`Failed to save building info for PNU: ${pnu}, continuing...`);
                 }
@@ -758,7 +774,7 @@ router.post('/add-address', authMiddleware, gisSystemAdminMiddleware, async (req
         logger.info(
             `Manual address add success: PNU=${pnu}, boundary=${!!landInfo.boundary}, price=${
                 landInfo.officialPrice
-            }, owners=${estimatedOwnerCount}, buildingType=${buildingInfo?.buildingType || 'NONE'}`
+            }, owners=${estimatedOwnerCount}, buildingType=${primaryDong()?.buildingType || 'NONE'}, dongs=${buildingDongs.length}`
         );
 
         return res.json({
@@ -770,12 +786,15 @@ router.post('/add-address', authMiddleware, gisSystemAdminMiddleware, async (req
                 officialPrice: landInfo.officialPrice,
                 ownerCount: estimatedOwnerCount,
                 hasBoundary: !!landInfo.boundary,
-                building: buildingInfo
+                // 응답 계약은 그대로 유지한다(web manualAddAddress 가 소비).
+                // 값은 대표 동에서 파생하고, 동 수만 부가 필드로 더한다.
+                building: hasBuilding()
                     ? {
-                          type: buildingInfo.buildingType,
-                          name: buildingInfo.buildingName,
-                          floorCount: buildingInfo.floorCount,
-                          unitCount: buildingInfo.units.length,
+                          type: primaryDong()?.buildingType ?? 'NONE',
+                          name: primaryDong()?.buildingName ?? null,
+                          floorCount: primaryDong()?.floorCount ?? 0,
+                          unitCount: totalUnitCount(),
+                          dongCount: buildingDongs.length,
                       }
                     : null,
             },

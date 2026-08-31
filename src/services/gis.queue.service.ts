@@ -4,6 +4,7 @@ import { env } from '../config/env';
 import {
     ApartmentHouseOfficialPrice,
     BuildingExternalRefInfo,
+    BuildingDongInfo,
     gisService,
     IndividualHousingOfficialPrice,
 } from './gis.service';
@@ -539,26 +540,28 @@ class GisQueueService {
                 }
 
                 // Step 2.8: 건물 정보 조회 (소유주 수 추정을 위해 land_lots 저장 전에 조회)
-                let buildingInfo: {
-                    buildingType: 'DETACHED_HOUSE' | 'VILLA' | 'APARTMENT' | 'COMMERCIAL' | 'MIXED' | 'NONE';
-                    buildingName: string | null;
-                    mainPurpose: string | null;
-                    floorCount: number;
-                    externalRefs: BuildingExternalRefInfo[];
-                    units: Array<{
-                        dong: string | null;
-                        ho: string | null;
-                        floor: number | null;
-                        area: number | null;
-                        officialPrice?: number | null; // 2026-04 추가: 공동주택공시가격 (S2 integration)
-                    }>;
-                } | null = null;
+                // 재건축 P2 — 표제부 전체를 순회해 동(棟) 배열로 받는다.
+                // 종전 getBuildingInfo 는 titleInfoList[0] 하나만 대표로 삼아
+                // 나머지 동을 버리고 첫 표제부가 관리동이면 단지를 오분류했다.
+                let dongs: BuildingDongInfo[] = [];
+                // 필지 대표 유형 — 분기·로그·저장 게이트에 쓰던 buildingType 을 대체한다.
+                // 세대가 가장 많은 동(복리시설 제외)을 대표로 본다.
+                const primaryDong = (): BuildingDongInfo | null => {
+                    const candidates = dongs.filter((d) => !d.isWelfareFacility && d.buildingType !== 'NONE');
+                    const pool = candidates.length > 0 ? candidates : dongs;
+                    return pool.reduce<BuildingDongInfo | null>(
+                        (best, d) => (best === null || d.units.length > best.units.length ? d : best),
+                        null
+                    );
+                };
+                const totalUnitCount = () => dongs.reduce((sum, d) => sum + d.units.length, 0);
+                const hasBuilding = () => dongs.some((d) => d.buildingType !== 'NONE');
                 try {
-                    buildingInfo = await gisService.getBuildingInfo(pnu);
-                    if (buildingInfo && buildingInfo.buildingType !== 'NONE') {
+                    dongs = await gisService.getBuildingDongs(pnu);
+                    if (hasBuilding()) {
                         buildingObservationCount++;
                         logger.debug(
-                            `[GIS ${jobId}] (${currentIndex}/${job.totalCount}) Building info found: ${pnu} (type: ${buildingInfo.buildingType}, units: ${buildingInfo.units.length})`
+                            `[GIS ${jobId}] (${currentIndex}/${job.totalCount}) Building info found: ${pnu} (dongs: ${dongs.length}, type: ${primaryDong()?.buildingType}, units: ${totalUnitCount()})`
                         );
                     } else {
                         logger.debug(
@@ -575,19 +578,26 @@ class GisQueueService {
                 }
 
                 // Step 2.8b: 주택 공시가격 조회 (건물 유형별 분기)
-                if (buildingInfo && buildingInfo.buildingType !== 'NONE') {
+                if (hasBuilding()) {
                     // 공동주택 (VILLA/APARTMENT/MIXED): 세대별 공동주택공시가격 조회
+                    // 가격은 동·호마다 다르다 — 동이 정해진 뒤 호수만 맞추므로 매칭이 더 정확해진다.
                     if (
-                        ['VILLA', 'APARTMENT', 'MIXED'].includes(buildingInfo.buildingType) &&
-                        buildingInfo.units.length > 0
+                        dongs.some((d) => ['VILLA', 'APARTMENT', 'MIXED'].includes(d.buildingType)) &&
+                        totalUnitCount() > 0
                     ) {
                         try {
                             const apartmentPrices = await gisService.getApartmentHousePrices(pnu);
                             if (apartmentPrices && apartmentPrices.length > 0) {
-                                buildingInfo.externalRefs = [
-                                    ...buildingInfo.externalRefs,
-                                    ...this.buildApartmentPriceExternalRefs(pnu, apartmentPrices),
-                                ];
+                                // APART_HOUSING_PRICE ref 는 aphusCode(단지 코드) 단위 수집 이력이라
+                                // 동별로 쪼개지지 않는다. 주된 동에 얹는다 —
+                                // 가격 '값'은 아래에서 세대별로 따로 들어간다.
+                                const refTarget = primaryDong();
+                                if (refTarget) {
+                                    refTarget.externalRefs = [
+                                        ...refTarget.externalRefs,
+                                        ...this.buildApartmentPriceExternalRefs(pnu, apartmentPrices),
+                                    ];
+                                }
                                 // 동/호 정규화 — 건축물대장(BldRgstHubService)과 VWorld 공시가격 API의
                                 // 표기 차이(지층/지하/패딩/접미사) 흡수
                                 const normalizeDong = (v: string | null | undefined): string | null => {
@@ -608,21 +618,26 @@ class GisQueueService {
                                     t = t.replace(/^0+(\d)/, '$1');
                                     return t.length === 0 ? null : t;
                                 };
-                                buildingInfo.units = buildingInfo.units.map((unit) => {
-                                    const uDong = normalizeDong(unit.dong);
-                                    const uHo = normalizeHo(unit.ho);
-                                    const match = apartmentPrices.find((p) => {
-                                        const pDong = normalizeDong(p.dong);
-                                        const pHo = normalizeHo(p.ho);
-                                        return pDong === uDong && pHo === uHo;
+                                for (const dong of dongs) {
+                                    dong.units = dong.units.map((unit) => {
+                                        // 세대의 동 표기가 비어 있으면 소속 동의 이름으로 대신 맞춘다
+                                        // (전유부가 동 이름을 안 실어 주는 대장이 있다)
+                                        const uDong = normalizeDong(unit.dong ?? dong.dongName);
+                                        const uHo = normalizeHo(unit.ho);
+                                        const match = apartmentPrices.find((p) => {
+                                            const pDong = normalizeDong(p.dong);
+                                            const pHo = normalizeHo(p.ho);
+                                            return pDong === uDong && pHo === uHo;
+                                        });
+                                        return match ? { ...unit, officialPrice: match.officialPrice } : unit;
                                     });
-                                    return match ? { ...unit, officialPrice: match.officialPrice } : unit;
-                                });
-                                const matchedCount = buildingInfo.units.filter(
-                                    (u) => u.officialPrice != null
-                                ).length;
+                                }
+                                const matchedCount = dongs.reduce(
+                                    (sum, d) => sum + d.units.filter((u) => u.officialPrice != null).length,
+                                    0
+                                );
                                 logger.info(
-                                    `[GIS ${jobId}] (${currentIndex}/${job.totalCount}) Apartment prices matched for ${pnu}: ${matchedCount}/${buildingInfo.units.length} units`
+                                    `[GIS ${jobId}] (${currentIndex}/${job.totalCount}) Apartment prices matched for ${pnu}: ${matchedCount}/${totalUnitCount()} units`
                                 );
                             }
                         } catch (aptPriceError: any) {
@@ -635,19 +650,25 @@ class GisQueueService {
                     }
 
                     // 단독주택 (DETACHED_HOUSE): 개별주택공시가격 조회 → building_units에 저장
-                    if (buildingInfo.buildingType === 'DETACHED_HOUSE') {
+                    if (dongs.some((d) => d.buildingType === 'DETACHED_HOUSE')) {
                         try {
                             const housingPrice = await gisService.getIndividualHousingPrice(pnu);
                             if (housingPrice != null && housingPrice.officialPrice > 0) {
-                                buildingInfo.externalRefs = [
-                                    ...buildingInfo.externalRefs,
-                                    ...this.buildIndividualHousingExternalRefs(pnu, housingPrice),
-                                ];
+                                // 개별주택공시가격도 필지 단위 수집 이력이라 주된 동에 얹는다
+                                const housingRefTarget = primaryDong();
+                                if (housingRefTarget) {
+                                    housingRefTarget.externalRefs = [
+                                        ...housingRefTarget.externalRefs,
+                                        ...this.buildIndividualHousingExternalRefs(pnu, housingPrice),
+                                    ];
+                                }
                                 // 단독주택은 보통 unit이 1개. 전체 unit에 동일 가격 적용.
-                                buildingInfo.units = buildingInfo.units.map((unit) => ({
-                                    ...unit,
-                                    officialPrice: housingPrice.officialPrice,
-                                }));
+                                for (const dong of dongs) {
+                                    dong.units = dong.units.map((unit) => ({
+                                        ...unit,
+                                        officialPrice: housingPrice.officialPrice,
+                                    }));
+                                }
                                 logger.info(
                                     `[GIS ${jobId}] (${currentIndex}/${job.totalCount}) Individual housing price for ${pnu}: ${housingPrice.officialPrice.toLocaleString()}원`
                                 );
@@ -665,8 +686,8 @@ class GisQueueService {
                 // Step 2.9: 소유주 수 계산 (building_units 기준으로 통일)
                 // 건물이 있으면 units.length를 기준으로, 없으면 토지대장 값 사용
                 let estimatedOwnerCount = ownerCount;
-                if (buildingInfo && buildingInfo.buildingType !== 'NONE') {
-                    if (buildingInfo.buildingType === 'DETACHED_HOUSE') {
+                if (hasBuilding()) {
+                    if (dongs.some((d) => d.buildingType === 'DETACHED_HOUSE')) {
                         // 단독주택은 소유주 1명으로 계산
                         estimatedOwnerCount = 1;
                         logger.info(
@@ -674,9 +695,10 @@ class GisQueueService {
                         );
                     } else {
                         // 다세대(VILLA, APARTMENT, COMMERCIAL, MIXED)는 세대 수 = building_units 수
-                        estimatedOwnerCount = buildingInfo.units.length || 1;
+                        // 동이 여럿이면 전 동의 세대를 합산한다(필지 기준 소유주 수 추정이므로).
+                        estimatedOwnerCount = totalUnitCount() || 1;
                         logger.info(
-                            `[GIS ${jobId}] (${currentIndex}/${job.totalCount}) Owner count (building_units basis, ${buildingInfo.buildingType}): ${estimatedOwnerCount}`
+                            `[GIS ${jobId}] (${currentIndex}/${job.totalCount}) Owner count (building_units basis, ${primaryDong()?.buildingType}): ${estimatedOwnerCount}`
                         );
                     }
                 }
@@ -725,13 +747,13 @@ class GisQueueService {
                 }
 
                 // Step 3.5: 건물 정보 저장 (buildings, building_units)
-                if (buildingInfo && buildingInfo.buildingType !== 'NONE') {
+                if (hasBuilding()) {
                     try {
-                        const buildingSaved = await database.saveBuildingWithUnits(pnu, buildingInfo);
+                        const buildingSaved = await database.saveBuildingDongs(pnu, dongs);
                         if (buildingSaved) {
                             buildingSaveSuccessCount++;
                             logger.debug(
-                                `[GIS ${jobId}] (${currentIndex}/${job.totalCount}) Building info saved: ${pnu} (type: ${buildingInfo.buildingType}, units: ${buildingInfo.units.length})`
+                                `[GIS ${jobId}] (${currentIndex}/${job.totalCount}) Building info saved: ${pnu} (dongs: ${dongs.length}, units: ${totalUnitCount()})`
                             );
                         } else {
                             buildingSaveFailedCount++;

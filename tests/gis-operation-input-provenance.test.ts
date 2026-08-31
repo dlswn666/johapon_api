@@ -26,7 +26,9 @@ test('GIS worker는 PNU 해소 직후 mutation 전에 operation input provenance
     const appendInput = source.indexOf('await appendBuildingOperationInputPnuOrThrow({');
     const firstObservation = source.indexOf('getParcelBoundaryFromCoordinates(x, y)');
     const firstLandMutation = source.indexOf('const landLotSaved = await database.upsertLandLot({');
-    const firstBuildingMutation = source.indexOf('database.saveBuildingWithUnits(pnu, buildingInfo)');
+    // 재건축 P2 에서 동 단위 저장으로 이름이 바뀌었다(saveBuildingWithUnits → saveBuildingDongs).
+    // 이 테스트가 지키는 계약은 이름이 아니라 **순서**다 — provenance 기록 뒤에 mutation.
+    const firstBuildingMutation = source.indexOf('database.saveBuildingDongs(pnu, dongs)');
 
     assert.ok(pnuResolved >= 0);
     assert.ok(appendInput > pnuResolved);

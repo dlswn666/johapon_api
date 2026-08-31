@@ -51,7 +51,13 @@ export interface BuildingDongInfo {
     mainPurpose: string | null;
     floorCount: number;
     isWelfareFacility: boolean;
-    externalRef: BuildingExternalRefInfo | null;
+    /**
+     * 이 동에 귀속되는 외부 참조.
+     * 표제부 ref 는 동 자신의 것이고, 공동주택 공시가격 ref(APART_HOUSING_PRICE)는
+     * aphusCode(단지 코드) 단위라 주된 동에 얹는다 — 가격 '값'은 세대별로
+     * building_units.official_price 에 따로 들어간다.
+     */
+    externalRefs: BuildingExternalRefInfo[];
     units: BuildingUnitInput[];
 }
 
@@ -1590,7 +1596,7 @@ class GisService {
                 mainPurpose,
                 floorCount: Number(title.grndFlrCnt) || 0,
                 isWelfareFacility: this.isWelfareFacility(mainPurpose),
-                externalRef: this.buildExternalRef(title, pnu),
+                externalRefs: (() => { const r = this.buildExternalRef(title, pnu); return r ? [r] : []; })(),
                 units: [],
             };
         });
@@ -1639,7 +1645,7 @@ class GisService {
                     mainPurpose: null,
                     floorCount: 0,
                     isWelfareFacility: false,
-                    externalRef: null,
+                    externalRefs: [],
                     units: [],
                 };
                 dongs.push(unassigned);
