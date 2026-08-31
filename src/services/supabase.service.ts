@@ -478,23 +478,22 @@ export class SupabaseService {
                     return null;
                 }
 
-                buildingId = newBuilding.id;
+                const createdBuildingId: string | null = newBuilding.id;
+                if (!createdBuildingId) {
+                    logger.error(`buildings insert returned no id (PNU: ${data.pnu})`);
+                    return null;
+                }
+                buildingId = createdBuildingId;
 
                 // building_land_lots에 매핑 생성
-                const { error: mappingInsertError } = await this.client
-                    .from('building_land_lots')
-                    .upsert(
-                        {
-                            pnu: data.pnu,
-                            building_id: buildingId,
-                            updated_at: new Date().toISOString(),
-                        },
-                        { onConflict: 'pnu' }
-                    );
+                // onConflict 를 쓰지 않는다 — 재건축 P2 가 UNIQUE(pnu) 를
+                // UNIQUE(pnu, building_id) 로 교체하므로 ON CONFLICT (pnu) 는
+                // 42P10 으로 하드 실패한다.
+                const mappingOk = await this.upsertBuildingLandLotMapping(data.pnu, createdBuildingId);
 
-                if (mappingInsertError) {
-                    logger.error(`building_land_lots insert failed (PNU: ${data.pnu})`, mappingInsertError);
+                if (!mappingOk) {
                     // building은 생성되었으므로 계속 진행
+                    logger.error(`building_land_lots mapping failed (PNU: ${data.pnu})`);
                 }
 
                 logger.debug(
@@ -506,6 +505,72 @@ export class SupabaseService {
         } catch (error) {
             logger.error(`upsertBuilding error (PNU: ${data.pnu})`, error);
             return null;
+        }
+    }
+
+    /**
+     * PNU ↔ building 매핑 보장 (재건축 P2 — 동 단위 재정의 대응)
+     *
+     * 재건축 P2 는 building_land_lots 의 UNIQUE(pnu) 를 UNIQUE(pnu, building_id)
+     * 로 교체해 한 필지에 여러 동을 허용한다. 그래서 여기서는 onConflict 를
+     * 쓰지 않고 조회 → 분기 → 쓰기로 구현한다. ON CONFLICT (pnu) 는 제약이
+     * 바뀌는 순간 42P10 으로 하드 실패해 GIS 수집 전체를 멈춘다.
+     *
+     * @returns 매핑이 보장되면 true
+     */
+    async upsertBuildingLandLotMapping(
+        pnu: string,
+        buildingId: string,
+        note?: string | null
+    ): Promise<boolean> {
+        try {
+            const { data: existing, error: lookupError } = await this.client
+                .from('building_land_lots')
+                .select('id')
+                .eq('pnu', pnu)
+                .eq('building_id', buildingId)
+                .maybeSingle();
+
+            if (lookupError) {
+                logger.error(`building_land_lots lookup failed (PNU: ${pnu})`, lookupError);
+                return false;
+            }
+
+            if (existing?.id) {
+                const { error: updateError } = await this.client
+                    .from('building_land_lots')
+                    .update({ updated_at: new Date().toISOString() })
+                    .eq('id', existing.id);
+
+                if (updateError) {
+                    logger.error(`building_land_lots update failed (PNU: ${pnu})`, updateError);
+                    return false;
+                }
+                return true;
+            }
+
+            const payload: Record<string, unknown> = {
+                pnu,
+                building_id: buildingId,
+                updated_at: new Date().toISOString(),
+            };
+            if (note) {
+                payload.note = note;
+            }
+
+            const { error: insertError } = await this.client
+                .from('building_land_lots')
+                .insert(payload);
+
+            if (insertError) {
+                logger.error(`building_land_lots insert failed (PNU: ${pnu})`, insertError);
+                return false;
+            }
+
+            return true;
+        } catch (error) {
+            logger.error(`upsertBuildingLandLotMapping error (PNU: ${pnu})`, error);
+            return false;
         }
     }
 
