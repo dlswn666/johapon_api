@@ -593,15 +593,19 @@ export class LegalResearchOrchestratorV1 {
 
         const effectiveDate = normalizeDate(summary.effectiveDate);
         if (!effectiveDate) throw new LegalOpenApiError('SCHEMA_DRIFT');
+        // 법제처의 현행법령 상세(target=eflaw) 응답은 검색 목록의 MST를
+        // 본문 기본정보에 되돌려주지 않는 경우가 있다. 검색 결과와 상세에
+        // 공통으로 존재하는 법령ID로 조회·검증하고, MST는 검색 결과의 공식
+        // 버전 링크 식별자로 보존한다.
         const detail = await this.provider.getCurrentLawDetail({
-            mst: summary.mst,
-            effectiveDate: summary.effectiveDate!,
+            lawId: summary.lawId,
         }, signal);
         if (
             !exactLegalToken(detail.name, anchor.exactName)
             || !exactLegalToken(detail.lawType, anchor.lawType)
             || (detail.lawId !== undefined && detail.lawId !== summary.lawId)
             || (detail.mst !== undefined && detail.mst !== summary.mst)
+            || normalizeDate(detail.effectiveDate) !== effectiveDate
         ) {
             throw new LegalOpenApiError('SOURCE_MISMATCH');
         }

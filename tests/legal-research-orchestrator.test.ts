@@ -9,6 +9,7 @@ import type {
     CaseDetail,
     CaseSummary,
     CurrentLawDetail,
+    CurrentLawDetailInput,
     CurrentLawSummary,
     CurrentOrdinanceDetail,
     CurrentOrdinanceSummary,
@@ -155,6 +156,7 @@ interface FakeProviderOptions {
 class FakeProvider implements LegalResearchProviderV1 {
     readonly caseSearchPages: number[] = [];
     readonly caseDetailIds: string[] = [];
+    readonly currentLawDetailRequests: CurrentLawDetailInput[] = [];
     private readonly pageSize: number;
     private readonly detailFactory: (summary: CaseSummary) => CaseDetail;
     private readonly failingDetailIds: Set<string>;
@@ -188,7 +190,8 @@ class FakeProvider implements LegalResearchProviderV1 {
         return { totalCount: 1, page: 1, items: [this.currentLawSummary] };
     }
 
-    async getCurrentLawDetail(): Promise<CurrentLawDetail> {
+    async getCurrentLawDetail(input: CurrentLawDetailInput): Promise<CurrentLawDetail> {
+        this.currentLawDetailRequests.push(input);
         return this.currentLawDetail;
     }
 
@@ -411,6 +414,37 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.deepEqual(
             packet.cases.map((item) => item.decisionDate),
             [...packet.cases.map((item) => item.decisionDate)].sort().reverse()
+        );
+    });
+
+    it('현행 상세는 응답에 공통으로 존재하는 법령ID로 조회하고 MST는 출처에 보존한다', async () => {
+        const provider = new FakeProvider([makeCase(212, '2026-08-20')], {
+            currentLawDetail: {
+                ...lawDetail,
+                mst: undefined,
+            },
+        });
+
+        const packet = await buildOrchestratorWithProvider(provider).research(input);
+
+        assert.deepEqual(provider.currentLawDetailRequests, [{ lawId: lawSummary.lawId }]);
+        assert.equal(packet.laws[0].lawId, lawSummary.lawId);
+        assert.equal(packet.laws[0].mst, lawSummary.mst);
+    });
+
+    it('법령ID 조회 결과의 시행일이 검색 버전과 다르면 SOURCE_MISMATCH로 닫는다', async () => {
+        const provider = new FakeProvider([makeCase(213, '2026-08-20')], {
+            currentLawDetail: {
+                ...lawDetail,
+                mst: undefined,
+                effectiveDate: '20250101',
+            },
+        });
+
+        await assert.rejects(
+            () => buildOrchestratorWithProvider(provider).research(input),
+            (error: unknown) => error instanceof LegalOpenApiError
+                && error.code === 'SOURCE_MISMATCH'
         );
     });
 

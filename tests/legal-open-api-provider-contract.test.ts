@@ -117,6 +117,20 @@ test('현행 법령 본문과 조항호목은 target을 각각 eflaw와 eflawjos
     assert.equal(calls[1].request.params.MOK, '가');
 });
 
+test('현행 법령 상세 응답이 MST를 생략해도 법령ID와 시행일을 보존한다', async () => {
+    const detailWithoutMst = `<법령><기본정보><법령ID>222</법령ID>
+      <법령명_한글>도시 및 주거환경정비법</법령명_한글><시행일자>20260801</시행일자>
+    </기본정보><조문><조문단위><조문번호>1</조문번호><조문내용>목적</조문내용></조문단위></조문></법령>`;
+    const httpGet: LegalOpenApiHttpGet = async () => ({ data: detailWithoutMst });
+    const client = new LawOpenApiClient({ oc: SECRET_OC, httpGet });
+
+    const result = await client.getCurrentLawDetail({ lawId: '222' });
+
+    assert.equal(result.lawId, '222');
+    assert.equal(result.mst, undefined);
+    assert.equal(result.effectiveDate, '20260801');
+});
+
 test('현행 자치법규 provider는 ordin/nw=1과 정확한 org/sborg를 고정한다', async () => {
     const { client, calls } = createFixtureClient();
     const result = await client.searchCurrentOrdinances({

@@ -84,13 +84,47 @@ describe('법률 MCP token provisioning', () => {
             token,
             (async (_input: string | URL | Request, init?: RequestInit) => {
                 captured = init;
-                return new Response('', { status: 200 });
+                return Response.json({
+                    jsonrpc: '2.0',
+                    id: 1,
+                    result: {
+                        tools: [
+                            { name: 'research_current_urban_renewal_law_v1' },
+                            { name: 'render_legal_answer_v1' },
+                        ],
+                    },
+                });
             }) as typeof fetch
         );
 
         assert.equal(status, 200);
         assert.equal(captured?.redirect, 'error');
-        assert.equal((captured?.headers as Record<string, string>).Authorization, `Bearer ${token}`);
+        const headers = captured?.headers as Record<string, string>;
+        assert.equal(headers.Authorization, `Bearer ${token}`);
+        assert.equal(headers['MCP-Protocol-Version'], '2026-07-28');
+        assert.equal(headers['MCP-Method'], 'tools/list');
         assert.equal(String(captured?.body).includes(token), false);
+        const body = JSON.parse(String(captured?.body));
+        assert.equal(body.method, 'tools/list');
+        assert.equal(
+            body.params._meta['io.modelcontextprotocol/protocolVersion'],
+            '2026-07-28'
+        );
+    });
+
+    it('smoke는 HTTP 200이어도 예상한 두 법률 도구가 아니면 실패한다', async () => {
+        const token = `tlmcp_v1_${'c'.repeat(43)}`;
+        await assert.rejects(
+            probeLegalMcpBearerV1(
+                'https://api.tonghari.kr/mcp',
+                token,
+                (async () => Response.json({
+                    jsonrpc: '2.0',
+                    id: 1,
+                    result: { tools: [{ name: 'unexpected_tool' }] },
+                })) as typeof fetch
+            ),
+            /법률 도구 구성이 예상과 다릅니다/
+        );
     });
 });

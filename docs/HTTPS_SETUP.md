@@ -73,7 +73,7 @@ api.tonghari.kr {
     @legal_mcp path /mcp
     handle @legal_mcp {
         reverse_proxy 127.0.0.1:3100 {
-            header_up -X-Tonghari-MCP-Proxy-Token
+            header_up X-Forwarded-Proto https
             header_up X-Tonghari-MCP-Proxy-Token {$LEGAL_MCP_PROXY_TOKEN}
         }
     }
@@ -108,10 +108,10 @@ sudo docker logs -f caddy
 # Ctrl+C로 빠져나옴
 ```
 
-`header_up -<field>`는 외부 동명 header 삭제, prefix 없는 `header_up <field> <value>`는
-upstream 값 덮어쓰기다. `{$LEGAL_MCP_PROXY_TOKEN}`은 Caddyfile parse 시 owner-only
-환경변수로 치환된다. Caddy는 외부의 `X-Forwarded-*` 값을 기본적으로 무시하고
-TLS 연결에 따라 `X-Forwarded-Proto`를 설정한다. 공식 근거:
+prefix 없는 `header_up <field> <value>`는 외부 동명 header를 upstream 값으로
+덮어쓴다. 같은 필드에 삭제와 설정 연산을 함께 두지 않는다.
+`{$LEGAL_MCP_PROXY_TOKEN}`은 Caddyfile parse 시 owner-only 환경변수로 치환되며,
+`/mcp`에서는 `X-Forwarded-Proto`도 `https`로 명시한다. 공식 근거:
 [Caddy reverse_proxy headers](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers),
 [Caddyfile environment variables](https://caddyserver.com/docs/caddyfile/concepts#environment-variables),
 [Caddy handle](https://caddyserver.com/docs/caddyfile/directives/handle).

@@ -84,8 +84,8 @@ access token 발급·철회를 제공하지 않는다. 불특정 다수 사용�
 
 ## Caddy TLS·proxy 증명
 
-Caddy는 외부 요청의 동명 proxy header를 삭제한 뒤 Caddy process만 읽는 raw
-secret으로 덮어쓴다. API에는 그 raw 값의 digest인
+Caddy는 외부 요청의 동명 proxy header와 `X-Forwarded-Proto`를 Caddy process만
+읽는 raw secret 및 고정 `https` 값으로 덮어쓴다. API에는 그 raw 값의 digest인
 `LEGAL_MCP_PROXY_TOKEN_SHA256`만 설정한다. 다음은 `/mcp` route의 최소 예시다.
 
 ```caddyfile
@@ -93,7 +93,7 @@ api.tonghari.kr {
     @legal_mcp path /mcp
     handle @legal_mcp {
         reverse_proxy 127.0.0.1:3100 {
-            header_up -X-Tonghari-MCP-Proxy-Token
+            header_up X-Forwarded-Proto https
             header_up X-Tonghari-MCP-Proxy-Token {$LEGAL_MCP_PROXY_TOKEN}
         }
     }
@@ -104,10 +104,10 @@ api.tonghari.kr {
 }
 ```
 
-Caddy 공식 문서에서 `header_up -<field>`는 upstream 전달 전 삭제이고,
-prefix 없는 `header_up <field> <value>`는 기존 값을 덮어쓴다. `{$ENV}`는 Caddyfile
-parse 시 환경변수 치환이다. Caddy는 기본적으로 외부가 보낸 `X-Forwarded-*` 값을
-신뢰하지 않고 `X-Forwarded-Proto`를 직접 설정한다. matcher가 있는 첫 `handle`과
+Caddy 공식 문서에서 prefix 없는 `header_up <field> <value>`는 외부의 기존 값을
+덮어쓴다. 삭제 연산을 같은 필드의 설정 연산과 함께 두지 않는다. `{$ENV}`는 Caddyfile
+parse 시 환경변수 치환이다. `/mcp`에서는 `X-Forwarded-Proto`도 `https`로 명시한다.
+matcher가 있는 첫 `handle`과
 matcher 없는 fallback `handle`은 mutually exclusive이므로 일반 API routing은
 유지하면서 `/mcp`에만 proxy 증명을 주입한다. 근거:
 [reverse_proxy headers](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers),
@@ -302,7 +302,7 @@ redirect = "error"
    - HTTP URL에는 bearer를 보내지 않는다. Caddy의 HTTP 요청은 HTTPS로만 전환되고
      평문 HTTP upstream 경로에서 MCP가 처리되지 않는지 확인한다.
    - HTTPS 인증서 hostname/chain이 유효하고 redirect 없이 최종 `/mcp`에 도달한다.
-7. 각 발급 client에서 raw token을 숨김 입력해 initialize smoke를 실행한다.
+7. 각 발급 client에서 raw token을 숨김 입력해 modern `tools/list` smoke를 실행한다.
 
    ```bash
    npm run legal:mcp:smoke -- --endpoint https://api.tonghari.kr/mcp
