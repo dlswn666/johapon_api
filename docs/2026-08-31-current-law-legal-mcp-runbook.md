@@ -9,31 +9,207 @@
 - prompt: `review_current_urban_renewal_law_v1`
 - 정책 resource: `tonghari-law://policy/current-answer/v1`
 - health: `GET /health` 또는 `GET /health/detailed`의
-  `features.legalMcpConfigurationValid`
+  `features.legalMcpConfigurationValid`, `features.legalMcpAuthMode`,
+  `features.legalMcpRegisteredClientCount`, `features.legalMcpRegisteredTokenCount`
 
 MCP 경로는 기존 Express 전역 JSON parser보다 먼저 mount되며, 전용 요청
 크기는 256kb로 제한된다. 필수 환경변수가 하나라도 없으면 MCP 경로만 503
 `LEGAL_MCP_NOT_CONFIGURED`로 닫히고 기존 API 기능은 계속 동작한다.
-현재 전송 표면은 서버 간 MCP client 전용이다. 브라우저 CORS/preflight는 제공하지
-않으므로 웹 화면에서 `/mcp`를 직접 호출하지 않는다.
+현재 전송 표면은 신뢰된 외부 MCP client용 정적 bearer 방식이다. 공개 endpoint는
+반드시 TLS를 종료하는 Caddy를 통해서만 노출하고 API의 3100 포트는 인터넷에서
+직접 접근할 수 없게 닫는다. API는 Caddy가 주입한 proxy 증명과
+`X-Forwarded-Proto: https`를 bearer보다 먼저 검사한다. 브라우저 CORS/preflight와
+토큰 입력 화면은 제공하지 않으므로 웹 화면에서 `/mcp`를 직접 호출하지 않는다.
 
 ## 필수 환경변수
 
 | 변수 | 의미 | 저장 규칙 |
 |---|---|---|
 | `LAW_API_OC` | 고정 IP가 등록된 국가법령정보 공동활용 인증값 | secret, 로그 금지 |
-| `LEGAL_MCP_TOKEN_SHA256` | MCP bearer 원문의 SHA-256 hex | digest만 서버 저장 |
+| `LEGAL_MCP_TOKEN_REGISTRY_JSON` | 권장 다중 client registry. `{"version":1,"clients":[{"clientId":"<lowercase-slug>","tokenSha256":"<sha256-hex>"}]}` | 1~32 client, raw bearer 금지 |
+| `LEGAL_MCP_TOKEN_SHA256` | 단일 client용 legacy bearer digest | registry와 동시 설정 금지; 신규 운영에는 사용하지 않음 |
+| `LEGAL_MCP_PROXY_TOKEN_SHA256` | Caddy 전용 raw proxy secret의 SHA-256 hex | API에는 digest만 저장 |
 | `LEGAL_MCP_PACKET_SIGNING_KEY` | 조사 패킷 HMAC용 256-bit 이상 hex | bearer와 별도 생성 |
 | `LEGAL_MCP_ALLOWED_HOSTS` | 요청 Host 허용 hostname | scheme·port·path·wildcard 금지 |
 | `LEGAL_MCP_ALLOWED_ORIGINS` | Origin header를 보내는 서버 간 client의 허용 hostname(선택) | 브라우저 CORS 허용값이 아님; 일반 서버 간 client는 비워 둠 |
+| `LEGAL_MCP_RESEARCH_REQUESTS_PER_MINUTE` | bearer 하나의 research 분당 제한 | 기본 6 |
+| `LEGAL_MCP_RESEARCH_GLOBAL_REQUESTS_PER_MINUTE` | 모든 bearer를 합산한 프로세스 분당 제한 | 기본 12 |
 | `LEGAL_MCP_RESEARCH_DEADLINE_MS` | admission 대기를 포함한 1회 전체 조사 마감 | 기본 45000ms |
 | `LEGAL_MCP_RESEARCH_MAX_CONCURRENCY` | 프로세스 전역 동시 조사 상한 | 기본 2 |
 | `LEGAL_MCP_RESEARCH_MAX_QUEUE` | 프로세스 전역 조사 대기 상한 | 기본 4 |
 
-운영 bearer는 충분히 긴 난수로 생성하고 원문은 호출 측 secret store에만 둔다.
-서버에는 그 원문의 SHA-256 digest만 저장한다. packet signing key도 별도 난수로
-생성하며 bearer와 재사용하지 않는다. `.env`와 원문 bearer는 저장소에 커밋하지
-않는다.
+`LEGAL_MCP_TOKEN_REGISTRY_JSON`과 `LEGAL_MCP_TOKEN_SHA256`을 둘 다 설정하면
+잘못된 구성으로 판정해 `/mcp`를 503으로 닫는다. legacy 단일 digest는 기존 client
+호환용일 뿐이며, 외부 client가 둘 이상이면 registry만 사용한다. 운영 bearer 원문은
+발급 시 한 번만 전달하고 호출 측 OS·client secret store에만 둔다. 서버에는 그 원문의
+SHA-256 digest만 저장한다. proxy raw secret은 Caddy owner-only secret에만, 그
+digest는 API에만 둔다. client bearer, proxy secret, packet signing key를 서로
+재사용하지 않고 `.env`나 저장소에 원문을 커밋하지 않는다.
+
+## Bearer 발급·폐기·회전
+
+client ID는 client와 발급 세대를 식별하는 lowercase 영문·숫자·단일 하이픈 조합
+1~64자로 정한다. 사람 이름이나 이메일 같은 개인정보는 넣지 않는다.
+
+```bash
+# 신규 client용 256-bit bearer와 registry entry 생성
+npm run legal:mcp:token -- client-generate --client-id codex-mac-202609
+
+# 기존 bearer를 숨김 입력해 digest와 registry entry만 재생성
+npm run legal:mcp:token -- client-digest --client-id codex-mac-202609
+
+# Caddy와 API 사이의 별도 proxy 증명 생성
+npm run legal:mcp:token -- proxy-generate
+```
+
+`client-generate`는 raw bearer를 딱 한 번 stdout에 표시한다. 전체 출력을 티켓·메신저·
+CI log에 붙이지 말고, raw bearer만 승인된 보안 전달 수단으로 client 소유자에게
+전달한 뒤 client secret store에 저장한다. 서버 설정에는 `registryEntry`의
+`clientId`와 `tokenSha256`만 합쳐 `LEGAL_MCP_TOKEN_REGISTRY_JSON`을 만든다.
+`client-digest`와 smoke 명령은 TTY에서 raw bearer를 표시하지 않고 입력받는다.
+
+- 폐기: 해당 registry entry를 제거하고 새 runtime 설정으로 컨테이너를 교체한다.
+- 무중단 회전: 새 세대 ID(예: 월 suffix)로 새 entry를 추가해 client 전환과 smoke를
+  마친 뒤 구 entry를 제거한다. 동일 `clientId` 또는 동일 digest의 중복 entry는 금지된다.
+- 긴급 회전: 의심 token entry를 즉시 제거한다. token digest가 packet proof 주체에
+  포함되므로 제거·회전한 token의 기존 proof를 재사용하지 않는다.
+- registry나 token 원문을 health, 응답, access log, 오류 추적 시스템에 기록하지 않는다.
+
+이 방식은 신뢰된 service client에 사전 공유한 **정적 bearer 인증**이며 OAuth가
+아니다. 사용자 로그인, 동적 client 등록, consent, scope, refresh token, 짧은 수명의
+access token 발급·철회를 제공하지 않는다. 불특정 다수 사용자나 제3자 앱에 개방할
+때는 MCP Authorization 규격에 맞춘 OAuth 2.1 resource/authorization server로
+전환한다. 참고:
+[MCP Authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization).
+
+## Caddy TLS·proxy 증명
+
+Caddy는 외부 요청의 동명 proxy header를 삭제한 뒤 Caddy process만 읽는 raw
+secret으로 덮어쓴다. API에는 그 raw 값의 digest인
+`LEGAL_MCP_PROXY_TOKEN_SHA256`만 설정한다. 다음은 `/mcp` route의 최소 예시다.
+
+```caddyfile
+api.tonghari.kr {
+    @legal_mcp path /mcp
+    handle @legal_mcp {
+        reverse_proxy 127.0.0.1:3100 {
+            header_up -X-Tonghari-MCP-Proxy-Token
+            header_up X-Tonghari-MCP-Proxy-Token {$LEGAL_MCP_PROXY_TOKEN}
+        }
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3100
+    }
+}
+```
+
+Caddy 공식 문서에서 `header_up -<field>`는 upstream 전달 전 삭제이고,
+prefix 없는 `header_up <field> <value>`는 기존 값을 덮어쓴다. `{$ENV}`는 Caddyfile
+parse 시 환경변수 치환이다. Caddy는 기본적으로 외부가 보낸 `X-Forwarded-*` 값을
+신뢰하지 않고 `X-Forwarded-Proto`를 직접 설정한다. matcher가 있는 첫 `handle`과
+matcher 없는 fallback `handle`은 mutually exclusive이므로 일반 API routing은
+유지하면서 `/mcp`에만 proxy 증명을 주입한다. 근거:
+[reverse_proxy headers](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers),
+[Caddyfile 환경변수](https://caddyserver.com/docs/caddyfile/concepts#environment-variables),
+[handle](https://caddyserver.com/docs/caddyfile/directives/handle).
+
+`LEGAL_MCP_PROXY_TOKEN` 원문은 Caddy service owner만 읽는 secret/credential에 두고
+API container 환경, client, 저장소, 배포 로그로 넘기지 않는다. 값이 비어 있으면
+Caddy reload를 진행하지 않는다. 3100은 loopback에만 bind하거나 보안그룹·host
+firewall에서 외부 ingress를 차단한다. Docker `0.0.0.0:3100:3100` 공개와
+보안그룹 3100 허용은 운영 금지다. Host allowlist나 proxy header 검증은 TLS와
+network-level 포트 차단을 대체하지 않는다.
+
+## 외부 MCP client의 Bearer 입력
+
+모든 client는 `Authorization: Bearer <raw-token>` HTTP header로만 전송한다. token을
+MCP tool argument, JSON body, URL query/fragment, cookie, 브라우저 form,
+`localStorage`에 넣지 않는다. 공유 설정 파일에는 secret reference만 두고 raw 값은
+각 client의 secret store에 입력한다.
+
+### Codex / ChatGPT desktop
+
+raw bearer는 `TONGHARI_LEGAL_MCP_TOKEN`이라는 client-side 환경변수/secret store에
+주입하고 `~/.codex/config.toml`에는 이름만 기록한다.
+
+```toml
+[mcp_servers.tonghari_legal]
+url = "https://api.tonghari.kr/mcp"
+bearer_token_env_var = "TONGHARI_LEGAL_MCP_TOKEN"
+enabled = true
+required = true
+enabled_tools = ["research_current_urban_renewal_law_v1", "render_legal_answer_v1"]
+```
+
+OpenAI 공식 설정의 `bearer_token_env_var`는 지정한 환경변수 값을
+`Authorization` header로 보낸다. 같은 Codex host의 ChatGPT desktop, Codex CLI,
+IDE extension은 MCP 설정을 공유한다. 반면 **ChatGPT web은 로컬 Codex 설정 파일을
+읽지 않으며**, web에서 쓰려면 별도 plugin이 제공하는 remote MCP 도구 경로가
+필요하다. 근거: [OpenAI Codex MCP 설정](https://developers.openai.com/codex/mcp).
+
+### Claude Code
+
+`.mcp.json`에는 raw 값을 넣지 않고 client 환경변수를 참조한다.
+
+```json
+{
+  "mcpServers": {
+    "tonghari-legal": {
+      "type": "http",
+      "url": "https://api.tonghari.kr/mcp",
+      "headers": {
+        "Authorization": "Bearer ${TONGHARI_LEGAL_MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+환경변수 header 확장은 Claude Code 공식 MCP 설정 형식이다. project scope 설정을
+공유하더라도 raw 값은 각 사용자가 따로 주입한다. 근거:
+[Claude Code MCP 환경변수 header](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcpjson).
+
+### VS Code
+
+VS Code의 `promptString` + `password: true` 입력을 사용하면 최초 시작 시 token을
+가린 입력창으로 받아 secure credential store에 보관할 수 있다.
+
+```json
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "tonghari-legal-token",
+      "description": "통하리 법률 MCP Bearer token",
+      "password": true
+    }
+  ],
+  "servers": {
+    "tonghari-legal": {
+      "type": "http",
+      "url": "https://api.tonghari.kr/mcp",
+      "headers": {
+        "Authorization": "Bearer ${input:tonghari-legal-token}"
+      }
+    }
+  }
+}
+```
+
+근거: [VS Code MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration#_input-variables-for-sensitive-data).
+
+### 일반 MCP SDK/client
+
+Streamable HTTP endpoint를 HTTPS URL로 설정하고 연결을 만들 때 secret store에서
+읽은 값을 `Authorization` header에만 주입한다. command line argument에 raw 값을
+직접 쓰면 shell history/process list에 남을 수 있으므로 피한다.
+
+```text
+endpoint = "https://api.tonghari.kr/mcp"
+headers.Authorization = "Bearer " + secretStore.read("tonghari-legal-mcp")
+redirect = "error"
+```
 
 ## Host LLM 호출 계약
 
@@ -87,7 +263,8 @@ MCP 경로는 기존 Express 전역 JSON parser보다 먼저 mount되며, 전용
   `shortfallReason`을 반환
 - 공개 링크: HTTPS 국가법령정보센터의 레코드별 공개 상세 URL만 허용; API OC와
   인증 query는 반환 금지
-- 호출 보호: 공식 API를 사용하는 research 도구는 bearer 세대별 분당 6회로 제한
+- 호출 보호: 공식 API를 사용하는 research 도구는 bearer digest별 분당 6회,
+  모든 bearer 합산 프로세스별 분당 12회로 제한
 - 부하 보호: admission 대기 포함 전체 45초 deadline, 프로세스 전역 동시 2건·대기
   4건. queue 초과 또는 provider 429이면 남은 fanout을 시작하지 않음
 - 현행 법령 조문이 0건이면 판례의 현행 규정 정합성을 검증할 수 없으므로 판례
@@ -98,23 +275,64 @@ MCP 경로는 기존 Express 전역 JSON parser보다 먼저 mount되며, 전용
 ## 배포 전·후 확인
 
 1. EC2 고정 IP와 `LAW_API_OC` 등록 상태를 확인한다.
-2. 필수 환경변수 4개와 서버 간 client가 Origin header를 보낼 때의 정책을 secret/runtime 설정에
-   반영해 새 컨테이너를 배포한다. 단순
-   `docker restart`는 변경 환경변수를 다시 읽지 않으므로 사용하지 않는다.
-3. `/health`에서 `legalMcpConfigurationValid=true`를 확인한다. 이 값은 설정의
-   존재·형식만 뜻하며 provider reachability를 뜻하지 않는다. secret 값 자체는
-   조회하거나 로그에 남기지 않는다.
-4. 등록된 고정 IP에서 다음 read-only smoke를 실행한다.
+2. client registry, proxy digest, packet signing key, Host·Origin 정책과 rate limit을
+   API secret/runtime에 반영한다. registry와 legacy digest는 정확히 하나만 둔다.
+3. Caddy owner-only secret에 proxy raw 값을 반영하고 `caddy validate`를 통과한 뒤
+   reload한다. Caddy의 raw 값과 API digest가 같은 발급 쌍인지 값 자체를 출력하지
+   않는 승인 기록으로 확인한다.
+4. 변경 환경변수를 반영해 새 API container를 배포한다. 단순 `docker restart`는
+   변경 환경변수를 다시 읽지 않으므로 사용하지 않는다.
+5. `/health`에서 다음 비밀 비노출 상태를 확인한다.
+   - `legalMcpConfigurationValid=true`
+   - 신규 다중 client 운영이면 `legalMcpAuthMode=client_registry`
+   - 등록 client/token count가 승인 manifest와 일치
+   - health에 client ID, digest, registry JSON, raw secret이 없음
+
+   이 상태는 설정의 존재·형식만 뜻하며 provider reachability를 뜻하지 않는다.
+6. network와 TLS 경계를 별도로 확인한다.
+   - 인터넷의 별도 host에서 public IP의 TCP 3100 연결이 실패한다.
+   - API host loopback에서 proxy 증명 없이 `/mcp`를 호출하면
+     `403 LEGAL_MCP_PROXY_FORBIDDEN`이다. production Host allowlist가 domain-only이면
+     다음처럼 허용된 Host를 명시해 Host guard가 아닌 proxy guard 응답을 확인한다.
+
+     ```bash
+     curl -sS -X POST -H 'Host: api.tonghari.kr' \
+       http://127.0.0.1:3100/mcp
+     ```
+   - HTTP URL에는 bearer를 보내지 않는다. Caddy의 HTTP 요청은 HTTPS로만 전환되고
+     평문 HTTP upstream 경로에서 MCP가 처리되지 않는지 확인한다.
+   - HTTPS 인증서 hostname/chain이 유효하고 redirect 없이 최종 `/mcp`에 도달한다.
+7. 각 발급 client에서 raw token을 숨김 입력해 initialize smoke를 실행한다.
+
+   ```bash
+   npm run legal:mcp:smoke -- --endpoint https://api.tonghari.kr/mcp
+   ```
+
+   이 명령은 credential·query·fragment가 없는 HTTPS endpoint만 허용하고 redirect를
+   거부하며 응답 body나 token을 출력하지 않는다. 정상 token은 HTTP 200, 폐기·오입력
+   token은 성공하지 않아야 한다. 최소 두 client가 각자 token으로 성공하고, 한
+   client의 폐기가 다른 client를 막지 않는지도 회전 staging에서 확인한다.
+8. 등록된 고정 IP에서 다음 read-only provider/contract smoke를 실행한다.
    - 현행 법령 exact 검색 및 본문 1건
    - 관할 현행 조례 exact 검색 및 본문 1건
    - 판례 최신순 목록과 전문 1건
    - research → packet proof → answerDraft → render 전체 1회
-5. 응답·로그에 `OC`, bearer, signing key, 사용자 질문 전문이 남지 않는지 확인한다.
-6. 법령·조례·판례 링크를 비로그인 브라우저에서 열어 레코드 식별자가 일치하는지
+9. 두 bearer를 번갈아 호출해 bearer별 분당 6회와 전체 분당 12회가 독립적으로
+   적용되고, `Retry-After`가 있는 429가 확정 법률 답변으로 변환되지 않는지 확인한다.
+10. 응답·로그에 `OC`, bearer, proxy secret, digest, signing key, 사용자 질문 전문이
+   남지 않는지 확인한다.
+11. 법령·조례·판례 링크를 비로그인 브라우저에서 열어 레코드 식별자가 일치하는지
    확인한다.
 
 ## 장애·회전
 
+- `LEGAL_MCP_NOT_CONFIGURED`: registry와 legacy digest의 동시 설정, 빈 registry,
+  중복 client ID/digest, proxy digest·signing key·Host 설정 누락을 먼저 확인한다.
+- `LEGAL_MCP_PROXY_FORBIDDEN`: direct 3100 접근, 비 HTTPS forwarding, Caddy raw
+  proxy secret과 API digest 불일치 여부를 확인한다. client bearer를 바꾸어 우회하지
+  않는다.
+- HTTP 401: 해당 client entry와 client secret store의 발급 세대를 확인한다. token
+  원문을 로그나 support ticket로 수집하지 않는다.
 - `AUTH`, `IP_NOT_REGISTERED`: OC와 법제처 등록 고정 IP를 확인한다.
 - `RATE_LIMITED`, `UPSTREAM_TIMEOUT`, `UPSTREAM_UNAVAILABLE`: 확정 답변으로
   변환하지 말고 재시도 가능한 상류 장애로 취급한다.

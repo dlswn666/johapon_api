@@ -20,14 +20,20 @@ function landAreaSyncHealthFeatures() {
 }
 
 function legalMcpHealthFeatures() {
+    const configuration = getLegalMcpConfigurationStateV1({
+        lawApiOc: env.LAW_API_OC,
+        tokenSha256: env.LEGAL_MCP_TOKEN_SHA256,
+        tokenRegistryJson: env.LEGAL_MCP_TOKEN_REGISTRY_JSON,
+        proxyTokenSha256: env.LEGAL_MCP_PROXY_TOKEN_SHA256,
+        packetSigningKey: env.LEGAL_MCP_PACKET_SIGNING_KEY,
+        allowedHosts: env.LEGAL_MCP_ALLOWED_HOSTS,
+    });
     return {
         // provider reachability가 아니라 startup 설정의 존재·형식만 나타낸다.
-        legalMcpConfigurationValid: getLegalMcpConfigurationStateV1({
-            lawApiOc: env.LAW_API_OC,
-            tokenSha256: env.LEGAL_MCP_TOKEN_SHA256,
-            packetSigningKey: env.LEGAL_MCP_PACKET_SIGNING_KEY,
-            allowedHosts: env.LEGAL_MCP_ALLOWED_HOSTS,
-        }).configured,
+        legalMcpConfigurationValid: configuration.configured,
+        legalMcpAuthMode: configuration.authMode,
+        legalMcpRegisteredClientCount: configuration.registeredClientCount,
+        legalMcpRegisteredTokenCount: configuration.registeredTokenCount,
     };
 }
 

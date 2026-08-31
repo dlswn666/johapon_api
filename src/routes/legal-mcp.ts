@@ -16,6 +16,7 @@ import {
     createLegalMcpAuthMiddleware,
     type LegalMcpTokenVerifierOptions,
 } from '../middleware/legal-mcp-auth';
+import { createLegalMcpProxyGuardMiddleware } from '../middleware/legal-mcp-proxy-guard';
 import { createLegalMcpResearchRateLimitMiddleware } from '../middleware/legal-mcp-rate-limit';
 import {
     createLegalMcpServer,
@@ -49,6 +50,10 @@ export interface CreateLegalMcpRouteOptions
     packetSigningKey?: string;
     /** 공식 법령 API를 호출하는 research tool의 bearer 세대별 분당 상한. */
     researchRequestsPerMinute?: number;
+    /** 모든 bearer가 공유하는 공식 법령 API research tool의 분당 상한. */
+    globalResearchRequestsPerMinute?: number;
+    /** 생략하면 LEGAL_MCP_PROXY_TOKEN_SHA256을 읽는다. */
+    proxyTokenSha256?: string;
     onError?: (error: Error) => void;
 }
 
@@ -184,14 +189,19 @@ export function createLegalMcpRoute(
     // expensive parsing/auth 이전에 DNS rebinding 및 허용하지 않은 Origin header를 차단한다.
     router.use(hostHeaderValidation(allowedHosts));
     router.use(originValidation(allowedOrigins));
+    router.use(createLegalMcpProxyGuardMiddleware({
+        proxyTokenSha256: options.proxyTokenSha256,
+    }));
     router.use(createLegalMcpAuthMiddleware({
         tokenSha256: options.tokenSha256,
+        tokenRegistryJson: options.tokenRegistryJson,
         now: options.now,
     }));
     router.use(json({ limit: LEGAL_MCP_JSON_BODY_LIMIT, strict: true }));
-    router.use(createLegalMcpResearchRateLimitMiddleware(
-        options.researchRequestsPerMinute
-    ));
+    router.use(createLegalMcpResearchRateLimitMiddleware({
+        perTokenRequestsPerMinute: options.researchRequestsPerMinute,
+        globalRequestsPerMinute: options.globalResearchRequestsPerMinute,
+    }));
     router.all('/', (request, response, next) => {
         void nodeHandler(request, response, request.body).catch(next);
     });

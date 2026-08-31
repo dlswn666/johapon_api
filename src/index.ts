@@ -19,6 +19,8 @@ const app = express();
 const legalMcpConfiguration = getLegalMcpConfigurationStateV1({
     lawApiOc: env.LAW_API_OC,
     tokenSha256: env.LEGAL_MCP_TOKEN_SHA256,
+    tokenRegistryJson: env.LEGAL_MCP_TOKEN_REGISTRY_JSON,
+    proxyTokenSha256: env.LEGAL_MCP_PROXY_TOKEN_SHA256,
     packetSigningKey: env.LEGAL_MCP_PACKET_SIGNING_KEY,
     allowedHosts: env.LEGAL_MCP_ALLOWED_HOSTS,
 });
@@ -36,9 +38,15 @@ if (legalMcpConfigured) {
             maxQueuedResearch: env.LEGAL_MCP_RESEARCH_MAX_QUEUE,
         }),
         tokenSha256: env.LEGAL_MCP_TOKEN_SHA256,
+        tokenRegistryJson: env.LEGAL_MCP_TOKEN_REGISTRY_JSON,
+        proxyTokenSha256: env.LEGAL_MCP_PROXY_TOKEN_SHA256,
         packetSigningKey: env.LEGAL_MCP_PACKET_SIGNING_KEY,
         allowedHosts: env.LEGAL_MCP_ALLOWED_HOSTS,
         allowedOrigins: env.LEGAL_MCP_ALLOWED_ORIGINS,
+        researchRequestsPerMinute:
+            env.LEGAL_MCP_RESEARCH_REQUESTS_PER_MINUTE,
+        globalResearchRequestsPerMinute:
+            env.LEGAL_MCP_RESEARCH_GLOBAL_REQUESTS_PER_MINUTE,
         onError: (error) => {
             logger.error('Legal MCP transport error', {
                 errorName: error.name,
@@ -48,6 +56,7 @@ if (legalMcpConfigured) {
     app.use('/mcp', legalMcp.router);
 } else {
     app.use('/mcp', (_request, response) => {
+        response.set('Cache-Control', 'no-store');
         response.status(503).json({
             error: 'LEGAL_MCP_NOT_CONFIGURED',
         });

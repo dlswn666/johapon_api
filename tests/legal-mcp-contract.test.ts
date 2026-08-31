@@ -36,6 +36,25 @@ const RAW_TOKEN = 'legal-mcp-contract-token';
 const TOKEN_SHA256 = createHash('sha256')
     .update(RAW_TOKEN, 'utf8')
     .digest('hex');
+const RAW_PROXY_TOKEN = 'legal-mcp-contract-proxy-token-256-bit';
+const PROXY_TOKEN_SHA256 = createHash('sha256')
+    .update(RAW_PROXY_TOKEN, 'utf8')
+    .digest('hex');
+const RAW_CLIENT_A_TOKEN = 'legal-mcp-contract-client-a-token';
+const RAW_CLIENT_B_TOKEN = 'legal-mcp-contract-client-b-token';
+const CLIENT_A_TOKEN_SHA256 = createHash('sha256')
+    .update(RAW_CLIENT_A_TOKEN, 'utf8')
+    .digest('hex');
+const CLIENT_B_TOKEN_SHA256 = createHash('sha256')
+    .update(RAW_CLIENT_B_TOKEN, 'utf8')
+    .digest('hex');
+const TOKEN_REGISTRY_JSON = JSON.stringify({
+    version: 1,
+    clients: [
+        { clientId: 'contract-client-a', tokenSha256: CLIENT_A_TOKEN_SHA256 },
+        { clientId: 'contract-client-b', tokenSha256: CLIENT_B_TOKEN_SHA256 },
+    ],
+});
 const PACKET_SIGNING_KEY = 'b'.repeat(64);
 const NOW_MS = Date.parse('2026-08-31T03:00:00.000Z');
 
@@ -129,6 +148,15 @@ interface RunningEndpoint {
     close(): Promise<void>;
 }
 
+interface StartEndpointOptions {
+    packetSigningKey?: string;
+    researchRequestsPerMinute?: number;
+    globalResearchRequestsPerMinute?: number;
+    tokenSha256?: string;
+    tokenRegistryJson?: string;
+    proxyTokenSha256?: string;
+}
+
 function listen(server: Server): Promise<void> {
     return new Promise((resolve, reject) => {
         server.once('error', reject);
@@ -174,17 +202,21 @@ function rawPost(
 
 async function startEndpoint(
     dependencies: Omit<LegalMcpServerDependencies, 'packetSigningKey'>,
-    packetSigningKey = PACKET_SIGNING_KEY,
-    researchRequestsPerMinute?: number
+    options: StartEndpointOptions = {}
 ): Promise<RunningEndpoint> {
     const app = express();
     const route = createLegalMcpRoute({
         dependencies,
         allowedHosts: ['127.0.0.1'],
         allowedOrigins: ['app.tonghari.test'],
-        tokenSha256: TOKEN_SHA256,
-        packetSigningKey,
-        researchRequestsPerMinute,
+        ...(options.tokenRegistryJson
+            ? { tokenRegistryJson: options.tokenRegistryJson }
+            : { tokenSha256: options.tokenSha256 ?? TOKEN_SHA256 }),
+        proxyTokenSha256: options.proxyTokenSha256 ?? PROXY_TOKEN_SHA256,
+        packetSigningKey: options.packetSigningKey ?? PACKET_SIGNING_KEY,
+        researchRequestsPerMinute: options.researchRequestsPerMinute,
+        globalResearchRequestsPerMinute:
+            options.globalResearchRequestsPerMinute,
     });
     app.use('/mcp', route.router);
     const server = createServer(app);
@@ -222,6 +254,8 @@ async function mcpRequest(
         token?: string | null;
         origin?: string;
         host?: string;
+        forwardedProto?: string | null;
+        proxyToken?: string | null;
     } = {}
 ): Promise<{ response: Response; body: JsonObject }> {
     const name = mcpName(method, params);
@@ -231,6 +265,13 @@ async function mcpRequest(
         'mcp-protocol-version': PROTOCOL_VERSION,
         'mcp-method': method,
     };
+    if (options.forwardedProto !== null) {
+        headers['x-forwarded-proto'] = options.forwardedProto ?? 'https';
+    }
+    if (options.proxyToken !== null) {
+        headers['x-tonghari-mcp-proxy-token'] =
+            options.proxyToken ?? RAW_PROXY_TOKEN;
+    }
     if (name) headers['mcp-name'] = name;
     if (options.token !== null) {
         headers.authorization = `Bearer ${options.token ?? RAW_TOKEN}`;
@@ -525,7 +566,66 @@ describe('법률 MCP 공개 계약', () => {
         assert.equal(researchCalls, 0);
     });
 
-    it('Host, Origin, bearer token을 MCP dispatch보다 먼저 검사한다', async () => {
+    it('Host, Origin, proxy 증명, bearer token 순서로 MCP dispatch 전에 검사한다', async () => {
+        const badOrigin = await mcpRequest(
+            endpoint.baseUrl,
+            'tools/list',
+            {},
+            {
+                token: null,
+                origin: 'https://evil.example',
+                forwardedProto: null,
+                proxyToken: null,
+            }
+        );
+        assert.equal(badOrigin.response.status, 403);
+
+        const badHost = await rawPost(
+            endpoint.baseUrl,
+            {
+                host: 'evil.example',
+                'content-type': 'application/json',
+            },
+            JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+        );
+        assert.equal(badHost.status, 403);
+
+        const missingProxyToken = await mcpRequest(
+            endpoint.baseUrl,
+            'tools/list',
+            {},
+            { token: null, proxyToken: null }
+        );
+        assert.equal(missingProxyToken.response.status, 403);
+        assert.equal(
+            missingProxyToken.body.code,
+            'LEGAL_MCP_PROXY_FORBIDDEN'
+        );
+
+        const wrongProxyToken = await mcpRequest(
+            endpoint.baseUrl,
+            'tools/list',
+            {},
+            {
+                token: null,
+                proxyToken: 'wrong-legal-mcp-contract-proxy-token-256-bit',
+            }
+        );
+        assert.equal(wrongProxyToken.response.status, 403);
+        assert.equal(wrongProxyToken.body.code, 'LEGAL_MCP_PROXY_FORBIDDEN');
+
+        const spoofedForwardedProto = await mcpRequest(
+            endpoint.baseUrl,
+            'tools/list',
+            {},
+            { token: null, forwardedProto: 'https, http' }
+        );
+        assert.equal(spoofedForwardedProto.response.status, 403);
+        assert.equal(
+            spoofedForwardedProto.body.code,
+            'LEGAL_MCP_PROXY_FORBIDDEN'
+        );
+
         const noToken = await mcpRequest(
             endpoint.baseUrl,
             'tools/list',
@@ -542,24 +642,6 @@ describe('법률 MCP 공개 계약', () => {
         );
         assert.equal(badToken.response.status, 401);
         assert.equal(JSON.stringify(badToken.body).includes('wrong-token'), false);
-
-        const badOrigin = await mcpRequest(
-            endpoint.baseUrl,
-            'tools/list',
-            {},
-            { token: null, origin: 'https://evil.example' }
-        );
-        assert.equal(badOrigin.response.status, 403);
-
-        const badHost = await rawPost(
-            endpoint.baseUrl,
-            {
-                host: 'evil.example',
-                'content-type': 'application/json',
-            },
-            JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
-        );
-        assert.equal(badHost.status, 403);
     });
 
     it('JSON body를 256kb로 제한하고 malformed JSON을 안전한 오류로 바꾼다', async () => {
@@ -567,6 +649,8 @@ describe('법률 MCP 공개 계약', () => {
             'content-type': 'application/json',
             accept: 'application/json, text/event-stream',
             authorization: `Bearer ${RAW_TOKEN}`,
+            'x-forwarded-proto': 'https',
+            'x-tonghari-mcp-proxy-token': RAW_PROXY_TOKEN,
         };
         const tooLarge = await fetch(endpoint.baseUrl, {
             method: 'POST',
@@ -588,7 +672,7 @@ describe('법률 MCP 공개 계약', () => {
     it('packet signing key 누락·약한 값은 HTTP listen 전에 fail-closed 한다', async () => {
         for (const signingKey of ['', 'weak']) {
             await assert.rejects(
-                startEndpoint(dependencies, signingKey),
+                startEndpoint(dependencies, { packetSigningKey: signingKey }),
                 (error: unknown) => error instanceof Error
                     && error.name === 'LegalMcpRouteConfigurationError'
             );
@@ -653,7 +737,9 @@ describe('법률 MCP 공개 계약', () => {
     });
 
     it('고비용 research 도구는 bearer 세대별 분당 상한을 적용한다', async () => {
-        const limitedEndpoint = await startEndpoint(dependencies, PACKET_SIGNING_KEY, 1);
+        const limitedEndpoint = await startEndpoint(dependencies, {
+            researchRequestsPerMinute: 1,
+        });
         try {
             const first = await mcpRequest(limitedEndpoint.baseUrl, 'tools/call', {
                 name: LEGAL_RESEARCH_TOOL_NAME,
@@ -670,6 +756,176 @@ describe('법률 MCP 공개 계약', () => {
             assert.equal(second.body.error.code, -32029);
         } finally {
             await limitedEndpoint.close();
+        }
+    });
+
+    it('registry의 A/B bearer를 각각 인증하고 A의 proof를 B가 재사용하지 못한다', async () => {
+        const registryEndpoint = await startEndpoint(dependencies, {
+            tokenRegistryJson: TOKEN_REGISTRY_JSON,
+        });
+        try {
+            const clientAList = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/list',
+                {},
+                { token: RAW_CLIENT_A_TOKEN }
+            );
+            const clientBList = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/list',
+                {},
+                { token: RAW_CLIENT_B_TOKEN }
+            );
+            assert.equal(clientAList.response.status, 200);
+            assert.equal(clientBList.response.status, 200);
+
+            const clientAResearch = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/call',
+                {
+                    name: LEGAL_RESEARCH_TOOL_NAME,
+                    arguments: VALID_RESEARCH_INPUT,
+                },
+                { token: RAW_CLIENT_A_TOKEN }
+            );
+            assert.equal(clientAResearch.response.status, 200);
+            assert.equal(lastContext?.principal.clientId, 'contract-client-a');
+
+            const clientBResearch = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/call',
+                {
+                    name: LEGAL_RESEARCH_TOOL_NAME,
+                    arguments: VALID_RESEARCH_INPUT,
+                },
+                { token: RAW_CLIENT_B_TOKEN }
+            );
+            assert.equal(clientBResearch.response.status, 200);
+            assert.equal(lastContext?.principal.clientId, 'contract-client-b');
+
+            const clientAProof =
+                clientAResearch.body.result.structuredContent.packetProof;
+            const clientBProof =
+                clientBResearch.body.result.structuredContent.packetProof;
+            assert.notEqual(clientAProof, clientBProof);
+
+            const crossClientRender = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/call',
+                {
+                    name: LEGAL_RENDER_TOOL_NAME,
+                    arguments: {
+                        packet: clientAResearch.body.result.structuredContent.packet,
+                        packetProof: clientAProof,
+                        answerDraft: VALID_ANSWER_DRAFT,
+                    },
+                },
+                { token: RAW_CLIENT_B_TOKEN }
+            );
+            assert.equal(crossClientRender.response.status, 200);
+            assert.equal(crossClientRender.body.result.isError, true);
+            assert.match(
+                crossClientRender.body.result.content[0].text,
+                /PACKET_PROOF_INVALID/
+            );
+            assert.equal(renderCalls, 0);
+        } finally {
+            await registryEndpoint.close();
+        }
+    });
+
+    it('registry bearer별 research 제한은 A와 B가 독립된 bucket을 사용한다', async () => {
+        const registryEndpoint = await startEndpoint(dependencies, {
+            tokenRegistryJson: TOKEN_REGISTRY_JSON,
+            researchRequestsPerMinute: 1,
+            globalResearchRequestsPerMinute: 10,
+        });
+        try {
+            const clientAFirst = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/call',
+                {
+                    name: LEGAL_RESEARCH_TOOL_NAME,
+                    arguments: VALID_RESEARCH_INPUT,
+                },
+                { token: RAW_CLIENT_A_TOKEN }
+            );
+            const clientASecond = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/call',
+                {
+                    name: LEGAL_RESEARCH_TOOL_NAME,
+                    arguments: VALID_RESEARCH_INPUT,
+                },
+                { token: RAW_CLIENT_A_TOKEN }
+            );
+            const clientBFirst = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/call',
+                {
+                    name: LEGAL_RESEARCH_TOOL_NAME,
+                    arguments: VALID_RESEARCH_INPUT,
+                },
+                { token: RAW_CLIENT_B_TOKEN }
+            );
+
+            assert.equal(clientAFirst.response.status, 200);
+            assert.equal(clientASecond.response.status, 429);
+            assert.equal(
+                clientASecond.body.error.message,
+                'Legal research bearer rate limit exceeded.'
+            );
+            assert.equal(clientBFirst.response.status, 200);
+        } finally {
+            await registryEndpoint.close();
+        }
+    });
+
+    it('registry A/B research 호출은 process-wide global bucket을 공유한다', async () => {
+        const registryEndpoint = await startEndpoint(dependencies, {
+            tokenRegistryJson: TOKEN_REGISTRY_JSON,
+            researchRequestsPerMinute: 10,
+            globalResearchRequestsPerMinute: 2,
+        });
+        try {
+            const clientAFirst = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/call',
+                {
+                    name: LEGAL_RESEARCH_TOOL_NAME,
+                    arguments: VALID_RESEARCH_INPUT,
+                },
+                { token: RAW_CLIENT_A_TOKEN }
+            );
+            const clientBFirst = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/call',
+                {
+                    name: LEGAL_RESEARCH_TOOL_NAME,
+                    arguments: VALID_RESEARCH_INPUT,
+                },
+                { token: RAW_CLIENT_B_TOKEN }
+            );
+            const clientASecond = await mcpRequest(
+                registryEndpoint.baseUrl,
+                'tools/call',
+                {
+                    name: LEGAL_RESEARCH_TOOL_NAME,
+                    arguments: VALID_RESEARCH_INPUT,
+                },
+                { token: RAW_CLIENT_A_TOKEN }
+            );
+
+            assert.equal(clientAFirst.response.status, 200);
+            assert.equal(clientBFirst.response.status, 200);
+            assert.equal(clientASecond.response.status, 429);
+            assert.equal(
+                clientASecond.body.error.message,
+                'Legal research process-wide rate limit exceeded.'
+            );
+            assert.equal(clientASecond.response.headers.get('retry-after') !== null, true);
+        } finally {
+            await registryEndpoint.close();
         }
     });
 
