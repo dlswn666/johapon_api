@@ -69,3 +69,49 @@ export function normalizeHo(ho: string | null | undefined): string | null {
 
     return normalized.trim() || null;
 }
+
+/**
+ * 동 "대조 키" 정규화 — 재건축 P2 (저장하지 않는다)
+ *
+ * 정본은 tonghari-web 의 `normalizeDongForKey` 다.
+ * `normalizeDong`(저장·표시용) 위에 표기 변형 병합을 더한다:
+ *  1. 동 칸에 들어간 건물명 제거 (건물명 2글자 이상일 때만)
+ *  2. `주건축물제N` → `N`
+ *  3. 로마자 병합 `에이`→`A`, `씨`/`시`→`C`, `디`→`D`, `이`→`E`
+ *     (`비` 는 normalizeDong 의 지하 규칙이 이미 `B` 로 바꾼다)
+ *  4. 동일 수 없는 문자 소거 + 영문 대문자 통일
+ *
+ * 이 분리는 supabase.service.ts 의 `normalizeDongForMatch` 가 이미 쓰던
+ * 패턴을 web·SQL 과 하나로 맞춘 것이다. 저장 경로(명부 업로드)는 계속
+ * `normalizeDong` 을 쓴다 — 규칙을 바꾸면 기존 데이터와 표기가 갈린다.
+ */
+export function normalizeDongForKey(
+    dong: string | null | undefined,
+    buildingName?: string | null
+): string | null {
+    const base = normalizeDong(dong);
+    if (!base) return null;
+
+    let key = base;
+
+    const name = buildingName?.trim().replace(/\s+/g, '') ?? '';
+    if (name.length >= 2) {
+        const squashed = key.replace(/\s+/g, '');
+        if (squashed === name) return null;
+        if (squashed.startsWith(name)) {
+            key = squashed.slice(name.length);
+        }
+    }
+
+    key = key.replace(/^주건축물제/, '');
+
+    const ROMAN: Record<string, string> = { 에이: 'A', 씨: 'C', 시: 'C', 디: 'D', 이: 'E' };
+    const trimmedKey = key.trim();
+    if (ROMAN[trimmedKey]) {
+        key = ROMAN[trimmedKey];
+    }
+
+    key = key.replace(/[^0-9A-Za-z가-힣]/g, '').toUpperCase();
+
+    return key || null;
+}

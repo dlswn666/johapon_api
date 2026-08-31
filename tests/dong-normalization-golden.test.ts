@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeDong, normalizeHo } from '../src/utils/dong-ho';
+import { normalizeDong, normalizeHo, normalizeDongForKey } from '../src/utils/dong-ho';
 
 /**
  * 동 정규화 golden 벡터 — 재건축 P2 SSOT (api 측 사본)
@@ -67,4 +67,35 @@ test('normalizeHo 는 호 접미사와 지하 표기를 처리한다', () => {
     assert.equal(normalizeHo('B101'), 'B101');
     assert.equal(normalizeHo('101'), '101');
     assert.equal(normalizeHo(null), null);
+});
+
+/**
+ * 대조 키 golden 벡터 (web 정본과 동일해야 한다)
+ * web: tests/unit/shared/dongKeyNormalizationGolden.test.ts
+ * SQL: scripts/database/dong-normalize.sql
+ */
+const GOLDEN_DONG_KEY_VECTORS: Array<[string | null, string | null, string | null]> = [
+    ['101동', null, '101'], ['가동', null, '가'], ['제1호', null, '1'], ['1층', null, '1'], ['1', null, '1'],
+    ['지하1', null, 'B1'], ['지01', null, 'B01'], ['비01', null, 'B01'],
+    ['에이', null, 'A'], ['A', null, 'A'], ['a', null, 'A'], ['비', null, 'B'], ['씨', null, 'C'], ['디', null, 'D'],
+    ['주건축물제1동', null, '1'], ['주건축물제1', null, '1'], ['주건축물제2', null, '2'],
+    ['영빈유토빌', '영빈유토빌', null], ['한솔그랑빌11차 나', '한솔그랑빌11차', '나'],
+    ['리버하우스', '리버하우스', null], ['가', '가', '가'],
+    ['`', null, null], ['-', null, null], ['   ', null, null], ['', null, null], [null, null, null],
+];
+
+test('normalizeDongForKey golden 벡터 (web 정본과 동일해야 한다)', () => {
+    for (const [dong, bname, expected] of GOLDEN_DONG_KEY_VECTORS) {
+        assert.equal(
+            normalizeDongForKey(dong, bname),
+            expected,
+            `normalizeDongForKey(${JSON.stringify(dong)}, ${JSON.stringify(bname)})`,
+        );
+    }
+});
+
+test('저장용 normalizeDong 은 강화 규칙에 영향받지 않는다', () => {
+    assert.equal(normalizeDong('에이'), '에이');
+    assert.equal(normalizeDong('주건축물제1동'), '주건축물제1');
+    assert.equal(normalizeDong('영빈유토빌'), '영빈유토빌');
 });
