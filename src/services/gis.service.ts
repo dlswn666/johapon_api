@@ -4,6 +4,7 @@ import * as path from 'path';
 import iconv from 'iconv-lite';
 import { env } from '../config/env';
 import { createLogger } from '../utils/logger';
+import { normalizeDongForKey } from '../utils/dong-ho';
 
 const logger = createLogger('GIS-API');
 
@@ -15,6 +16,43 @@ export interface BuildingExternalRefInfo {
     externalName: string | null;
     pnu: string | null;
     metadata: Record<string, unknown>;
+}
+
+/** 건물 유형 (buildings.building_type) */
+export type BuildingTypeCode =
+    | 'DETACHED_HOUSE' | 'VILLA' | 'APARTMENT' | 'COMMERCIAL' | 'MIXED' | 'NONE';
+
+/** 주택 유형 (buildings.housing_type) — §2 7호 주택단지 판정 입력 */
+export type HousingTypeCode = 'APARTMENT' | 'ROW_HOUSE' | 'MULTIPLEX' | 'DETACHED' | 'OTHER';
+
+/** 수집한 세대 한 건 */
+export interface BuildingUnitInput {
+    dong: string | null;
+    ho: string | null;
+    floor: number | null;
+    area: number | null;
+    officialPrice?: number | null;
+    registryExternalId?: string | null;
+}
+
+/**
+ * 건축물대장 표제부 한 행 = 동(棟) 하나 — 재건축 P2
+ *
+ * `registryPk`(mgmBldrgstPk)가 동의 정본 식별자다.
+ * 표제부에 없는 전유부를 모으는 **미배정 동**은 `registryPk` 가 null 이다.
+ */
+export interface BuildingDongInfo {
+    registryPk: string | null;
+    dongName: string | null;
+    dongNameNormalized: string | null;
+    buildingType: BuildingTypeCode;
+    housingType: HousingTypeCode | null;
+    buildingName: string | null;
+    mainPurpose: string | null;
+    floorCount: number;
+    isWelfareFacility: boolean;
+    externalRef: BuildingExternalRefInfo | null;
+    units: BuildingUnitInput[];
 }
 
 export interface ApartmentHouseOfficialPrice {
@@ -1467,9 +1505,232 @@ class GisService {
     }
 
     /**
+     * 주택 유형 분류 — §2 7호(주택단지) 판정 입력
+     *
+     * 주택단지는 '아파트 또는 연립주택'만 해당한다(§2 7호 마목).
+     * **다세대주택은 주택단지가 아니라 §35④ 트랙**이므로 반드시 구분한다.
+     */
+    private classifyHousingType(
+        mainPurpose: string | null
+    ): 'APARTMENT' | 'ROW_HOUSE' | 'MULTIPLEX' | 'DETACHED' | 'OTHER' | null {
+        if (!mainPurpose) return null;
+        const purpose = mainPurpose.toLowerCase();
+
+        if (purpose.includes('아파트')) return 'APARTMENT';
+        if (purpose.includes('연립주택')) return 'ROW_HOUSE';
+        if (purpose.includes('다세대')) return 'MULTIPLEX';
+        if (
+            purpose.includes('단독주택') ||
+            purpose.includes('다중주택') ||
+            purpose.includes('다가구')
+        ) {
+            return 'DETACHED';
+        }
+        return 'OTHER';
+    }
+
+    /**
+     * 복리시설(상가·근린생활시설 등) 판정
+     *
+     * 복리시설은 정비구역 레벨에서 1개 동으로 의제된다(법제처 22-0376).
+     * 다단지 구역에서도 단지별로 쪼개지 않는다.
+     */
+    private isWelfareFacility(mainPurpose: string | null): boolean {
+        if (!mainPurpose) return false;
+        const purpose = mainPurpose.toLowerCase();
+        return (
+            purpose.includes('근린생활시설') ||
+            purpose.includes('판매시설') ||
+            purpose.includes('업무시설') ||
+            purpose.includes('상가') ||
+            purpose.includes('노유자시설') ||
+            purpose.includes('운동시설')
+        );
+    }
+
+    /**
+     * 표제부·전유부를 동(棟) 배열로 조립 — 재건축 P2 (순수 함수)
+     *
+     * 현행 `getBuildingInfo` 는 `titleInfoList[0]` 하나만 대표로 삼아
+     * 나머지 동을 버리고, 첫 표제부가 관리동이면 단지 전체를 오분류한다.
+     * 여기서는 표제부를 전부 순회해 동마다 항목을 만든다.
+     *
+     * - **총괄표제부 제외**: 단지 전체 요약 행이라 동이 아니다.
+     *   이걸 동으로 만들면 세대 0개짜리 유령 동이 생긴다.
+     * - 전유부는 `normalizeDongForKey` 로 정규화해 동에 귀속시킨다.
+     * - 표제부가 1행뿐이면 동 이름과 무관하게 전유부 전량을 그 동에 넣는다.
+     * - 표제부에 없는 동의 전유부는 **미배정 동**(registryPk = null)으로 모은다.
+     *   임의 배정하지 않는다 — 보정 UI 가 처리할 대상이다.
+     *
+     * API 호출과 분리해 테스트 가능하게 뺐다.
+     */
+    private composeBuildingDongs(
+        titleInfoList: unknown[],
+        unitInfoList: unknown[],
+        pnu: string
+    ): BuildingDongInfo[] {
+        // 총괄표제부 제외 — 단지 전체 요약이라 동이 아니다
+        const titles = (titleInfoList as Record<string, unknown>[]).filter((title) => {
+            const kind = this.parseText(title.regstrKindCdNm);
+            return kind !== '총괄표제부';
+        });
+
+        const dongs: BuildingDongInfo[] = titles.map((title) => {
+            const mainPurpose =
+                (title.mainPurpsCdNm as string) || (title.etcPurps as string) || null;
+            const dongName = this.parseText(title.dongNm);
+
+            return {
+                registryPk: this.parseText(title.mgmBldrgstPk),
+                dongName,
+                dongNameNormalized: normalizeDongForKey(dongName, this.parseText(title.bldNm)),
+                buildingType: this.classifyBuildingType(mainPurpose),
+                housingType: this.classifyHousingType(mainPurpose),
+                buildingName: this.parseText(title.bldNm),
+                mainPurpose,
+                floorCount: Number(title.grndFlrCnt) || 0,
+                isWelfareFacility: this.isWelfareFacility(mainPurpose),
+                externalRef: this.buildExternalRef(title, pnu),
+                units: [],
+            };
+        });
+
+        if (dongs.length === 0) return [];
+
+        // 정규화된 동 이름 → 동. 같은 키가 겹치면 먼저 나온 표제부가 이긴다.
+        const byNormalizedDong = new Map<string, BuildingDongInfo>();
+        for (const dong of dongs) {
+            const key = dong.dongNameNormalized ?? '';
+            if (!byNormalizedDong.has(key)) byNormalizedDong.set(key, dong);
+        }
+
+        let unassigned: BuildingDongInfo | null = null;
+
+        for (const raw of unitInfoList as Record<string, unknown>[]) {
+            const unit = {
+                dong: this.parseText(raw.dongNm),
+                ho: this.parseText(raw.hoNm),
+                floor: this.parseNumber(raw.flrNo),
+                area: this.parseNumber(raw.area),
+                registryExternalId: this.parseText(raw.mgmBldrgstPk),
+            };
+
+            // 표제부가 하나뿐이면 동 이름을 따지지 않는다
+            if (dongs.length === 1) {
+                dongs[0].units.push(unit);
+                continue;
+            }
+
+            const key = normalizeDongForKey(unit.dong) ?? '';
+            const target = byNormalizedDong.get(key);
+            if (target) {
+                target.units.push(unit);
+                continue;
+            }
+
+            if (!unassigned) {
+                unassigned = {
+                    registryPk: null,
+                    dongName: unit.dong,
+                    dongNameNormalized: normalizeDongForKey(unit.dong),
+                    buildingType: 'NONE',
+                    housingType: null,
+                    buildingName: null,
+                    mainPurpose: null,
+                    floorCount: 0,
+                    isWelfareFacility: false,
+                    externalRef: null,
+                    units: [],
+                };
+                dongs.push(unassigned);
+            }
+            unassigned.units.push(unit);
+        }
+
+        return dongs;
+    }
+
+    /** 표제부 한 행을 external ref 로 만든다 */
+    private buildExternalRef(
+        title: Record<string, unknown>,
+        pnu: string
+    ): BuildingExternalRefInfo | null {
+        const externalId = this.parseText(title.mgmBldrgstPk);
+        if (!externalId) return null;
+
+        return {
+            source: 'BUILDING_REGISTER' as const,
+            externalId,
+            externalName: this.parseText(title.bldNm),
+            pnu,
+            metadata: this.compactMetadata({
+                mgmBldrgstPk: externalId,
+                pnu,
+                regstrGbCdNm: this.parseText(title.regstrGbCdNm),
+                regstrKindCdNm: this.parseText(title.regstrKindCdNm),
+                platPlc: this.parseText(title.platPlc),
+                newPlatPlc: this.parseText(title.newPlatPlc),
+                bldNm: this.parseText(title.bldNm),
+                dongNm: this.parseText(title.dongNm),
+                mainPurpsCd: this.parseText(title.mainPurpsCd),
+                mainPurpsCdNm: this.parseText(title.mainPurpsCdNm),
+                etcPurps: this.parseText(title.etcPurps),
+                grndFlrCnt: this.parseNumber(title.grndFlrCnt),
+                useAprDay: this.parseText(title.useAprDay),
+            }),
+        };
+    }
+
+    /**
+     * 건물 정보를 동(棟) 단위로 조회 — 재건축 P2
+     *
+     * @param pnu 필지고유번호 (19자리)
+     * @returns 동 배열. 표제부가 없으면 빈 배열.
+     */
+    async getBuildingDongs(pnu: string): Promise<BuildingDongInfo[]> {
+        logger.info(`Fetching building dongs for PNU: ${pnu}`);
+
+        try {
+            const titleInfoList = await this.getBuildingTitle(pnu);
+            if (!titleInfoList || titleInfoList.length === 0) {
+                logger.debug(`No building title info found for PNU: ${pnu}`);
+                return [];
+            }
+
+            const unitInfoList = await this.getBuildingUnits(pnu);
+            const dongs = this.composeBuildingDongs(titleInfoList, unitInfoList ?? [], pnu);
+
+            // 전유부가 없는 단독건물은 표제부 면적으로 단일 세대를 만든다
+            // (현행 getBuildingInfo 폴백 유지)
+            for (const dong of dongs) {
+                if (dong.units.length === 0 && dong.buildingType !== 'NONE' && dong.registryPk) {
+                    const title = (titleInfoList as Record<string, unknown>[]).find(
+                        (t) => this.parseText(t.mgmBldrgstPk) === dong.registryPk
+                    );
+                    const fallbackArea = title
+                        ? this.parseNumber(title.totlAr) ?? this.parseNumber(title.archArea) ?? null
+                        : null;
+                    dong.units.push({ dong: null, ho: null, floor: null, area: fallbackArea });
+                }
+            }
+
+            logger.info(
+                `Building dongs fetched for PNU ${pnu}: dongs=${dongs.length}, ` +
+                    `units=${dongs.reduce((sum, d) => sum + d.units.length, 0)}`
+            );
+            return dongs;
+        } catch (error) {
+            logger.error(`Building dongs fetch error for PNU ${pnu}:`, error);
+            return [];
+        }
+    }
+
+    /**
      * 건물 정보 조회 (표제부 + 전유부)
      * PNU를 기반으로 건물 유형, 건물명, 동/호수 정보를 조회합니다.
      *
+     * @deprecated 재건축 P2 — `getBuildingDongs` 로 대체된다.
+     *   이 함수는 titleInfoList[0] 하나만 대표로 삼아 나머지 동을 버린다.
      * @param pnu 필지고유번호 (19자리)
      * @returns 건물 정보 (유형, 건물명, 세대 목록)
      */

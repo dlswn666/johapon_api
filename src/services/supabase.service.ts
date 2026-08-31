@@ -10,6 +10,7 @@ import type {
     ApplyPropertyLandAreaSyncParams,
     FinalizeLandAreaSyncJobParams,
 } from '../types/land-area-sync-job.types';
+import type { BuildingDongInfo } from './gis.service';
 
 const logger = createLogger('SUPABASE');
 
@@ -575,7 +576,187 @@ export class SupabaseService {
     }
 
     /**
+     * PNU 에 매핑된 건물(동) 전부 조회 — 재건축 P2
+     *
+     * 한 필지에 여러 동이 설 수 있으므로 배열로 돌려준다.
+     * 단수 조회(.single())는 다중 행에서 PGRST116 을 내고, 그것을 0행으로
+     * 해석하면 건물이 조용히 사라진다.
+     */
+    async getBuildingsByPnu(pnu: string): Promise<Array<{ id: string }>> {
+        try {
+            const { data, error } = await this.client
+                .from('building_land_lots')
+                .select('building_id')
+                .eq('pnu', pnu);
+
+            if (error) {
+                logger.error(`buildings lookup error via building_land_lots (PNU: ${pnu})`, error);
+                return [];
+            }
+
+            return (data ?? [])
+                .map((row) => row.building_id)
+                .filter((id): id is string => Boolean(id))
+                .map((id) => ({ id }));
+        } catch (error) {
+            logger.error(`getBuildingsByPnu error (PNU: ${pnu})`, error);
+            return [];
+        }
+    }
+
+    /**
+     * 동(棟) 단위 저장 — 재건축 P2
+     *
+     * 표제부 PK(registry_pk)가 동의 정본 식별자다. 다만 레거시 분할본과
+     * 미배정 동은 registry_pk 가 NULL 이라 그것만으로는 다시 찾지 못한다.
+     * 그대로 두면 **재수집마다 중복 동이 쌓인다**. 그래서 승격 규칙을 둔다:
+     *
+     *   ① registry_pk 로 조회 → 있으면 UPDATE
+     *   ② 없으면 (pnu, dong_name_normalized) 로 registry_pk 가 비어 있는
+     *      후보를 찾는다. 정확히 1건이면 **승격**한다(registry_pk 를 채우고
+     *      dong_source 를 REGISTRY 로 올린다) — 레거시 분할본이 대장 정본과
+     *      결합되는 지점이다.
+     *   ③ 후보가 2건 이상이면 자동 결합하지 않고 **수동 큐**로 보낸다.
+     *   ④ 0건이면 새로 INSERT.
+     *
+     * onConflict 는 쓰지 않는다(partial unique index 와 맞지 않는다).
+     */
+    async saveBuildingDongs(pnu: string, dongs: BuildingDongInfo[]): Promise<boolean> {
+        if (!dongs || dongs.length === 0) {
+            logger.debug(`No dongs to save for PNU: ${pnu}`);
+            return true;
+        }
+
+        let allOk = true;
+
+        for (const dong of dongs) {
+            const normalized = dong.dongNameNormalized ?? null;
+            let buildingId: string | null = null;
+
+            // ① registry_pk 로 조회
+            if (dong.registryPk) {
+                const { data: existing, error } = await this.client
+                    .from('buildings')
+                    .select('id')
+                    .eq('registry_pk', dong.registryPk)
+                    .maybeSingle();
+                if (error) {
+                    logger.error(`buildings lookup by registry_pk failed (${dong.registryPk})`, error);
+                    allOk = false;
+                    continue;
+                }
+                buildingId = existing?.id ?? null;
+            }
+
+            // ② 승격 후보 탐색
+            if (!buildingId) {
+                const mapped = await this.getBuildingsByPnu(pnu);
+                if (mapped.length > 0) {
+                    const { data: candidates, error } = await this.client
+                        .from('buildings')
+                        .select('id, dong_name_normalized, registry_pk')
+                        .in('id', mapped.map((m) => m.id))
+                        .is('registry_pk', null);
+
+                    if (error) {
+                        logger.error(`buildings promotion lookup failed (PNU: ${pnu})`, error);
+                        allOk = false;
+                        continue;
+                    }
+
+                    const matched = (candidates ?? []).filter(
+                        (c) => (c.dong_name_normalized ?? null) === normalized
+                    );
+
+                    if (matched.length === 1) {
+                        buildingId = matched[0].id;
+                    } else if (matched.length > 1) {
+                        // ③ 모호 — 자동 결합 금지
+                        logger.warn(
+                            `동 승격 후보 ${matched.length}건 — 수동 보정 필요 ` +
+                                `(pnu: ${pnu}, dong: ${dong.dongName})`
+                        );
+                        continue;
+                    }
+                }
+            }
+
+            const payload = {
+                building_type: dong.buildingType,
+                building_name: dong.buildingName,
+                main_purpose: dong.mainPurpose,
+                floor_count: dong.floorCount,
+                total_unit_count: dong.units.length,
+                registry_pk: dong.registryPk,
+                dong_name: dong.dongName,
+                dong_name_normalized: normalized,
+                dong_source: dong.registryPk ? 'REGISTRY' : 'MANUAL',
+                housing_type: dong.housingType,
+                is_welfare_facility: dong.isWelfareFacility,
+                updated_at: new Date().toISOString(),
+            };
+
+            if (buildingId) {
+                const { error } = await this.client
+                    .from('buildings')
+                    .update(payload)
+                    .eq('id', buildingId);
+                if (error) {
+                    logger.error(`buildings update failed (${dong.registryPk ?? dong.dongName})`, error);
+                    allOk = false;
+                    continue;
+                }
+            } else {
+                // ④ 신규
+                const { data: created, error } = await this.client
+                    .from('buildings')
+                    .insert(payload)
+                    .select('id')
+                    .single();
+                if (error || !created?.id) {
+                    logger.error(`buildings insert failed (${dong.registryPk ?? dong.dongName})`, error);
+                    allOk = false;
+                    continue;
+                }
+                const createdId: string | null = created.id;
+                if (!createdId) {
+                    logger.error(`buildings insert returned no id (${dong.registryPk ?? dong.dongName})`);
+                    allOk = false;
+                    continue;
+                }
+                buildingId = createdId;
+            }
+
+            const resolvedBuildingId: string = buildingId;
+
+            if (!(await this.upsertBuildingLandLotMapping(pnu, resolvedBuildingId))) allOk = false;
+
+            if (dong.externalRef) {
+                await this.upsertBuildingExternalRefs([
+                    {
+                        buildingId: resolvedBuildingId,
+                        source: dong.externalRef.source,
+                        externalId: dong.externalRef.externalId,
+                        externalName: dong.externalRef.externalName,
+                        pnu: dong.externalRef.pnu ?? pnu,
+                        metadata: dong.externalRef.metadata,
+                    },
+                ]);
+            }
+
+            if (dong.units.length > 0) {
+                if (!(await this.upsertBuildingUnits(resolvedBuildingId, dong.units))) allOk = false;
+            }
+        }
+
+        logger.info(`Building dongs saved for PNU ${pnu}: dongs=${dongs.length}`);
+        return allOk;
+    }
+
+    /**
      * PNU로 건물 조회 (building_land_lots 기반)
+     *
+     * @deprecated 재건축 P2 — 한 필지에 동이 여럿일 수 있다. `getBuildingsByPnu` 를 쓴다.
      */
     async getBuildingByPnu(pnu: string): Promise<{ id: string } | null> {
         try {
