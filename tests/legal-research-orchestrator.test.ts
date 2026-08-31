@@ -749,6 +749,30 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.equal(packet.caseSearchAudit.exclusions.fullTextUnavailable, 1);
     });
 
+    it('사건일 확인이 필요하면 판례 상류 미완료보다 clarification_required를 우선한다', async () => {
+        const caseItems = Array.from({ length: 5 }, (_, index) =>
+            makeCase(780 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
+        const provider = new FakeProvider(caseItems, {
+            failingDetailIds: [caseItems[0].caseSerialId],
+            failingDetailCode: 'CASE_DETAIL_NOT_FOUND',
+        });
+
+        const packet = await buildOrchestratorWithProvider(provider).research({
+            ...input,
+            facts: [{
+                factId: 'FACT-1',
+                text: '사건일을 알 수 없는 전자투표가 있었다.',
+                provenance: 'USER_STATED',
+            }],
+        });
+
+        assert.equal(packet.status, 'clarification_required');
+        assert.equal(packet.caseSearchAudit.upstreamComplete, false);
+        assert.equal(packet.caseSearchAudit.shortfallReason, 'upstream_incomplete');
+        assert.ok(packet.unknowns.some((unknown) =>
+            unknown.code === 'EVENT_DATE_REQUIRED' && unknown.blocking));
+    });
+
     it('인식된 상세 누락과 SOURCE_MISMATCH가 섞이면 전체 조사를 fail-closed 한다', async () => {
         const caseItems = Array.from({ length: 12 }, (_, index) =>
             makeCase(740 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));

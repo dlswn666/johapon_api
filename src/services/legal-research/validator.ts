@@ -850,8 +850,7 @@ export function validateLegalResearchPacketV1(input: unknown): LegalValidationRe
         }
         if (
             !audit.upstreamComplete
-            && packet.status !== 'partial'
-            && packet.status !== 'insufficient_evidence'
+            && packet.status === 'complete'
         ) {
             issue(issues, 'CASE_UPSTREAM_STATUS_INVALID', '$.status', '상류 미완료 결과는 complete일 수 없습니다.');
         }

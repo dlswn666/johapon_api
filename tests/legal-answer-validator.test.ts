@@ -369,6 +369,50 @@ test('현행 조문 시행 전 사건을 complete 결론으로 소급 적용하�
     assert.equal(closedResult.ok, true, JSON.stringify(closedResult.errors, null, 2));
 });
 
+test('사건일 확인이 우선인 경우 판례 상류 미완료여도 clarification_required를 허용한다', () => {
+    const packet = makePacket();
+    packet.scope.eventDate = null;
+    packet.status = 'clarification_required';
+    packet.caseSearchAudit.upstreamComplete = false;
+    packet.caseSearchAudit.shortfallReason = 'upstream_incomplete';
+    packet.unknowns = [{
+        code: 'EVENT_DATE_REQUIRED',
+        text: '전자투표가 이루어진 사건일이 필요하다.',
+        impact: '사건 당시 시행법을 확정할 수 없다.',
+        blocking: true,
+    }];
+
+    const result = validateLegalResearchPacketV1(packet);
+    assert.equal(result.ok, true, JSON.stringify(result.errors, null, 2));
+});
+
+test('사건 당시 시행본 확인이 우선인 경우 판례 상류 미완료여도 temporal_scope_conflict를 허용한다', () => {
+    const packet = makePacket();
+    packet.scope.eventDate = '2020-01-01';
+    packet.status = 'temporal_scope_conflict';
+    packet.caseSearchAudit.upstreamComplete = false;
+    packet.caseSearchAudit.shortfallReason = 'upstream_incomplete';
+    packet.unknowns = [{
+        code: 'HISTORICAL_LAW_REQUIRED',
+        text: '사건 당시 시행본이 필요하다.',
+        impact: '현행법만으로 사건 결론을 낼 수 없다.',
+        blocking: true,
+    }];
+
+    const result = validateLegalResearchPacketV1(packet);
+    assert.equal(result.ok, true, JSON.stringify(result.errors, null, 2));
+});
+
+test('판례 상류 미완료 결과를 complete로 반환하면 계속 거부한다', () => {
+    const packet = makePacket();
+    packet.caseSearchAudit.upstreamComplete = false;
+    packet.caseSearchAudit.shortfallReason = 'upstream_incomplete';
+
+    const result = validateLegalResearchPacketV1(packet);
+    assert.equal(result.ok, false);
+    assert.ok(errorCodes(result).includes('CASE_UPSTREAM_STATUS_INVALID'));
+});
+
 test('미래 사건일은 FUTURE_EVENT_DATE 차단 근거와 시간 범위 충돌 상태를 요구한다', () => {
     const invalid = makePacket();
     invalid.scope.eventDate = '2030-01-01';
