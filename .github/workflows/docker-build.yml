@@ -584,7 +584,7 @@ jobs:
             docker run -d \
               --name "${CONTAINER_NAME}" \
               --restart unless-stopped \
-              -p 3100:3100 \
+              -p 127.0.0.1:3100:3100 \
               --env-file .env \
               -v "$(pwd)/logs:/app/logs" \
               --memory=800m \
