@@ -251,14 +251,23 @@ function renderApplications(answer: LegalAnswerV1, sourceMap: Map<string, LegalS
 }
 
 function renderTemporalReview(answer: LegalAnswerV1, sourceMap: Map<string, LegalSourceV1>): string {
-    const sources = answer.temporalReview.sourceIds.length > 0
+    const eventDateMissing = answer.scope.eventDate === null;
+    const sources = !eventDateMissing && answer.temporalReview.sourceIds.length > 0
         ? ` (근거: ${renderSourceRefs(answer.temporalReview.sourceIds, sourceMap)})`
         : '';
-    const evidence = renderEvidenceQuotes(answer.temporalReview.evidenceQuotes, sourceMap);
+    const evidence = eventDateMissing
+        ? ''
+        : renderEvidenceQuotes(answer.temporalReview.evidenceQuotes, sourceMap);
+    const summary = eventDateMissing
+        ? '사건일이 제공되지 않아 사건 당시 시행본 추가 확인 필요 여부를 판단할 수 없습니다.'
+        : answer.temporalReview.summary;
+    const historicalLawReview = eventDateMissing
+        ? '판단 불가 (사건일 미제공)'
+        : answer.temporalReview.historicalLawRequired ? '예' : '아니오';
     return renderBullets([
-        `${escapeMarkdownText(answer.temporalReview.summary)}${sources}`,
+        `${escapeMarkdownText(summary)}${sources}`,
         ...(evidence ? [`시점 검토 원문 인용: ${evidence}`] : []),
-        `과거 법령 추가 확인 필요: ${answer.temporalReview.historicalLawRequired ? '예' : '아니오'}`,
+        `과거 법령 추가 확인 필요: ${historicalLawReview}`,
     ]);
 }
 

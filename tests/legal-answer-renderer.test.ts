@@ -323,6 +323,40 @@ test('현행 법령·관할 조례·판례의 공식 링크와 실제 반환 건
     assert.match(markdown, /계획된 법령명·쟁점 검색 stream 내 최신순 완결성: 검증됨/);
     assert.match(markdown, /검색계획 hash:/);
     assert.match(markdown, /10건 미만 사유: 관련성 기준을 충족한 공식 검색 결과가 더 없음/);
+    assert.match(markdown, /과거 법령 추가 확인 필요: 아니오/);
+});
+
+test('사건일 미제공 시 과거 법령 확인 필요 여부를 아니오로 단정하지 않는다', () => {
+    const packet = makePacket();
+    packet.scope.eventDate = null;
+    packet.status = 'clarification_required';
+    packet.caseSearchAudit.upstreamComplete = false;
+    packet.caseSearchAudit.shortfallReason = 'upstream_incomplete';
+    packet.unknowns = [{
+        code: 'EVENT_DATE_REQUIRED',
+        text: '전자투표가 이루어진 사건일이 필요하다.',
+        impact: '사건 당시 시행법을 확정할 수 없다.',
+        blocking: true,
+    }];
+
+    const answer = makeAnswer(packet);
+    answer.status = packet.status;
+    answer.scope = structuredClone(packet.scope);
+    answer.conclusion.kind = 'cannot_conclude';
+    answer.temporalReview.summary = '사건일은 인용 조문의 시행일 이후이므로 소급 적용 문제가 없다.';
+    answer.caseSynthesis.upstreamComplete = false;
+    answer.caseSynthesis.shortfallReason = 'upstream_incomplete';
+    answer.applications[0].temporalApplicability = 'unknown';
+    answer.unknowns = structuredClone(packet.unknowns);
+
+    const markdown = renderLegalAnswerV1(packet, answer);
+
+    assert.match(markdown, /사건일: 미제공/);
+    assert.match(markdown, /사건일이 제공되지 않아 사건 당시 시행본 추가 확인 필요 여부를 판단할 수 없습니다/);
+    assert.match(markdown, /과거 법령 추가 확인 필요: 판단 불가 \(사건일 미제공\)/);
+    assert.doesNotMatch(markdown, /과거 법령 추가 확인 필요: 아니오/);
+    assert.doesNotMatch(markdown, /사건일은 인용 조문의 시행일 이후/);
+    assert.doesNotMatch(markdown, /시점 검토 원문 인용/);
 });
 
 test('판례 섹션은 패킷의 최신순과 caseSerialId DESC 동률 순서를 보존한다', () => {
