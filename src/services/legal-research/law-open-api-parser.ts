@@ -472,6 +472,19 @@ export function parseCurrentOrdinanceDetailXml(xml: string): CurrentOrdinanceDet
 
 export function parseCaseDetailXml(xml: string): CaseDetail {
     const parsed = parseXml(xml);
+    const documentEntries = Object.entries(parsed)
+        .filter(([key]) => key !== '?xml');
+    const exactMissingEnvelope = documentEntries.length === 1
+        && documentEntries[0][0] === 'Law'
+        && typeof documentEntries[0][1] === 'string'
+        && documentEntries[0][1].replace(/\s+/g, ' ').trim()
+            === '일치하는 판례가 없습니다. 판례명을 확인하여 주십시오.';
+    if (exactMissingEnvelope) {
+        // 판례 검색 목록에 노출된 ID를 상세 API가 아직 제공하지 않는 실응답을
+        // 일반 schema drift와 구분한다. XML 선언 외 sibling·attribute·nested node가
+        // 없는 exact envelope만 허용하며 나머지는 계속 SCHEMA_DRIFT로 닫힌다.
+        throw new LegalOpenApiError('CASE_DETAIL_NOT_FOUND');
+    }
     const node = lawLikeNode(parsed, ['precservice', '판례', '판례정보']);
     const caseSerialId = pickText(node, '판례정보일련번호', '판례일련번호', 'ID');
     const caseName = pickText(node, '사건명', '판례명');

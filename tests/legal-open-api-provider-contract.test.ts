@@ -183,6 +183,47 @@ test('판례 상세 ID가 요청과 다르면 SOURCE_MISMATCH로 닫힌다', asy
     );
 });
 
+test('검색 목록 판례의 상세 없음 exact 응답만 별도 누락으로 분류한다', async () => {
+    const listedButUnavailable = '<?xml version="1.0" encoding="utf-8"?>'
+        + '<Law>일치하는 판례가 없습니다.  판례명을 확인하여 주십시오.</Law>';
+    const client = new LawOpenApiClient({
+        oc: SECRET_OC,
+        httpGet: async () => ({ data: listedButUnavailable }),
+    });
+
+    await assert.rejects(
+        client.getCaseDetail({ caseSerialId: '622797' }),
+        (error: unknown) => error instanceof LegalOpenApiError
+            && error.code === 'CASE_DETAIL_NOT_FOUND'
+            && error.retryable === false,
+    );
+});
+
+test('exact 누락 문구라도 envelope가 다르면 계속 SCHEMA_DRIFT로 닫힌다', async (t) => {
+    const malformedResponses = [
+        '<Law>예상하지 못한 응답입니다.</Law>',
+        '<Law code="missing">일치하는 판례가 없습니다. 판례명을 확인하여 주십시오.</Law>',
+        '<Law>일치하는 판례가 없습니다. 판례명을 확인하여 주십시오.</Law><Unexpected>x</Unexpected>',
+        '<Law><Message>일치하는 판례가 없습니다. 판례명을 확인하여 주십시오.</Message></Law>',
+        '<Law>prefix 일치하는 판례가 없습니다. 판례명을 확인하여 주십시오.</Law>',
+        '<Law>일치하는 판례가 없습니다. 판례명을 확인하여 주십시오. suffix</Law>',
+    ];
+
+    for (const [index, response] of malformedResponses.entries()) {
+        await t.test(`변형 ${index + 1}`, async () => {
+            const client = new LawOpenApiClient({
+                oc: SECRET_OC,
+                httpGet: async () => ({ data: response }),
+            });
+            await assert.rejects(
+                client.getCaseDetail({ caseSerialId: '622797' }),
+                (error: unknown) => error instanceof LegalOpenApiError
+                    && error.code === 'SCHEMA_DRIFT',
+            );
+        });
+    }
+});
+
 test('호출 취소 signal을 HTTP 계층까지 전달하고 취소를 upstream partial 오류로 바꾸지 않는다', async () => {
     const controller = new AbortController();
     const abortReason = new Error('caller cancelled');

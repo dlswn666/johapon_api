@@ -1001,7 +1001,12 @@ export class LegalResearchOrchestratorV1 {
                 if (result.status === 'fulfilled') {
                     candidates.push(result.value);
                 } else {
-                    if (!isLegalOpenApiError(result.reason) || !result.reason.retryable) {
+                    const caseDetailUnavailable = isLegalOpenApiError(result.reason)
+                        && result.reason.code === 'CASE_DETAIL_NOT_FOUND';
+                    if (
+                        !isLegalOpenApiError(result.reason)
+                        || (!result.reason.retryable && !caseDetailUnavailable)
+                    ) {
                         throw result.reason;
                     }
                     if (result.reason.code === 'RATE_LIMITED') throw result.reason;

@@ -145,6 +145,7 @@ interface FakeProviderOptions {
     detailFactory?: (summary: CaseSummary) => CaseDetail;
     failingDetailIds?: readonly string[];
     failingDetailCode?: ConstructorParameters<typeof LegalOpenApiError>[0];
+    failingDetailCodes?: Readonly<Record<string, ConstructorParameters<typeof LegalOpenApiError>[0]>>;
     currentLawSummary?: CurrentLawSummary;
     currentLawDetail?: CurrentLawDetail;
     ordinanceItems?: CurrentOrdinanceSummary[];
@@ -161,6 +162,7 @@ class FakeProvider implements LegalResearchProviderV1 {
     private readonly detailFactory: (summary: CaseSummary) => CaseDetail;
     private readonly failingDetailIds: Set<string>;
     private readonly failingDetailCode: ConstructorParameters<typeof LegalOpenApiError>[0];
+    private readonly failingDetailCodes: Readonly<Record<string, ConstructorParameters<typeof LegalOpenApiError>[0]>>;
     private readonly currentLawSummary: CurrentLawSummary;
     private readonly currentLawDetail: CurrentLawDetail;
     private readonly ordinanceItems: CurrentOrdinanceSummary[] | undefined;
@@ -177,6 +179,7 @@ class FakeProvider implements LegalResearchProviderV1 {
         this.detailFactory = options.detailFactory ?? detailFor;
         this.failingDetailIds = new Set(options.failingDetailIds ?? []);
         this.failingDetailCode = options.failingDetailCode ?? 'UPSTREAM_TIMEOUT';
+        this.failingDetailCodes = options.failingDetailCodes ?? {};
         this.currentLawSummary = options.currentLawSummary ?? lawSummary;
         this.currentLawDetail = options.currentLawDetail ?? lawDetail;
         this.ordinanceItems = options.ordinanceItems;
@@ -231,7 +234,9 @@ class FakeProvider implements LegalResearchProviderV1 {
     async getCaseDetail({ caseSerialId }: { caseSerialId: string }): Promise<CaseDetail> {
         this.caseDetailIds.push(caseSerialId);
         if (this.failingDetailIds.has(caseSerialId)) {
-            throw new LegalOpenApiError(this.failingDetailCode);
+            throw new LegalOpenApiError(
+                this.failingDetailCodes[caseSerialId] ?? this.failingDetailCode
+            );
         }
         const summary = this.caseItems.find((item) => item.caseSerialId === caseSerialId);
         if (!summary) throw new Error('missing fixture case');
@@ -703,6 +708,63 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.equal(packet.caseSearchAudit.exclusions.fullTextUnavailable, 1);
         assert.equal(packet.caseSearchAudit.shortfallReason, null);
         assert.equal(provider.caseDetailIds.length, 11);
+    });
+
+    it('검색에는 있으나 상세가 없는 판례 2건을 제외하고 최신 적격 10건을 계속 찾는다', async () => {
+        const caseItems = [
+            makeCase(622797, '2026-08-20'),
+            makeCase(618379, '2026-08-19'),
+            ...Array.from({ length: 10 }, (_, index) =>
+                makeCase(720 + index, `2026-08-${String(18 - index).padStart(2, '0')}`)),
+        ];
+        const provider = new FakeProvider(caseItems, {
+            failingDetailIds: [caseItems[0].caseSerialId, caseItems[1].caseSerialId],
+            failingDetailCode: 'CASE_DETAIL_NOT_FOUND',
+        });
+
+        const packet = await buildOrchestratorWithProvider(provider).research(input);
+
+        assert.equal(packet.status, 'partial');
+        assert.equal(packet.cases.length, 10);
+        assert.equal(packet.caseSearchAudit.upstreamComplete, false);
+        assert.equal(packet.caseSearchAudit.exclusions.fullTextUnavailable, 2);
+        assert.equal(packet.caseSearchAudit.shortfallReason, null);
+        assert.equal(provider.caseDetailIds.length, 12);
+    });
+
+    it('상세 누락 뒤 적격 판례가 10건 미만이면 upstream_incomplete를 명시한다', async () => {
+        const caseItems = Array.from({ length: 5 }, (_, index) =>
+            makeCase(760 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
+        const provider = new FakeProvider(caseItems, {
+            failingDetailIds: [caseItems[0].caseSerialId],
+            failingDetailCode: 'CASE_DETAIL_NOT_FOUND',
+        });
+
+        const packet = await buildOrchestratorWithProvider(provider).research(input);
+
+        assert.equal(packet.status, 'partial');
+        assert.equal(packet.cases.length, 4);
+        assert.equal(packet.caseSearchAudit.upstreamComplete, false);
+        assert.equal(packet.caseSearchAudit.shortfallReason, 'upstream_incomplete');
+        assert.equal(packet.caseSearchAudit.exclusions.fullTextUnavailable, 1);
+    });
+
+    it('인식된 상세 누락과 SOURCE_MISMATCH가 섞이면 전체 조사를 fail-closed 한다', async () => {
+        const caseItems = Array.from({ length: 12 }, (_, index) =>
+            makeCase(740 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
+        const provider = new FakeProvider(caseItems, {
+            failingDetailIds: [caseItems[0].caseSerialId, caseItems[1].caseSerialId],
+            failingDetailCodes: {
+                [caseItems[0].caseSerialId]: 'CASE_DETAIL_NOT_FOUND',
+                [caseItems[1].caseSerialId]: 'SOURCE_MISMATCH',
+            },
+        });
+
+        await assert.rejects(
+            () => buildOrchestratorWithProvider(provider).research(input),
+            (error: unknown) => error instanceof LegalOpenApiError
+                && error.code === 'SOURCE_MISMATCH'
+        );
     });
 
     it('판례 상세의 인증·schema·식별자 오류는 partial로 숨기지 않고 fail-closed 한다', async () => {

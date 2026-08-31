@@ -4,6 +4,7 @@ export type LegalOpenApiErrorCode =
     | 'RATE_LIMITED'
     | 'UPSTREAM_TIMEOUT'
     | 'UPSTREAM_UNAVAILABLE'
+    | 'CASE_DETAIL_NOT_FOUND'
     | 'RESPONSE_TOO_LARGE'
     | 'SCHEMA_DRIFT'
     | 'SOURCE_MISMATCH'
@@ -15,6 +16,7 @@ const SAFE_ERROR_MESSAGES: Record<LegalOpenApiErrorCode, string> = {
     RATE_LIMITED: '법령정보 제공자의 호출 제한에 도달했습니다.',
     UPSTREAM_TIMEOUT: '법령정보 제공자가 제한 시간 안에 응답하지 않았습니다.',
     UPSTREAM_UNAVAILABLE: '법령정보 제공자를 일시적으로 사용할 수 없습니다.',
+    CASE_DETAIL_NOT_FOUND: '판례 목록 항목의 상세 원문을 제공자가 반환하지 않았습니다.',
     RESPONSE_TOO_LARGE: '법령정보 제공자의 응답이 허용 크기를 초과했습니다.',
     SCHEMA_DRIFT: '법령정보 제공자의 응답 형식을 검증할 수 없습니다.',
     SOURCE_MISMATCH: '법령정보 출처의 식별자가 요청한 자료와 일치하지 않습니다.',
