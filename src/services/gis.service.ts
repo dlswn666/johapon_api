@@ -1575,10 +1575,34 @@ class GisService {
         unitInfoList: unknown[],
         pnu: string
     ): BuildingDongInfo[] {
-        // 총괄표제부 제외 — 단지 전체 요약이라 동이 아니다
+        // 동으로 인정하는 대장 종류만 통과시킨다 (화이트리스트).
+        //
+        // 운영 실측(2026-08-31, building_external_refs 437건):
+        //   regstrGbCdNm='일반' × regstrKindCdNm='일반건축물'  387건
+        //   regstrGbCdNm='집합' × regstrKindCdNm='표제부'       50건 (동별 표제부)
+        // '총괄표제부'(단지 전체 요약)는 아직 수집된 적이 없다 — 조합 데이터에
+        // 아파트 단지가 없어서다.
+        //
+        // 블랙리스트(`!== '총괄표제부'`)로 두면 **처음 보는 코드값이 그대로 동이
+        // 된다**. 아파트 단지를 처음 수집할 때 총괄표제부 표기가 조금이라도
+        // 다르면 단지마다 유령 동이 하나씩 생긴다. 그래서 화이트리스트로 막고,
+        // 모르는 값은 제외하면서 경고를 남겨 드러나게 한다.
+        const DONG_REGISTRY_KINDS = new Set(['일반건축물', '표제부']);
         const titles = (titleInfoList as Record<string, unknown>[]).filter((title) => {
             const kind = this.parseText(title.regstrKindCdNm);
-            return kind !== '총괄표제부';
+            if (kind === null) {
+                // 종류 미상은 통과시킨다 — 과거 수집분에 종류가 비어 있을 수 있고,
+                // 여기서 막으면 기존 단독건물이 통째로 사라진다.
+                return true;
+            }
+            if (DONG_REGISTRY_KINDS.has(kind)) return true;
+            if (kind !== '총괄표제부') {
+                logger.warn(
+                    `알 수 없는 대장 종류라 동에서 제외한다 (PNU: ${pnu}, regstrKindCdNm: ${kind}). ` +
+                        '동으로 인정해야 하는 값이면 DONG_REGISTRY_KINDS 에 추가할 것.'
+                );
+            }
+            return false;
         });
 
         const dongs: BuildingDongInfo[] = titles.map((title) => {

@@ -163,3 +163,32 @@ test('같은 입력을 두 번 처리해도 동 수와 식별자가 같다 (멱�
         second.map((d) => d.registryPk),
     );
 });
+
+test('대장 종류는 화이트리스트로 거른다 — 처음 보는 값은 동이 되지 않는다', async () => {
+    // 운영 실측: regstrKindCdNm 은 '일반건축물'(387) / '표제부'(50) 두 값만
+    // 나타났다. '총괄표제부'는 아직 수집된 적이 없다(아파트 단지 미수집).
+    // 블랙리스트로 두면 처음 보는 코드값이 그대로 동이 되어 단지마다
+    // 유령 동이 생긴다.
+    const titles = [
+        { mgmBldrgstPk: 'PK-GEN', regstrKindCdNm: '일반건축물', mainPurpsCdNm: '단독주택' },
+        { mgmBldrgstPk: 'PK-SET', regstrKindCdNm: '표제부', dongNm: '101동', mainPurpsCdNm: '아파트' },
+        { mgmBldrgstPk: 'PK-SUM', regstrKindCdNm: '총괄표제부', mainPurpsCdNm: '아파트' },
+        { mgmBldrgstPk: 'PK-NEW', regstrKindCdNm: '장래에 생길 새 종류', mainPurpsCdNm: '아파트' },
+    ];
+
+    const dongs = await compose(titles, [], PNU);
+
+    assert.deepEqual(
+        dongs.map((d) => d.registryPk).sort(),
+        ['PK-GEN', 'PK-SET'],
+        '화이트리스트에 없는 종류가 동이 됐다',
+    );
+});
+
+test('대장 종류가 비어 있으면 통과시킨다 (과거 수집분 보호)', async () => {
+    // 종류가 없는 과거 데이터에서 막으면 기존 단독건물이 통째로 사라진다.
+    const titles = [{ mgmBldrgstPk: 'PK-OLD', mainPurpsCdNm: '단독주택' }];
+    const dongs = await compose(titles, [], PNU);
+    assert.equal(dongs.length, 1);
+    assert.equal(dongs[0].registryPk, 'PK-OLD');
+});
