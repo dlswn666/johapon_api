@@ -160,6 +160,16 @@ export const env = {
     LAND_AREA_SYNC_ALLOWED_TARGETS_MANIFEST:
         landAreaSyncAllowedTargetsManifest,
 
+    // 현행 정비사업 법률 MCP
+    LAW_API_OC: getEnvVar('LAW_API_OC', false),
+    LEGAL_MCP_TOKEN_SHA256: getEnvVar('LEGAL_MCP_TOKEN_SHA256', false),
+    LEGAL_MCP_PACKET_SIGNING_KEY: getEnvVar('LEGAL_MCP_PACKET_SIGNING_KEY', false),
+    LEGAL_MCP_ALLOWED_HOSTS: getEnvVar('LEGAL_MCP_ALLOWED_HOSTS', false),
+    LEGAL_MCP_ALLOWED_ORIGINS: getEnvVar('LEGAL_MCP_ALLOWED_ORIGINS', false),
+    LEGAL_MCP_RESEARCH_DEADLINE_MS: getEnvNumber('LEGAL_MCP_RESEARCH_DEADLINE_MS', 45_000),
+    LEGAL_MCP_RESEARCH_MAX_CONCURRENCY: getEnvNumber('LEGAL_MCP_RESEARCH_MAX_CONCURRENCY', 2),
+    LEGAL_MCP_RESEARCH_MAX_QUEUE: getEnvNumber('LEGAL_MCP_RESEARCH_MAX_QUEUE', 4),
+
     // 헬퍼
     isDevelopment: process.env.NODE_ENV === 'development',
     isProduction: process.env.NODE_ENV === 'production',
