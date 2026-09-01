@@ -8,6 +8,17 @@ import { normalizeDongForKey } from '../utils/dong-ho';
 
 const logger = createLogger('GIS-API');
 
+/**
+ * 건축물대장 조회 실패 — '조회 결과 0건' 과 구분하기 위한 예외.
+ * 0건으로 뭉개면 호출부가 platGbCd 불일치로 오독해 엉뚱한 폴백을 탄다.
+ */
+class BuildingRegistryFetchError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'BuildingRegistryFetchError';
+    }
+}
+
 type BuildingExternalRefSource = 'BUILDING_REGISTER' | 'APART_HOUSING_PRICE' | 'INDIVIDUAL_HOUSING_PRICE';
 
 export interface BuildingExternalRefInfo {
@@ -857,22 +868,59 @@ class GisService {
         const rows: unknown[] = [];
         let totalCount: number | null = null;
 
-        for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
-            try {
-                const response = await axios.get(endpoint, {
-                    params: {
-                        serviceKey: this.dataPortalApiKey,
-                        sigunguCd: pnuParts.sigunguCd,
-                        bjdongCd: pnuParts.bjdongCd,
-                        ...(platGbCd !== undefined ? { platGbCd } : {}),
-                        bun: pnuParts.bun,
-                        ji: pnuParts.ji,
-                        numOfRows,
-                        pageNo,
-                        _type: 'json',
-                    },
-                });
+        const maxAttempts = 3;
 
+        for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
+            let response;
+            let lastError: unknown = null;
+
+            // 일시 오류(5xx·네트워크)는 재시도한다. 한 페이지 실패로 이미 모은
+            // 행까지 버리면 그 필지의 건물이 통째로 없는 것처럼 처리된다.
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    response = await axios.get(endpoint, {
+                        params: {
+                            serviceKey: this.dataPortalApiKey,
+                            sigunguCd: pnuParts.sigunguCd,
+                            bjdongCd: pnuParts.bjdongCd,
+                            ...(platGbCd !== undefined ? { platGbCd } : {}),
+                            bun: pnuParts.bun,
+                            ji: pnuParts.ji,
+                            numOfRows,
+                            pageNo,
+                            _type: 'json',
+                        },
+                    });
+                    lastError = null;
+                    break;
+                } catch (error) {
+                    lastError = error;
+                    if (attempt < maxAttempts && this.isRetriableRegistryError(error)) {
+                        logger.warn(
+                            `Building registry ${label} transient error, retrying ` +
+                                `(PNU: ${pnu}, page: ${pageNo}, attempt: ${attempt}/${maxAttempts})`
+                        );
+                        await this.sleepForRetry(attempt);
+                        continue;
+                    }
+                    break;
+                }
+            }
+
+            if (lastError !== null || !response) {
+                // 오류를 '0건'으로 돌려주면 호출부가 platGbCd 불일치로 오독해
+                // 엉뚱한 폴백을 타고 부분 데이터를 완전한 것처럼 쓴다.
+                // 실패는 실패로 던져 호출부가 명시적으로 처리하게 한다.
+                logger.error(
+                    `Building registry ${label} fetch error (PNU: ${pnu}, page: ${pageNo})`,
+                    lastError
+                );
+                throw new BuildingRegistryFetchError(
+                    `Building registry ${label} fetch failed (PNU: ${pnu}, page: ${pageNo})`
+                );
+            }
+
+            try {
                 const body = response.data.response?.body;
                 const pageRows = this.toArray<unknown>(body?.items?.item);
                 // 이후 페이지에서 totalCount 파싱이 실패해도 앞서 파싱한 값을
@@ -1537,6 +1585,51 @@ class GisService {
      * @param accumulated  지금까지 누적한 행 수
      * @param totalCount   서버가 알려준 전체 건수 (모르면 null)
      */
+    /**
+     * 건축물대장 호출의 일시 오류인지 판단한다 — 재건축 P2 (실호출로 발견)
+     *
+     * 공공데이터포털은 같은 요청에도 간헐적으로 503 을 준다(실측: 반복 호출에서
+     * 200/200/503/200 이 섞여 나왔다). 1,344세대는 14페이지가 필요하므로
+     * 한 번만 흔들려도 그 필지의 건물이 통째로 사라진다.
+     * 4xx(키 오류·잘못된 파라미터)는 반복해도 결과가 같으므로 재시도하지 않는다.
+     */
+    /**
+     * 전유부가 없는 건물에 표제부 면적으로 단일 세대를 채울지 판단한다.
+     *
+     * 원래 단독건물(전유부가 없는 대장)의 면적 누락을 막는 폴백인데,
+     * 아파트 단지의 부속건물(경비실·지하주차장·창고)도 전유부가 0건이라
+     * 그대로 두면 각각 '세대 1개'가 된다. 실측(삼각산아이원): 1,344세대가
+     * 1,359로 부풀고, 소유주 수 추정(세대 수 기준)도 함께 틀어진다.
+     */
+    private shouldFillSingleUnitFallback(dong: {
+        buildingType: string;
+        registryPk: string | null;
+        isWelfareFacility: boolean;
+        units: unknown[];
+    }): boolean {
+        if (dong.units.length > 0) return false;
+        if (dong.buildingType === 'NONE') return false;
+        if (!dong.registryPk) return false;
+        return !dong.isWelfareFacility;
+    }
+
+    private isRetriableRegistryError(error: unknown): boolean {
+        if (error === null || typeof error !== 'object') return false;
+        const err = error as { response?: { status?: number }; code?: string };
+        const status = err.response?.status;
+        if (typeof status === 'number') return status >= 500 && status < 600;
+        return err.code === 'ECONNRESET'
+            || err.code === 'ETIMEDOUT'
+            || err.code === 'ECONNABORTED'
+            || err.code === 'EAI_AGAIN';
+    }
+
+    /** 재시도 간 대기 (지수 백오프) */
+    private async sleepForRetry(attempt: number): Promise<void> {
+        const delayMs = Math.min(2000, 300 * 2 ** (attempt - 1));
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
     private shouldStopRegistryPaging(
         pageRowCount: number,
         accumulated: number,
@@ -1786,7 +1879,7 @@ class GisService {
             // 전유부가 없는 단독건물은 표제부 면적으로 단일 세대를 만든다
             // (현행 getBuildingInfo 폴백 유지)
             for (const dong of dongs) {
-                if (dong.units.length === 0 && dong.buildingType !== 'NONE' && dong.registryPk) {
+                if (this.shouldFillSingleUnitFallback(dong)) {
                     const title = (titleInfoList as Record<string, unknown>[]).find(
                         (t) => this.parseText(t.mgmBldrgstPk) === dong.registryPk
                     );

@@ -257,3 +257,36 @@ test('기존 일반건축물 분류는 그대로다 (재개발 조합 회귀 방
     assert.equal(dongs.find((d) => d.registryPk === 'PK-C')?.buildingType, 'COMMERCIAL');
     assert.equal(dongs.find((d) => d.registryPk === 'PK-C')?.isWelfareFacility, true);
 });
+
+test('부속건물에는 단독건물용 세대 폴백을 적용하지 않는다', async () => {
+    // 전유부가 없는 단독건물은 표제부 면적으로 1세대를 만든다(기존 동작).
+    // 그런데 아파트 단지의 부속건물(경비실·주차장·창고)도 전유부가 0건이라
+    // 그대로 두면 경비실 15동이 각각 '세대 1개'가 되어 세대 수와 소유주 수
+    // 추정이 부풀려진다. 실측: 삼각산아이원 1,344세대가 1,359로 잡혔다.
+    const { gisService } = await gisModule;
+    const svc = gisService as unknown as {
+        shouldFillSingleUnitFallback(d: { buildingType: string; registryPk: string | null; isWelfareFacility: boolean; units: unknown[] }): boolean;
+    };
+
+    assert.equal(
+        svc.shouldFillSingleUnitFallback({
+            buildingType: 'DETACHED_HOUSE', registryPk: 'PK', isWelfareFacility: false, units: [],
+        }),
+        true,
+        '단독건물은 폴백 대상이다',
+    );
+    assert.equal(
+        svc.shouldFillSingleUnitFallback({
+            buildingType: 'VILLA', registryPk: 'PK', isWelfareFacility: true, units: [],
+        }),
+        false,
+        '부속건물(복리시설)은 폴백 대상이 아니다',
+    );
+    assert.equal(
+        svc.shouldFillSingleUnitFallback({
+            buildingType: 'APARTMENT', registryPk: 'PK', isWelfareFacility: false, units: [{}],
+        }),
+        false,
+        '이미 세대가 있으면 폴백하지 않는다',
+    );
+});
