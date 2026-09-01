@@ -877,10 +877,10 @@ class GisService {
                 const pageRows = this.toArray<unknown>(body?.items?.item);
                 // 이후 페이지에서 totalCount 파싱이 실패해도 앞서 파싱한 값을
                 // 보존한다 — 페이지 행수로 덮으면 조기 종료로 조용히 잘린다.
-                totalCount = this.parseNumber(body?.totalCount) ?? totalCount ?? pageRows.length;
+                totalCount = this.parseNumber(body?.totalCount) ?? totalCount ?? null;
                 rows.push(...pageRows);
 
-                if (pageRows.length === 0 || rows.length >= totalCount || pageRows.length < numOfRows) {
+                if (this.shouldStopRegistryPaging(pageRows.length, rows.length, totalCount)) {
                     return rows;
                 }
             } catch (error) {
@@ -1258,6 +1258,9 @@ class GisService {
             totalCount = this.parseNumber(container.totalCount) ?? pageRows.length;
             rows.push(...pageRows);
 
+            // NOTE: 건축물대장 쪽은 서버가 numOfRows 를 무시해 이 조건이 조용한
+            // 절단을 만들었다(shouldStopRegistryPaging 참조). VWorld 는 아직
+            // 같은 동작이 확인되지 않아 그대로 둔다 — 확인 후 정리할 것.
             if (pageRows.length === 0 || rows.length >= totalCount || pageRows.length < numOfRows) {
                 return rows;
             }
@@ -1460,11 +1463,16 @@ class GisService {
      * 건축물대장 주용도 코드를 기반으로 건물 유형을 분류합니다.
      */
     private classifyBuildingType(
-        mainPurpose: string | null
+        mainPurpose: string | null,
+        etcPurpose?: string | null
     ): 'DETACHED_HOUSE' | 'VILLA' | 'APARTMENT' | 'COMMERCIAL' | 'MIXED' | 'NONE' {
-        if (!mainPurpose) return 'NONE';
+        // etcPurps 를 앞에 붙인다 — 집합건축물은 mainPurpsCdNm 이 '공동주택'
+        // 이라는 상위 분류로만 오고 구체 용도가 etcPurps 에 있다.
+        // 이걸 안 보면 아파트 단지가 통째로 VILLA 로 분류된다(실측).
+        const combined = `${etcPurpose ?? ''} ${mainPurpose ?? ''}`.trim();
+        if (!combined) return 'NONE';
 
-        const purpose = mainPurpose.toLowerCase();
+        const purpose = combined.toLowerCase();
 
         // 아파트
         if (purpose.includes('아파트')) {
@@ -1516,11 +1524,39 @@ class GisService {
      * 주택단지는 '아파트 또는 연립주택'만 해당한다(§2 7호 마목).
      * **다세대주택은 주택단지가 아니라 §35④ 트랙**이므로 반드시 구분한다.
      */
+    /**
+     * 건축물대장 페이지 수집을 멈출지 판단한다 — 재건축 P2 (실호출로 발견)
+     *
+     * 실측(삼각산아이원 전유부, totalCount=1344): `numOfRows=1000` 을 보내도
+     * 서버는 **페이지당 100건 고정**으로 준다. 종료 조건에
+     * `pageRows.length < numOfRows` 를 넣으면 1페이지에서 바로 멈춰
+     * **1,344건 중 100건만 수집하고 조용히 잘린다.**
+     * 요청한 페이지 크기를 서버가 지킨다는 보장이 없으므로 판단에 쓰지 않는다.
+     *
+     * @param pageRowCount 이번 페이지에서 받은 행 수
+     * @param accumulated  지금까지 누적한 행 수
+     * @param totalCount   서버가 알려준 전체 건수 (모르면 null)
+     */
+    private shouldStopRegistryPaging(
+        pageRowCount: number,
+        accumulated: number,
+        totalCount: number | null
+    ): boolean {
+        if (pageRowCount === 0) return true;
+        // 총건수를 모르면 더 받을 근거가 없다 — 한 페이지로 끝낸다.
+        if (totalCount === null) return true;
+        return accumulated >= totalCount;
+    }
+
     private classifyHousingType(
-        mainPurpose: string | null
+        mainPurpose: string | null,
+        etcPurpose?: string | null
     ): 'APARTMENT' | 'ROW_HOUSE' | 'MULTIPLEX' | 'DETACHED' | 'OTHER' | null {
-        if (!mainPurpose) return null;
-        const purpose = mainPurpose.toLowerCase();
+        // etcPurps 를 먼저 본다 — 집합건축물 표제부는 mainPurpsCdNm 이
+        // '공동주택' 이라는 상위 분류로만 오고, 아파트/연립/다세대 구분은
+        // etcPurps 에 있다(실측: 삼각산아이원 101동 etcPurps='아파트(100세대)').
+        const purpose = `${etcPurpose ?? ''} ${mainPurpose ?? ''}`.toLowerCase().trim();
+        if (!purpose) return null;
 
         if (purpose.includes('아파트')) return 'APARTMENT';
         if (purpose.includes('연립주택')) return 'ROW_HOUSE';
@@ -1541,9 +1577,19 @@ class GisService {
      * 복리시설은 정비구역 레벨에서 1개 동으로 의제된다(법제처 22-0376).
      * 다단지 구역에서도 단지별로 쪼개지 않는다.
      */
-    private isWelfareFacility(mainPurpose: string | null): boolean {
-        if (!mainPurpose) return false;
-        const purpose = mainPurpose.toLowerCase();
+    private isWelfareFacility(
+        mainPurpose: string | null,
+        mainAtchGb?: string | null,
+        etcPurpose?: string | null
+    ): boolean {
+        // ① 대장이 직접 알려주는 구분이 가장 정확하다.
+        //    실측(삼각산아이원 35행): 경비실·관리동·노인정·지하주차장·창고가
+        //    모두 mainPurpsCdNm='공동주택' 으로 와서 용도 문자열로는 구분이
+        //    안 되고, mainAtchGbCdNm='부속건축물' 만이 이들을 가른다.
+        if (this.cleanTextValue(mainAtchGb) === '부속건축물') return true;
+
+        // ② 일반건축물은 용도가 구체적으로 오므로 키워드로 판정한다.
+        const purpose = `${etcPurpose ?? ''} ${mainPurpose ?? ''}`.toLowerCase();
         return (
             purpose.includes('근린생활시설') ||
             purpose.includes('판매시설') ||
@@ -1552,6 +1598,11 @@ class GisService {
             purpose.includes('노유자시설') ||
             purpose.includes('운동시설')
         );
+    }
+
+    /** parseText 와 같은 정리를 하되 이 파일 안에서만 쓰는 헬퍼 */
+    private cleanTextValue(value: unknown): string | null {
+        return this.parseText(value);
     }
 
     /**
@@ -1606,20 +1657,22 @@ class GisService {
         });
 
         const dongs: BuildingDongInfo[] = titles.map((title) => {
-            const mainPurpose =
-                (title.mainPurpsCdNm as string) || (title.etcPurps as string) || null;
+            const mainPurpose = this.parseText(title.mainPurpsCdNm);
+            const etcPurpose = this.parseText(title.etcPurps);
             const dongName = this.parseText(title.dongNm);
 
             return {
                 registryPk: this.parseText(title.mgmBldrgstPk),
                 dongName,
                 dongNameNormalized: normalizeDongForKey(dongName, this.parseText(title.bldNm)),
-                buildingType: this.classifyBuildingType(mainPurpose),
-                housingType: this.classifyHousingType(mainPurpose),
+                buildingType: this.classifyBuildingType(mainPurpose, etcPurpose),
+                housingType: this.classifyHousingType(mainPurpose, etcPurpose),
                 buildingName: this.parseText(title.bldNm),
                 mainPurpose,
                 floorCount: Number(title.grndFlrCnt) || 0,
-                isWelfareFacility: this.isWelfareFacility(mainPurpose),
+                isWelfareFacility: this.isWelfareFacility(
+                    mainPurpose, this.parseText(title.mainAtchGbCdNm), etcPurpose
+                ),
                 externalRefs: (() => { const r = this.buildExternalRef(title, pnu); return r ? [r] : []; })(),
                 units: [],
             };

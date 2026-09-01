@@ -192,3 +192,68 @@ test('대장 종류가 비어 있으면 통과시킨다 (과거 수집분 보호
     assert.equal(dongs.length, 1);
     assert.equal(dongs[0].registryPk, 'PK-OLD');
 });
+
+/**
+ * 실데이터 회귀 — 삼각산아이원(서울 강북구 미아동 1357) 표제부 35행
+ *
+ * 건축물대장 실호출로 드러난 결함:
+ *  - 아파트 단지인데 mainPurpsCdNm 이 '아파트'가 아니라 **'공동주택'** 으로 온다.
+ *    구체 용도는 etcPurps 에 '아파트(100세대)' 로 들어 있다.
+ *  - 부속건물(경비실·관리동·노인정·지하주차장·창고)도 mainPurpsCdNm 이
+ *    '공동주택' 이라 용도 문자열만으로는 구분이 안 된다.
+ *    구분은 mainAtchGbCdNm = '부속건축물' 이 한다.
+ */
+test('공동주택 상위분류라도 etcPurps 로 아파트를 식별한다', async () => {
+    const titles = [
+        {
+            mgmBldrgstPk: 'PK-101', regstrKindCdNm: '표제부', dongNm: '101동',
+            mainPurpsCdNm: '공동주택', etcPurps: '아파트(100세대)',
+            mainAtchGbCdNm: '주건축물', grndFlrCnt: 25,
+        },
+    ];
+    const dongs = await compose(titles, [], PNU);
+    assert.equal(dongs[0].buildingType, 'APARTMENT');
+    assert.equal(dongs[0].housingType, 'APARTMENT');
+    assert.equal(dongs[0].isWelfareFacility, false);
+});
+
+test('연립·다세대도 etcPurps 로 갈린다 (§2 7호 주택단지 판정 입력)', async () => {
+    const rows = [
+        ['PK-R', '연립주택', 'ROW_HOUSE'],
+        ['PK-M', '다세대주택', 'MULTIPLEX'],
+    ] as const;
+    for (const [pk, etc, expected] of rows) {
+        const dongs = await compose(
+            [{ mgmBldrgstPk: pk, regstrKindCdNm: '표제부', dongNm: '가동',
+               mainPurpsCdNm: '공동주택', etcPurps: etc, mainAtchGbCdNm: '주건축물' }],
+            [], PNU,
+        );
+        assert.equal(dongs[0].housingType, expected, `${etc} → ${expected}`);
+    }
+});
+
+test('부속건축물은 mainAtchGbCdNm 으로 복리시설 판정한다', async () => {
+    const titles = [
+        { mgmBldrgstPk: 'PK-G', regstrKindCdNm: '표제부', dongNm: '경비실1',
+          mainPurpsCdNm: '공동주택', etcPurps: '경비실', mainAtchGbCdNm: '부속건축물' },
+        { mgmBldrgstPk: 'PK-P', regstrKindCdNm: '표제부', dongNm: '지하주차장1',
+          mainPurpsCdNm: '공동주택', etcPurps: '주차장', mainAtchGbCdNm: '부속건축물' },
+        { mgmBldrgstPk: 'PK-101', regstrKindCdNm: '표제부', dongNm: '101동',
+          mainPurpsCdNm: '공동주택', etcPurps: '아파트(100세대)', mainAtchGbCdNm: '주건축물' },
+    ];
+    const dongs = await compose(titles, [], PNU);
+    const welfare = dongs.filter((d) => d.isWelfareFacility).map((d) => d.dongName).sort();
+    assert.deepEqual(welfare, ['경비실1', '지하주차장1']);
+    assert.equal(dongs.find((d) => d.dongName === '101동')?.isWelfareFacility, false);
+});
+
+test('기존 일반건축물 분류는 그대로다 (재개발 조합 회귀 방지)', async () => {
+    const titles = [
+        { mgmBldrgstPk: 'PK-D', regstrKindCdNm: '일반건축물', mainPurpsCdNm: '단독주택' },
+        { mgmBldrgstPk: 'PK-C', regstrKindCdNm: '일반건축물', mainPurpsCdNm: '제2종근린생활시설' },
+    ];
+    const dongs = await compose(titles, [], PNU);
+    assert.equal(dongs.find((d) => d.registryPk === 'PK-D')?.buildingType, 'DETACHED_HOUSE');
+    assert.equal(dongs.find((d) => d.registryPk === 'PK-C')?.buildingType, 'COMMERCIAL');
+    assert.equal(dongs.find((d) => d.registryPk === 'PK-C')?.isWelfareFacility, true);
+});
