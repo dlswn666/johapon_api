@@ -4,7 +4,7 @@
  * 권위 스펙: docs/2026-07-23-land-area-sync-design.md §10.1~10.3, §10.5, §10.7.
  *
  * 설계 원칙:
- *  - HTTPS endpoint 상수(gis-shared/endpoints.ts)만 사용한다. inspector의 http:// 상수는 공유 금지.
+ *  - HTTPS endpoint 상수(gis-shared/endpoints.ts)만 사용한다.
  *  - COMPLETE / COMPLETE_ZERO / FAILED / INCOMPLETE 4상태를 엄격히 분리한다.
  *  - pagination 완전성을 확인한 뒤에만 dedup한다.
  *  - retry는 timeout/429/5xx만, page loop·retry delay 모두 같은 AbortSignal을 확인한다.
@@ -33,6 +33,7 @@ import type {
     StrictScan,
 } from '../../types/land-area-sync.types';
 import { parseVworldRequestIntervalMs } from '../../utils/vworld-request-interval';
+import { normalizeDataPortalApiKey } from '../../utils/data-portal-api-key';
 import { convertPlatGbCdToLandGbn } from '../gis-shared/pnu';
 
 /** 모든 strict scan은 numOfRows=1000으로 페이지네이션한다 (표제부 포함, DESIGN §10.2) */
@@ -363,7 +364,7 @@ export class LandAreaSyncAdapter {
         const bun = pnu.slice(11, 15);
         const ji = pnu.slice(15, 19);
         const baseParams: Record<string, unknown> = {
-            serviceKey: auth.serviceKey,
+            serviceKey: normalizeDataPortalApiKey(auth.serviceKey),
             sigunguCd,
             bjdongCd,
             platGbCd: landGbn === '2' ? '1' : '0',

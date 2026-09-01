@@ -8,6 +8,7 @@ import {
 } from '../types/gis-inspect.types';
 import { buildPnuFromKakaoAddress } from './gis-shared/pnu';
 import { maskSecretParams } from './gis-shared/secret-mask';
+import { GIS_SHARED_ENDPOINTS } from './gis-shared/endpoints';
 
 const logger = createLogger('GIS-INSPECT');
 
@@ -17,9 +18,7 @@ export { buildPnuFromKakaoAddress, maskSecretParams };
 const VWORLD_ADDRESS_URL = 'https://api.vworld.kr/req/address';
 const VWORLD_DATA_URL = 'https://api.vworld.kr/req/data';
 const VWORLD_NED_BASE = 'https://api.vworld.kr/ned/data';
-const DATA_PORTAL_BOUNDARY_URL =
-    'http://apis.data.go.kr/1611000/nsdi/ContinuousLandInfoService/getContinuousLandInfoWFS';
-const DATA_PORTAL_BLDRGST_BASE = 'http://apis.data.go.kr/1613000/BldRgstHubService';
+const VWORLD_BOUNDARY_WFS_URL = 'https://api.vworld.kr/ned/wfs/getCtnlgsSpceWFS';
 const REQUEST_TIMEOUT_MS = 15000;
 
 /** 응답 steps 배열의 고정 순서 */
@@ -27,8 +26,8 @@ const STEP_DEFS: Array<{ id: string; name: string; provider: 'VWORLD' | 'DATA_GO
     { id: 'geocode', name: '지오코딩 (주소→좌표)', provider: 'VWORLD' },
     { id: 'coord_to_pnu', name: '좌표→PNU (연속지적도 조회)', provider: 'VWORLD' },
     { id: 'reverse_geocode', name: '역지오코딩 (좌표→도로명주소)', provider: 'VWORLD' },
-    { id: 'boundary_dataportal', name: '필지 경계 — 연속지적도형정보 (1차 소스)', provider: 'DATA_GO_KR' },
-    { id: 'boundary_vworld', name: '필지 경계 — 연속지적도 (폴백 소스)', provider: 'VWORLD' },
+    { id: 'boundary_vworld', name: '필지 경계 — 브이월드 데이터 API (1차 소스)', provider: 'VWORLD' },
+    { id: 'boundary_vworld_wfs', name: '필지 경계 — 브이월드 연속지적도 WFS (보조 소스)', provider: 'VWORLD' },
     { id: 'land_registry', name: '토지대장 (ladfrlList)', provider: 'VWORLD' },
     { id: 'land_price', name: '개별공시지가', provider: 'VWORLD' },
     { id: 'apart_price', name: '공동주택가격', provider: 'VWORLD' },
@@ -132,6 +131,40 @@ export class GisInspectService {
                 error: err?.message || '알 수 없는 오류',
             };
         }
+    }
+
+    /** 경계 API의 HTTP 200 provider 오류 envelope를 성공으로 오판하지 않는다. */
+    private hasBoundaryProviderErrorBody(data: unknown): boolean {
+        if (typeof data === 'string') {
+            return /<(?:\w+:)?(?:ExceptionReport|ServiceExceptionReport|ServiceException)\b/i.test(data);
+        }
+        if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+
+        const record = data as Record<string, unknown>;
+        const response = record.response as { status?: unknown } | undefined;
+        if (String(response?.status ?? '').toUpperCase() === 'ERROR') return true;
+        if (record.error !== undefined && record.error !== null && record.error !== '') return true;
+
+        return Object.keys(record).some((key) =>
+            /^(?:\w+:)?(?:ExceptionReport|ServiceExceptionReport|ServiceException)$/i.test(key)
+        );
+    }
+
+    private async callBoundaryStep(
+        id: 'boundary_vworld' | 'boundary_vworld_wfs',
+        endpoint: string,
+        params: Record<string, unknown>
+    ): Promise<InspectStep> {
+        const step = await this.callStep(id, endpoint, params);
+        if (step.status !== 'SUCCESS' || !this.hasBoundaryProviderErrorBody(step.rawJson)) {
+            return step;
+        }
+
+        return {
+            ...step,
+            status: 'ERROR',
+            error: 'VWorld 경계 API가 오류 응답을 반환했습니다.',
+        };
     }
 
     private skippedStep(id: string, endpoint: string, reason: string): InspectStep {
@@ -256,14 +289,14 @@ export class GisInspectService {
         // ── 4~13. PNU 의존 스텝
         if (!pnu) {
             const reason = '주소에서 PNU를 확보하지 못했습니다.';
-            byId.set('boundary_dataportal', this.skippedStep('boundary_dataportal', DATA_PORTAL_BOUNDARY_URL, reason));
             byId.set('boundary_vworld', this.skippedStep('boundary_vworld', VWORLD_DATA_URL, reason));
+            byId.set('boundary_vworld_wfs', this.skippedStep('boundary_vworld_wfs', VWORLD_BOUNDARY_WFS_URL, reason));
             byId.set('land_registry', this.skippedStep('land_registry', `${VWORLD_NED_BASE}/ladfrlList`, reason));
             byId.set('land_price', this.skippedStep('land_price', `${VWORLD_NED_BASE}/getIndvdLandPriceAttr`, reason));
             byId.set('apart_price', this.skippedStep('apart_price', `${VWORLD_NED_BASE}/getApartHousingPriceAttr`, reason));
             byId.set('indiv_house_price', this.skippedStep('indiv_house_price', `${VWORLD_NED_BASE}/getIndvdHousingPriceAttr`, reason));
-            byId.set('building_title', this.skippedStep('building_title', `${DATA_PORTAL_BLDRGST_BASE}/getBrTitleInfo`, reason));
-            byId.set('building_units', this.skippedStep('building_units', `${DATA_PORTAL_BLDRGST_BASE}/getBrExposInfo`, reason));
+            byId.set('building_title', this.skippedStep('building_title', GIS_SHARED_ENDPOINTS.getBrTitleInfo, reason));
+            byId.set('building_units', this.skippedStep('building_units', GIS_SHARED_ENDPOINTS.getBrExposInfo, reason));
             byId.set('land_share_registry', this.skippedStep('land_share_registry', `${VWORLD_NED_BASE}/ldaregList`, reason));
             byId.set('building_ho_land_share', this.skippedStep('building_ho_land_share', `${VWORLD_NED_BASE}/buldHoCoList`, reason));
         } else {
@@ -286,28 +319,31 @@ export class GisInspectService {
                 _type: 'json',
             };
 
-            // data.go.kr 3종은 병렬 (레이트리밋 없음)
+            // data.go.kr 건축물대장 2종은 병렬 (레이트리밋 없음)
             const dataPortalPromise = Promise.all([
-                this.callStep('boundary_dataportal', DATA_PORTAL_BOUNDARY_URL, {
-                    serviceKey: env.DATA_PORTAL_API_KEY, pnu, format: 'json', numOfRows: 1, pageNo: 1,
-                }),
                 this.callStep(
                     'building_title',
-                    `${DATA_PORTAL_BLDRGST_BASE}/getBrTitleInfo`,
+                    GIS_SHARED_ENDPOINTS.getBrTitleInfo,
                     { ...bldRgstParams }
                 ),
                 this.callStep(
                     'building_units',
-                    `${DATA_PORTAL_BLDRGST_BASE}/getBrExposInfo`,
+                    GIS_SHARED_ENDPOINTS.getBrExposInfo,
                     { ...bldRgstParams }
                 ),
             ]);
 
             // VWorld는 순차 (NED 호출 전 interval 준수)
-            byId.set('boundary_vworld', await this.callStep('boundary_vworld', VWORLD_DATA_URL, {
-                service: 'data', request: 'GetFeature', data: 'LP_PA_CBND_BUBUN',
+            byId.set('boundary_vworld', await this.callBoundaryStep('boundary_vworld', VWORLD_DATA_URL, {
+                service: 'data', request: 'GetFeature', version: '2.0', data: 'LP_PA_CBND_BUBUN',
                 key: env.VWORLD_API_KEY, format: 'json', domain: env.VWORLD_API_DOMAIN,
-                attrFilter: `pnu:=:${pnu}`, geometry: true, size: 1,
+                crs: 'EPSG:4326', attrFilter: `pnu:=:${pnu}`,
+                geometry: true, attribute: true, size: 1, page: 1,
+            }));
+            byId.set('boundary_vworld_wfs', await this.callBoundaryStep('boundary_vworld_wfs', VWORLD_BOUNDARY_WFS_URL, {
+                key: env.VWORLD_API_KEY, domain: env.VWORLD_API_DOMAIN,
+                typename: 'dt_d002', pnu, maxFeatures: 1,
+                resultType: 'results', srsName: 'EPSG:4326', output: 'application/json',
             }));
 
             await this.sleep(this.nedIntervalMs);
@@ -326,8 +362,7 @@ export class GisInspectService {
             byId.set('building_ho_land_share', await this.callStep('building_ho_land_share', `${VWORLD_NED_BASE}/buldHoCoList`,
                 this.nedParams({ pnu })));
 
-            const [boundaryStep, titleStep, unitsStep] = await dataPortalPromise;
-            byId.set('boundary_dataportal', boundaryStep);
+            const [titleStep, unitsStep] = await dataPortalPromise;
             byId.set('building_title', titleStep);
             byId.set('building_units', unitsStep);
         }

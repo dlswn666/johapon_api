@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { normalizeDataPortalApiKey } from '../utils/data-portal-api-key';
 import type { DatabaseTarget } from '../types/database.types';
 import { parseExactTrueFeatureFlag } from './feature-flags';
 import { createLandAreaSyncAllowedTargetsManifest } from '../security/land-area-sync-canary-policy';
@@ -153,7 +154,7 @@ export const env = {
     VWORLD_ATTR_REQUEST_INTERVAL_MS: parseVworldRequestIntervalMs(
         process.env.VWORLD_ATTR_REQUEST_INTERVAL_MS
     ),
-    DATA_PORTAL_API_KEY: process.env.DATA_PORTAL_API_KEY || '',
+    DATA_PORTAL_API_KEY: normalizeDataPortalApiKey(process.env.DATA_PORTAL_API_KEY),
     LAND_AREA_SYNC_ENABLED: parseExactTrueFeatureFlag(process.env.LAND_AREA_SYNC_ENABLED),
     LAND_AREA_SYNC_ALLOWED_TARGETS:
         landAreaSyncAllowedTargetsManifest.allowedTargets,
