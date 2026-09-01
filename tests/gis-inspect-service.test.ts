@@ -150,7 +150,7 @@ test('inspect: 13개 스텝을 정의 순서대로 반환하고 전부 SUCCESS',
         result.steps.map((s) => s.id),
         [
             'geocode', 'coord_to_pnu', 'reverse_geocode',
-            'boundary_dataportal', 'boundary_vworld',
+            'boundary_vworld', 'boundary_vworld_wfs',
             'land_registry', 'land_price', 'apart_price', 'indiv_house_price',
             'building_title', 'building_units',
             'land_share_registry', 'building_ho_land_share',
@@ -159,6 +159,104 @@ test('inspect: 13개 스텝을 정의 순서대로 반환하고 전부 SUCCESS',
     assert.ok(result.steps.every((s) => s.status === 'SUCCESS'));
     assert.equal(result.pnu, '1168010100107360024');
     assert.equal(result.pnuSource, 'LOCAL');
+});
+
+test('inspect: 두 VWorld 경계를 독립 호출하고 정확한 Data API·WFS 파라미터를 보낸다', async () => {
+    const { GisInspectService } = await serviceModule;
+    const { httpGet, calls } = createStubHttpGet();
+    const result = await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
+
+    const dataCall = calls.find(
+        (call) => call.url === 'https://api.vworld.kr/req/data'
+            && call.params.attrFilter === 'pnu:=:1168010100107360024'
+    );
+    assert.ok(dataCall, 'VWorld Data API 경계 호출 없음');
+    assert.equal(dataCall.params.service, 'data');
+    assert.equal(dataCall.params.request, 'GetFeature');
+    assert.equal(dataCall.params.version, '2.0');
+    assert.equal(dataCall.params.data, 'LP_PA_CBND_BUBUN');
+    assert.equal(dataCall.params.crs, 'EPSG:4326');
+    assert.equal(dataCall.params.geometry, true);
+    assert.equal(dataCall.params.attribute, true);
+    assert.equal(dataCall.params.size, 1);
+    assert.equal(dataCall.params.page, 1);
+
+    const wfsCall = calls.find(
+        (call) => call.url === 'https://api.vworld.kr/ned/wfs/getCtnlgsSpceWFS'
+    );
+    assert.ok(wfsCall, 'VWorld 공식 WFS 경계 호출 없음');
+    assert.equal(wfsCall.params.typename, 'dt_d002');
+    assert.equal(wfsCall.params.pnu, '1168010100107360024');
+    assert.equal(wfsCall.params.maxFeatures, 1);
+    assert.equal(wfsCall.params.resultType, 'results');
+    assert.equal(wfsCall.params.srsName, 'EPSG:4326');
+    assert.equal(wfsCall.params.output, 'application/json');
+
+    assert.equal(
+        result.steps.find((step) => step.id === 'boundary_vworld')?.name,
+        '필지 경계 — 브이월드 데이터 API (1차 소스)'
+    );
+    assert.equal(
+        result.steps.find((step) => step.id === 'boundary_vworld_wfs')?.name,
+        '필지 경계 — 브이월드 연속지적도 WFS (보조 소스)'
+    );
+    assert.equal(
+        calls.some((call) => call.url.includes(['Continuous', 'LandInfoService'].join(''))),
+        false
+    );
+    assert.ok(calls.every((call) => call.url.startsWith('https://')));
+});
+
+test('inspect: Data API HTTP 200 ERROR는 해당 경계만 ERROR이고 WFS 비교는 계속한다', async () => {
+    const { GisInspectService } = await serviceModule;
+    const { httpGet: baseHttpGet, calls } = createStubHttpGet();
+    const httpGet = async (
+        url: string,
+        config: { params: Record<string, unknown>; timeout: number }
+    ) => {
+        if (url.endsWith('/req/data') && config.params.attrFilter) {
+            calls.push({ url, params: config.params });
+            return {
+                data: {
+                    response: {
+                        status: 'ERROR',
+                        error: { code: 'INVALID_REQUEST' },
+                    },
+                },
+            };
+        }
+        return baseHttpGet(url, config);
+    };
+
+    const result = await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
+
+    assert.equal(result.steps.find((step) => step.id === 'boundary_vworld')?.status, 'ERROR');
+    assert.equal(result.steps.find((step) => step.id === 'boundary_vworld_wfs')?.status, 'SUCCESS');
+    assert.equal(
+        calls.filter((call) => call.url.endsWith('/ned/wfs/getCtnlgsSpceWFS')).length,
+        1
+    );
+});
+
+test('inspect: WFS HTTP 200 exception body는 해당 경계만 ERROR로 판정한다', async () => {
+    const { GisInspectService } = await serviceModule;
+    const { httpGet: baseHttpGet } = createStubHttpGet();
+    const httpGet = async (
+        url: string,
+        config: { params: Record<string, unknown>; timeout: number }
+    ) => {
+        if (url.endsWith('/ned/wfs/getCtnlgsSpceWFS')) {
+            return {
+                data: '<ows:ExceptionReport><ows:Exception /></ows:ExceptionReport>',
+            };
+        }
+        return baseHttpGet(url, config);
+    };
+
+    const result = await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
+
+    assert.equal(result.steps.find((step) => step.id === 'boundary_vworld')?.status, 'SUCCESS');
+    assert.equal(result.steps.find((step) => step.id === 'boundary_vworld_wfs')?.status, 'ERROR');
 });
 
 test('inspect: 요청 파라미터의 key/serviceKey는 마스킹된다', async () => {
@@ -184,6 +282,7 @@ test('inspect: 건축물대장 스텝은 land-area-sync 어댑터와 같은 파�
     for (const endpoint of ['getBrTitleInfo', 'getBrExposInfo']) {
         const call = calls.find((c) => c.url.includes(endpoint));
         assert.ok(call, `${endpoint} 호출 없음`);
+        assert.match(call.url, /^https:\/\/apis\.data\.go\.kr\//);
         // PNU 1168010100107360024 → 대지구분 '1' → platGbCd '0'
         assert.equal(call.params.platGbCd, '0', endpoint);
         assert.equal(call.params.pageNo, 1, endpoint);
@@ -219,7 +318,7 @@ test('inspect: PNU 확보 실패 시 PNU 의존 스텝은 SKIPPED', async () => 
     assert.equal(result.pnuSource, null);
     const skipped = result.steps.filter((s) => s.status === 'SKIPPED').map((s) => s.id);
     for (const id of [
-        'boundary_dataportal', 'boundary_vworld', 'land_registry', 'land_price',
+        'boundary_vworld', 'boundary_vworld_wfs', 'land_registry', 'land_price',
         'apart_price', 'indiv_house_price', 'building_title', 'building_units',
         'land_share_registry', 'building_ho_land_share',
     ]) {

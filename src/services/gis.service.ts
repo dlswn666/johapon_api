@@ -5,6 +5,7 @@ import iconv from 'iconv-lite';
 import { env } from '../config/env';
 import { createLogger } from '../utils/logger';
 import { normalizeDongForKey } from '../utils/dong-ho';
+import { GIS_SHARED_ENDPOINTS } from './gis-shared/endpoints';
 
 const logger = createLogger('GIS-API');
 
@@ -20,6 +21,65 @@ class BuildingRegistryFetchError extends Error {
 }
 
 type BuildingExternalRefSource = 'BUILDING_REGISTER' | 'APART_HOUSING_PRICE' | 'INDIVIDUAL_HOUSING_PRICE';
+
+export type ParcelBoundaryHttpGet = (
+    url: string,
+    config: { params: Record<string, unknown>; timeout: number }
+) => Promise<{ data: unknown }>;
+
+function matchingParcelGeometry(features: unknown, pnu: string): GeoJSON.Geometry | null {
+    if (!Array.isArray(features)) return null;
+
+    for (const rawFeature of features) {
+        if (!rawFeature || typeof rawFeature !== 'object') continue;
+        const feature = rawFeature as {
+            properties?: { pnu?: unknown };
+            geometry?: unknown;
+        };
+        if (feature.properties?.pnu !== pnu) continue;
+        if (!feature.geometry || typeof feature.geometry !== 'object' || Array.isArray(feature.geometry)) {
+            continue;
+        }
+        const geometry = feature.geometry as {
+            type?: unknown;
+            coordinates?: unknown;
+        };
+        if (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon') continue;
+        if (!Array.isArray(geometry.coordinates)) continue;
+        return geometry as GeoJSON.Polygon | GeoJSON.MultiPolygon;
+    }
+
+    return null;
+}
+
+/** VWorld Data API 응답에서 요청 PNU와 정확히 일치하는 경계만 채택한다. */
+export function parseVworldDataParcelBoundary(
+    data: unknown,
+    pnu: string
+): GeoJSON.Geometry | null {
+    const response = (data as {
+        response?: {
+            status?: unknown;
+            result?: { featureCollection?: { features?: unknown } };
+        };
+    } | null)?.response;
+    if (response?.status !== 'OK') return null;
+    return matchingParcelGeometry(
+        response.result?.featureCollection?.features,
+        pnu
+    );
+}
+
+/** VWorld 연속지적도 WFS 응답에서 요청 PNU와 정확히 일치하는 경계만 채택한다. */
+export function parseVworldWfsParcelBoundary(
+    data: unknown,
+    pnu: string
+): GeoJSON.Geometry | null {
+    return matchingParcelGeometry(
+        (data as { features?: unknown } | null)?.features,
+        pnu
+    );
+}
 
 export interface BuildingExternalRefInfo {
     source: BuildingExternalRefSource;
@@ -138,10 +198,10 @@ const SIDO_NORMALIZE_MAP: Record<string, string> = {
  * GIS 및 공공데이터 수집 서비스
  *
  * API 소스:
- * 1. Vworld (브이월드) - 지오코딩, 역지오코딩
- * 2. 공공데이터포털 (data.go.kr) - PNU 조회, 필지 경계, 건축물대장, 소유자 정보
+ * 1. VWorld (브이월드) - 지오코딩, 역지오코딩, PNU 및 필지 경계
+ * 2. 공공데이터포털 (data.go.kr) - 건축물대장 정보
  */
-class GisService {
+export class GisService {
     private vworldApiKey: string;
     private vworldApiDomain: string;
     private vworldAttrRequestChain: Promise<void> = Promise.resolve();
@@ -149,7 +209,12 @@ class GisService {
     private dataPortalApiKey: string;
     private bjdCodeMap: Map<string, string> = new Map();
 
-    constructor() {
+    constructor(
+        private readonly parcelBoundaryHttpGet: ParcelBoundaryHttpGet = (
+            url,
+            config
+        ) => axios.get(url, config)
+    ) {
         this.vworldApiKey = env.VWORLD_API_KEY;
         this.vworldApiDomain = env.VWORLD_API_DOMAIN;
         this.dataPortalApiKey = env.DATA_PORTAL_API_KEY;
@@ -420,92 +485,25 @@ class GisService {
 
     /**
      * PNU 기반 필지 경계(Polygon) 조회
-     * 1차: 공공데이터포털 연속지적도형정보 API
-     * 2차: Vworld 연속지적도 API (fallback)
+     * 1차: VWorld Data API
+     * 2차: VWorld 공식 연속지적도 WFS (fallback)
      */
     async getParcelBoundary(pnu: string): Promise<GeoJSON.Geometry | null> {
-        if (!pnu || pnu.length < 19) {
+        if (!/^\d{19}$/.test(pnu)) {
             logger.debug(`Invalid PNU for boundary lookup: ${pnu}`);
             return null;
         }
 
-        // 1차: 공공데이터포털 연속지적도형정보 API
-        const boundaryFromDataPortal = await this.getParcelBoundaryFromDataPortal(pnu);
-        if (boundaryFromDataPortal) {
-            return boundaryFromDataPortal;
+        const boundaryFromDataApi = await this.getParcelBoundaryFromVworld(pnu);
+        if (boundaryFromDataApi) {
+            return boundaryFromDataApi;
         }
 
-        // 2차: Vworld API (fallback)
-        return await this.getParcelBoundaryFromVworld(pnu);
+        return await this.getParcelBoundaryFromVworldWfs(pnu);
     }
 
     /**
-     * 공공데이터포털 연속지적도형정보 조회 서비스
-     * https://www.data.go.kr - 연속지적도형정보조회서비스
-     */
-    async getParcelBoundaryFromDataPortal(pnu: string): Promise<GeoJSON.Geometry | null> {
-        if (!this.dataPortalApiKey) {
-            logger.debug('DATA_PORTAL_API_KEY is not configured, skipping data.go.kr API');
-            return null;
-        }
-
-        try {
-            // PNU 파싱
-            const pnuParts = this.parsePNU(pnu);
-            if (!pnuParts) return null;
-
-            // 연속지적도형정보 조회 API
-            const response = await axios.get(
-                'http://apis.data.go.kr/1611000/nsdi/ContinuousLandInfoService/getContinuousLandInfoWFS',
-                {
-                    params: {
-                        serviceKey: this.dataPortalApiKey,
-                        pnu: pnu,
-                        format: 'json',
-                        numOfRows: 1,
-                        pageNo: 1,
-                    },
-                    timeout: 10000,
-                }
-            );
-
-            const data = response.data;
-
-            // GeoJSON 형식으로 응답이 오는 경우
-            if (data?.features && data.features.length > 0) {
-                const geometry = data.features[0].geometry;
-                if (geometry) {
-                    logger.debug(`Boundary found from data.go.kr for PNU ${pnu}`);
-                    return geometry as GeoJSON.Geometry;
-                }
-            }
-
-            // 다른 형식의 응답 처리 (XML to JSON 변환된 경우)
-            if (data?.response?.body?.items?.item) {
-                const item = Array.isArray(data.response.body.items.item)
-                    ? data.response.body.items.item[0]
-                    : data.response.body.items.item;
-
-                if (item?.geom) {
-                    // WKT를 GeoJSON으로 변환
-                    const geometry = this.wktToGeoJSON(item.geom);
-                    if (geometry) {
-                        logger.debug(`Boundary converted from WKT for PNU ${pnu}`);
-                        return geometry;
-                    }
-                }
-            }
-
-            logger.debug(`No boundary from data.go.kr for PNU: ${pnu}`);
-            return null;
-        } catch (error) {
-            logger.error(`data.go.kr boundary API error (PNU: ${pnu})`, error);
-            return null;
-        }
-    }
-
-    /**
-     * Vworld 연속지적도 API로 필지 경계 조회 (fallback)
+     * VWorld Data API로 필지 경계 조회 (1차 소스)
      */
     async getParcelBoundaryFromVworld(pnu: string): Promise<GeoJSON.Geometry | null> {
         if (!this.vworldApiKey) {
@@ -514,35 +512,78 @@ class GisService {
         }
 
         try {
-            const response = await axios.get('https://api.vworld.kr/req/data', {
+            const response = await this.parcelBoundaryHttpGet('https://api.vworld.kr/req/data', {
                 params: {
                     service: 'data',
                     request: 'GetFeature',
+                    version: '2.0',
                     data: 'LP_PA_CBND_BUBUN',
                     key: this.vworldApiKey,
                     format: 'json',
                     domain: this.vworldApiDomain,
+                    crs: 'EPSG:4326',
                     attrFilter: `pnu:=:${pnu}`,
                     geometry: true,
+                    attribute: true,
                     size: 1,
+                    page: 1,
                 },
                 timeout: 10000,
             });
 
-            const data = response.data;
-            if (data.response?.status === 'OK' && data.response.result?.featureCollection?.features?.length > 0) {
-                const feature = data.response.result.featureCollection.features[0];
-                const geometry = feature.geometry;
-                if (geometry) {
-                    logger.debug(`Boundary found from Vworld for PNU ${pnu}: ${geometry.type}`);
-                    return geometry as GeoJSON.Geometry;
-                }
+            const geometry = parseVworldDataParcelBoundary(response.data, pnu);
+            if (geometry) {
+                logger.debug(`Boundary found from VWorld Data API for PNU ${pnu}: ${geometry.type}`);
+                return geometry;
             }
 
-            logger.debug(`No boundary from Vworld for PNU: ${pnu}`);
+            logger.debug(`No matching boundary from VWorld Data API for PNU: ${pnu}`);
             return null;
         } catch (error) {
-            logger.error(`Vworld boundary API error (PNU: ${pnu})`, error);
+            const message = error instanceof Error ? error.message : 'unknown error';
+            logger.error(`VWorld Data boundary API error (PNU: ${pnu}): ${message}`);
+            return null;
+        }
+    }
+
+    /**
+     * VWorld 공식 연속지적도 WFS로 필지 경계 조회 (보조 소스)
+     */
+    async getParcelBoundaryFromVworldWfs(pnu: string): Promise<GeoJSON.Geometry | null> {
+        if (!this.vworldApiKey) {
+            logger.debug('VWORLD_API_KEY is not configured');
+            return null;
+        }
+
+        try {
+            const response = await this.parcelBoundaryHttpGet(
+                'https://api.vworld.kr/ned/wfs/getCtnlgsSpceWFS',
+                {
+                    params: {
+                        key: this.vworldApiKey,
+                        domain: this.vworldApiDomain,
+                        typename: 'dt_d002',
+                        pnu,
+                        maxFeatures: 1,
+                        resultType: 'results',
+                        srsName: 'EPSG:4326',
+                        output: 'application/json',
+                    },
+                    timeout: 10000,
+                }
+            );
+
+            const geometry = parseVworldWfsParcelBoundary(response.data, pnu);
+            if (geometry) {
+                logger.debug(`Boundary found from VWorld WFS for PNU ${pnu}: ${geometry.type}`);
+                return geometry;
+            }
+
+            logger.debug(`No matching boundary from VWorld WFS for PNU: ${pnu}`);
+            return null;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'unknown error';
+            logger.error(`VWorld WFS boundary API error (PNU: ${pnu}): ${message}`);
             return null;
         }
     }
@@ -744,50 +785,6 @@ class GisService {
     }
 
     /**
-     * WKT를 GeoJSON Geometry로 변환
-     */
-    wktToGeoJSON(wkt: string): GeoJSON.Geometry | null {
-        if (!wkt) return null;
-
-        try {
-            // MULTIPOLYGON 처리
-            if (wkt.startsWith('MULTIPOLYGON')) {
-                const coordsStr = wkt.replace('MULTIPOLYGON(((', '').replace(')))', '');
-                const rings = coordsStr.split(')),((').map((ring) => {
-                    return ring.split(',').map((coord) => {
-                        const [x, y] = coord.trim().split(' ').map(Number);
-                        return [x, y];
-                    });
-                });
-                return {
-                    type: 'MultiPolygon',
-                    coordinates: rings.map((ring) => [ring]),
-                };
-            }
-
-            // POLYGON 처리
-            if (wkt.startsWith('POLYGON')) {
-                const coordsStr = wkt.replace('POLYGON((', '').replace('))', '');
-                const rings = coordsStr.split('),(').map((ring) => {
-                    return ring.split(',').map((coord) => {
-                        const [x, y] = coord.trim().split(' ').map(Number);
-                        return [x, y];
-                    });
-                });
-                return {
-                    type: 'Polygon',
-                    coordinates: rings,
-                };
-            }
-
-            return null;
-        } catch (error) {
-            logger.error('WKT to GeoJSON conversion error', error);
-            return null;
-        }
-    }
-
-    /**
      * PNU -> GeoJSON 경계 데이터 획득 (Vworld Data API) - Legacy
      */
     async getGeoJSON(pnu: string): Promise<unknown> {
@@ -932,9 +929,9 @@ class GisService {
                     return rows;
                 }
             } catch (error) {
+                const message = error instanceof Error ? error.message : 'unknown error';
                 logger.error(
-                    `Building registry ${label} fetch error (PNU: ${pnu}, page: ${pageNo})`,
-                    error
+                    `Building registry ${label} fetch error (PNU: ${pnu}, page: ${pageNo}): ${message}`
                 );
                 return [];
             }
@@ -951,7 +948,7 @@ class GisService {
      */
     async getBuildingTitle(pnu: string): Promise<unknown[]> {
         return this.fetchAllBuildingRegistryRows(
-            'http://apis.data.go.kr/1613000/BldRgstHubService/getBrTitleInfo',
+            GIS_SHARED_ENDPOINTS.getBrTitleInfo,
             pnu,
             'title info'
         );
@@ -962,7 +959,7 @@ class GisService {
      */
     async getBuildingUnits(pnu: string): Promise<unknown[]> {
         return this.fetchAllBuildingRegistryRows(
-            'http://apis.data.go.kr/1613000/BldRgstHubService/getBrExposInfo',
+            GIS_SHARED_ENDPOINTS.getBrExposInfo,
             pnu,
             'unit info'
         );

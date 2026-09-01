@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { normalizeDataPortalApiKey } from '../utils/data-portal-api-key';
 import type { DatabaseTarget } from '../types/database.types';
 import { parseExactTrueFeatureFlag } from './feature-flags';
 import { createLandAreaSyncAllowedTargetsManifest } from '../security/land-area-sync-canary-policy';
@@ -153,12 +154,32 @@ export const env = {
     VWORLD_ATTR_REQUEST_INTERVAL_MS: parseVworldRequestIntervalMs(
         process.env.VWORLD_ATTR_REQUEST_INTERVAL_MS
     ),
-    DATA_PORTAL_API_KEY: process.env.DATA_PORTAL_API_KEY || '',
+    DATA_PORTAL_API_KEY: normalizeDataPortalApiKey(process.env.DATA_PORTAL_API_KEY),
     LAND_AREA_SYNC_ENABLED: parseExactTrueFeatureFlag(process.env.LAND_AREA_SYNC_ENABLED),
     LAND_AREA_SYNC_ALLOWED_TARGETS:
         landAreaSyncAllowedTargetsManifest.allowedTargets,
     LAND_AREA_SYNC_ALLOWED_TARGETS_MANIFEST:
         landAreaSyncAllowedTargetsManifest,
+
+    // 현행 정비사업 법률 MCP
+    LAW_API_OC: getEnvVar('LAW_API_OC', false),
+    LEGAL_MCP_TOKEN_SHA256: getEnvVar('LEGAL_MCP_TOKEN_SHA256', false),
+    LEGAL_MCP_TOKEN_REGISTRY_JSON: getEnvVar('LEGAL_MCP_TOKEN_REGISTRY_JSON', false),
+    LEGAL_MCP_PROXY_TOKEN_SHA256: getEnvVar('LEGAL_MCP_PROXY_TOKEN_SHA256', false),
+    LEGAL_MCP_PACKET_SIGNING_KEY: getEnvVar('LEGAL_MCP_PACKET_SIGNING_KEY', false),
+    LEGAL_MCP_ALLOWED_HOSTS: getEnvVar('LEGAL_MCP_ALLOWED_HOSTS', false),
+    LEGAL_MCP_ALLOWED_ORIGINS: getEnvVar('LEGAL_MCP_ALLOWED_ORIGINS', false),
+    LEGAL_MCP_RESEARCH_REQUESTS_PER_MINUTE: getEnvNumber(
+        'LEGAL_MCP_RESEARCH_REQUESTS_PER_MINUTE',
+        6
+    ),
+    LEGAL_MCP_RESEARCH_GLOBAL_REQUESTS_PER_MINUTE: getEnvNumber(
+        'LEGAL_MCP_RESEARCH_GLOBAL_REQUESTS_PER_MINUTE',
+        12
+    ),
+    LEGAL_MCP_RESEARCH_DEADLINE_MS: getEnvNumber('LEGAL_MCP_RESEARCH_DEADLINE_MS', 45_000),
+    LEGAL_MCP_RESEARCH_MAX_CONCURRENCY: getEnvNumber('LEGAL_MCP_RESEARCH_MAX_CONCURRENCY', 2),
+    LEGAL_MCP_RESEARCH_MAX_QUEUE: getEnvNumber('LEGAL_MCP_RESEARCH_MAX_QUEUE', 4),
 
     // 헬퍼
     isDevelopment: process.env.NODE_ENV === 'development',

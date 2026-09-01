@@ -879,6 +879,22 @@ test('scanTitle: Building HUB URL + exact 필지 파라미터', async () => {
     assert.equal(calls[0].params._type, 'json');
 });
 
+test('Building HUB outbound는 URL 인코딩 인증키를 1회 복원해 이중 인코딩을 막는다', async () => {
+    const { httpClient, sleep, calls } = scripted(() => ok(hubBody(0, [])));
+    const encodedAuth: BuildingHubAuth = {
+        serviceKey: '  sample%2Bkey%2Fvalue%3D  ',
+    };
+
+    await makeAdapter(httpClient, sleep).scanTitle(PNU, encodedAuth);
+
+    assert.equal(calls[0].params.serviceKey, 'sample+key/value=');
+    const serialized = new URLSearchParams({
+        serviceKey: String(calls[0].params.serviceKey),
+    }).toString();
+    assert.equal(serialized.includes('%252B'), false);
+    assert.match(serialized, /serviceKey=sample%2Bkey%2Fvalue%3D/);
+});
+
 test('scanAttached: platGbCd 파라미터를 PNU 토지구분에서 역변환(landGbn 1→platGbCd 0)', async () => {
     const { httpClient, sleep, calls } = scripted(() => ok(hubBody(0, [])));
     await makeAdapter(httpClient, sleep).scanAttached(PNU, HUB_AUTH);

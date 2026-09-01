@@ -9,21 +9,28 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "phase0-s:gate": "tsx scripts/phase0-s-gate.ts",
     "phase0-land-area:capture": "tsx scripts/phase0-land-area-capture.ts",
+    "legal:mcp:token": "tsx src/cli/legal-mcp-token.ts",
+    "legal:mcp:smoke": "tsx src/cli/legal-mcp-smoke.ts",
     "start": "node dist/index.js",
     "docker:build": "docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown) --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) --build-arg IMAGE_TAG=alimtalk-proxy:local -t alimtalk-proxy .",
     "docker:logs": "docker logs -f alimtalk-proxy",
     "docker:deployment": "echo '배포는 GitHub Actions의 GHCR SHA/digest workflow만 사용합니다.'"
   },
   "dependencies": {
+    "@modelcontextprotocol/express": "2.0.0",
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "@supabase/supabase-js": "^2.110.1",
     "axios": "^1.18.1",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.22.2",
+    "fast-xml-parser": "^5.11.1",
     "iconv-lite": "^0.7.1",
     "jsonwebtoken": "^9.0.2",
     "p-queue": "^8.0.1",
-    "uuid": "^11.1.1"
+    "uuid": "^11.1.1",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
