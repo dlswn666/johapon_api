@@ -5,6 +5,8 @@
 > EC2의 tonghari-api(:3100) 앞에 Caddy 리버스 프록시를 붙여 HTTPS를 제공하면 해소된다.
 > Caddy는 Let's Encrypt 인증서를 자동 발급·자동 갱신한다.
 > 법률 MCP `/mcp`는 여기에 더해 Caddy가 주입하는 별도 proxy 증명을 요구한다.
+> 공공 GIS MCP `/gis-mcp`도 서로 다른 proxy secret을 쓰는 exact route가 필요하다.
+> 전체 설정은 `docs/2026-09-03-public-data-gis-mcp-runbook.md`를 따른다.
 
 작성: 2026-07-23, 법률 MCP proxy 증명 보강: 2026-08-31. 관련:
 `DOCKER_DEPLOYMENT.md:119` (공개 HTTP 3100은 합성 개발 전용),

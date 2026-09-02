@@ -11,6 +11,8 @@
     "phase0-land-area:capture": "tsx scripts/phase0-land-area-capture.ts",
     "legal:mcp:token": "tsx src/cli/legal-mcp-token.ts",
     "legal:mcp:smoke": "tsx src/cli/legal-mcp-smoke.ts",
+    "gis:mcp:token": "tsx src/cli/gis-mcp-token.ts",
+    "gis:mcp:smoke": "tsx src/cli/gis-mcp-smoke.ts",
     "start": "node dist/index.js",
     "docker:build": "docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown) --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) --build-arg IMAGE_TAG=alimtalk-proxy:local -t alimtalk-proxy .",
     "docker:logs": "docker logs -f alimtalk-proxy",

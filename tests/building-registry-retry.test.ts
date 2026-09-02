@@ -8,6 +8,7 @@ process.env.ALIGO_SENDER_PHONE ||= '0212345678';
 process.env.DEFAULT_SENDER_KEY ||= 'test-sender-key';
 process.env.SUPABASE_URL ||= 'https://test-ref.supabase.co';
 process.env.SUPABASE_SERVICE_ROLE_KEY ||= 'test-service-role-key';
+process.env.DATA_PORTAL_API_KEY ||= 'test-data-portal-key';
 
 const gisModule = import('../src/services/gis.service');
 
@@ -47,4 +48,74 @@ test('4xx 는 재시도하지 않는다 (키 오류·잘못된 파라미터는 �
 test('알 수 없는 오류는 재시도하지 않는다', async () => {
     assert.equal(await isRetriable(new Error('boom')), false);
     assert.equal(await isRetriable(null), false);
+});
+
+test('HTTP 200 공공데이터포털 05 envelope만 일시 오류로 재시도한다', async () => {
+    const { gisService } = await gisModule;
+    const svc = gisService as unknown as {
+        getBuildingRegistryProviderErrorCode(data: unknown): string | null;
+        isRetriableRegistryProviderCode(code: string | undefined): boolean;
+    };
+
+    assert.equal(svc.getBuildingRegistryProviderErrorCode({
+        response: {
+            header: {
+                resultCode: '05',
+                resultMsg: 'SERVICETIMEOUT_ERROR',
+            },
+        },
+    }), '05');
+    assert.equal(svc.isRetriableRegistryProviderCode('05'), true);
+    assert.equal(svc.isRetriableRegistryProviderCode('12'), false);
+    assert.equal(svc.isRetriableRegistryProviderCode('22'), false);
+    assert.equal(svc.isRetriableRegistryProviderCode('30'), false);
+    assert.equal(svc.getBuildingRegistryProviderErrorCode({
+        response: { header: { resultCode: '00' } },
+    }), null);
+});
+
+test('HTTP 200 resultCode 05는 bounded backoff 후 같은 페이지를 재시도해 성공한다', async () => {
+    const { GisService } = await gisModule;
+    let calls = 0;
+    const gisService = new GisService(undefined, async () => {
+        calls += 1;
+        if (calls === 1) {
+            return {
+                data: {
+                    response: {
+                        header: {
+                            resultCode: '05',
+                            resultMsg: 'provider-message-must-not-escape',
+                        },
+                    },
+                },
+            };
+        }
+        return {
+            data: {
+                response: {
+                    header: { resultCode: '00' },
+                    body: {
+                        items: { item: [{ mgmBldrgstPk: 'row-1' }] },
+                        totalCount: 1,
+                    },
+                },
+            },
+        };
+    });
+    const service = gisService as unknown as {
+        sleepForRetry(attempt: number, signal?: AbortSignal): Promise<void>;
+    };
+    const originalSleep = service.sleepForRetry;
+    service.sleepForRetry = async () => undefined;
+
+    try {
+        const rows = await gisService.getBuildingTitle(
+            '1130510100100010000'
+        );
+        assert.equal(calls, 2);
+        assert.deepEqual(rows, [{ mgmBldrgstPk: 'row-1' }]);
+    } finally {
+        service.sleepForRetry = originalSleep;
+    }
 });

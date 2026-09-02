@@ -14,17 +14,39 @@ const logger = createLogger('GIS-API');
  * 0건으로 뭉개면 호출부가 platGbCd 불일치로 오독해 엉뚱한 폴백을 탄다.
  */
 class BuildingRegistryFetchError extends Error {
-    constructor(message: string) {
+    constructor(
+        message: string,
+        readonly providerCode?: string
+    ) {
         super(message);
         this.name = 'BuildingRegistryFetchError';
     }
+}
+
+interface GisExternalRequestOptions {
+    signal?: AbortSignal;
+    requireExactMetadata?: boolean;
 }
 
 type BuildingExternalRefSource = 'BUILDING_REGISTER' | 'APART_HOUSING_PRICE' | 'INDIVIDUAL_HOUSING_PRICE';
 
 export type ParcelBoundaryHttpGet = (
     url: string,
-    config: { params: Record<string, unknown>; timeout: number }
+    config: {
+        params: Record<string, unknown>;
+        timeout: number;
+        signal?: AbortSignal;
+    }
+) => Promise<{ data: unknown }>;
+
+export type BuildingRegistryHttpGet = (
+    url: string,
+    config: {
+        params: Record<string, unknown>;
+        timeout: number;
+        signal?: AbortSignal;
+        maxContentLength: number;
+    }
 ) => Promise<{ data: unknown }>;
 
 function matchingParcelGeometry(features: unknown, pnu: string): GeoJSON.Geometry | null {
@@ -153,6 +175,13 @@ export interface IndividualHousingOfficialPrice {
     metadata: Record<string, unknown>;
 }
 
+export interface OfficialLandPriceInfo {
+    officialPrice: number;
+    sourcePnu: string;
+    stdrYear: string;
+    lastUpdtDt: string | null;
+}
+
 // 시도명 정규화 매핑 (짧은 이름 -> 전체 이름)
 const SIDO_NORMALIZE_MAP: Record<string, string> = {
     // 짧은 형식
@@ -211,6 +240,10 @@ export class GisService {
 
     constructor(
         private readonly parcelBoundaryHttpGet: ParcelBoundaryHttpGet = (
+            url,
+            config
+        ) => axios.get(url, config),
+        private readonly buildingRegistryHttpGet: BuildingRegistryHttpGet = (
             url,
             config
         ) => axios.get(url, config)
@@ -274,7 +307,10 @@ export class GisService {
      * 1차: Vworld Geocoder로 좌표 획득
      * 2차: 공공데이터포털 API로 PNU 조회
      */
-    async getPNUFromAddress(address: string): Promise<{ pnu: string; x: string; y: string } | null> {
+    async getPNUFromAddress(
+        address: string,
+        options: GisExternalRequestOptions = {}
+    ): Promise<{ pnu: string; x: string; y: string } | null> {
         if (!this.vworldApiKey) throw new Error('VWORLD_API_KEY is not configured.');
 
         try {
@@ -287,15 +323,20 @@ export class GisService {
                     address: address,
                     type: 'PARCEL', // 지번 주소 기반
                     key: this.vworldApiKey,
+                    domain: this.vworldApiDomain,
                     format: 'json',
                 },
+                timeout: 10000,
+                signal: options.signal,
             });
 
             let data = response.data;
 
             // 지번 주소로 실패 시 도로명 주소로 재시도
             if (data.response?.status !== 'OK') {
-                logger.debug(`PARCEL type failed for "${address}", trying ROAD type`);
+                logger.debug('PARCEL geocoding failed; trying ROAD type', {
+                    addressLength: address.length,
+                });
                 response = await axios.get('https://api.vworld.kr/req/address', {
                     params: {
                         service: 'address',
@@ -304,8 +345,11 @@ export class GisService {
                         address: address,
                         type: 'ROAD',
                         key: this.vworldApiKey,
+                        domain: this.vworldApiDomain,
                         format: 'json',
                     },
+                    timeout: 10000,
+                    signal: options.signal,
                 });
                 data = response.data;
             }
@@ -314,15 +358,23 @@ export class GisService {
                 const { x, y } = data.response.result.point;
 
                 // 2단계: 주소에서 PNU 추출 시도 (공공데이터포털 API)
-                const pnu = (await this.getPNUFromAddressInfo(address)) || (await this.getPNUFromCoordinates(x, y));
+                const pnu = (await this.getPNUFromAddressInfo(address))
+                    || (await this.getPNUFromCoordinates(x, y, options));
 
                 return { pnu: pnu || '', x, y };
             }
 
-            logger.debug(`Geocoding failed for address: ${address}, status: ${data.response?.status}`);
+            logger.debug('Geocoding failed', {
+                addressLength: address.length,
+            });
             return null;
         } catch (error) {
-            logger.error(`Geocoder API error (address: ${address})`, error);
+            if (options.signal?.aborted) throw options.signal.reason;
+            logger.error('Geocoder API error', {
+                addressLength: address.length,
+                errorName: error instanceof Error ? error.name : 'UnknownError',
+                status: axios.isAxiosError(error) ? error.response?.status : undefined,
+            });
             return null;
         }
     }
@@ -337,7 +389,9 @@ export class GisService {
             const match = address.match(/(.+?[시도])\s+(.+?[시군구])\s+(.+?[동리읍면])\s+(?:산\s*)?(\d+)(?:-(\d+))?/);
 
             if (!match) {
-                logger.debug(`주소 파싱 실패: ${address}`);
+                logger.debug('주소 파싱 실패', {
+                    addressLength: address.length,
+                });
                 return null;
             }
 
@@ -357,11 +411,14 @@ export class GisService {
             const subNumPadded = (subNum || '0').padStart(4, '0');
 
             const pnu = `${bjdCode}${landType}${mainNumPadded}${subNumPadded}`;
-            logger.debug(`PNU generated from address: ${address} -> ${pnu}`);
+            logger.debug('PNU generated from address input');
 
             return pnu;
         } catch (error) {
-            logger.error(`PNU generation from address error: ${address}`, error);
+            logger.error('PNU generation from address error', {
+                addressLength: address.length,
+                errorName: error instanceof Error ? error.name : 'UnknownError',
+            });
             return null;
         }
     }
@@ -386,7 +443,7 @@ export class GisService {
             const code = this.bjdCodeMap.get(fullAddress);
 
             if (code) {
-                logger.debug(`법정동코드 찾음 (CSV): ${fullAddress} -> ${code}`);
+                logger.debug('법정동코드 찾음 (CSV)');
                 return code;
             }
 
@@ -395,15 +452,17 @@ export class GisService {
                 const originalAddress = `${sido} ${sigungu} ${dong}`.trim();
                 const originalCode = this.bjdCodeMap.get(originalAddress);
                 if (originalCode) {
-                    logger.debug(`법정동코드 찾음 (CSV, 원본): ${originalAddress} -> ${originalCode}`);
+                    logger.debug('법정동코드 찾음 (CSV, 원본)');
                     return originalCode;
                 }
             }
 
-            logger.warn(`법정동코드 조회 실패 (CSV): ${fullAddress}`);
+            logger.warn('법정동코드 조회 실패 (CSV)');
             return null;
         } catch (error) {
-            logger.error(`법정동코드 조회 오류: ${sido} ${sigungu} ${dong}`, error);
+            logger.error('법정동코드 조회 오류', {
+                errorName: error instanceof Error ? error.name : 'UnknownError',
+            });
             return null;
         }
     }
@@ -412,7 +471,11 @@ export class GisService {
      * 좌표 -> PNU 조회 (Vworld 연속지적도 기반)
      * Vworld API가 실패할 경우를 대비한 fallback 포함
      */
-    async getPNUFromCoordinates(x: string, y: string): Promise<string | null> {
+    async getPNUFromCoordinates(
+        x: string,
+        y: string,
+        options: GisExternalRequestOptions = {}
+    ): Promise<string | null> {
         if (!this.vworldApiKey) throw new Error('VWORLD_API_KEY is not configured.');
 
         try {
@@ -429,6 +492,8 @@ export class GisService {
                     geometry: true,
                     size: 1,
                 },
+                timeout: 10000,
+                signal: options.signal,
             });
 
             const data = response.data;
@@ -442,9 +507,15 @@ export class GisService {
             }
 
             // 2차: 역지오코딩으로 PNU 생성 시도
-            return await this.getPNUFromReverseGeocode(x, y);
+            return await this.getPNUFromReverseGeocode(x, y, options);
         } catch (error) {
-            logger.error(`PNU lookup from coordinates error (${x}, ${y})`, error);
+            if (options.signal?.aborted) throw options.signal.reason;
+            logger.error('PNU lookup from coordinates error', {
+                errorName: error instanceof Error ? error.name : 'UnknownError',
+                status: axios.isAxiosError(error)
+                    ? error.response?.status
+                    : undefined,
+            });
             return null;
         }
     }
@@ -452,7 +523,11 @@ export class GisService {
     /**
      * 역지오코딩으로 PNU 생성
      */
-    async getPNUFromReverseGeocode(x: string, y: string): Promise<string | null> {
+    async getPNUFromReverseGeocode(
+        x: string,
+        y: string,
+        options: GisExternalRequestOptions = {}
+    ): Promise<string | null> {
         try {
             const response = await axios.get('https://api.vworld.kr/req/address', {
                 params: {
@@ -462,8 +537,11 @@ export class GisService {
                     point: `${x},${y}`,
                     type: 'PARCEL',
                     key: this.vworldApiKey,
+                    domain: this.vworldApiDomain,
                     format: 'json',
                 },
+                timeout: 10000,
+                signal: options.signal,
             });
 
             const data = response.data;
@@ -478,7 +556,13 @@ export class GisService {
             }
             return null;
         } catch (error) {
-            logger.error(`Reverse geocoding error (${x}, ${y})`, error);
+            if (options.signal?.aborted) throw options.signal.reason;
+            logger.error('Reverse geocoding error', {
+                errorName: error instanceof Error ? error.name : 'UnknownError',
+                status: axios.isAxiosError(error)
+                    ? error.response?.status
+                    : undefined,
+            });
             return null;
         }
     }
@@ -488,24 +572,33 @@ export class GisService {
      * 1차: VWorld Data API
      * 2차: VWorld 공식 연속지적도 WFS (fallback)
      */
-    async getParcelBoundary(pnu: string): Promise<GeoJSON.Geometry | null> {
+    async getParcelBoundary(
+        pnu: string,
+        options: GisExternalRequestOptions = {}
+    ): Promise<GeoJSON.Geometry | null> {
         if (!/^\d{19}$/.test(pnu)) {
             logger.debug(`Invalid PNU for boundary lookup: ${pnu}`);
             return null;
         }
 
-        const boundaryFromDataApi = await this.getParcelBoundaryFromVworld(pnu);
+        const boundaryFromDataApi = await this.getParcelBoundaryFromVworld(
+            pnu,
+            options
+        );
         if (boundaryFromDataApi) {
             return boundaryFromDataApi;
         }
 
-        return await this.getParcelBoundaryFromVworldWfs(pnu);
+        return await this.getParcelBoundaryFromVworldWfs(pnu, options);
     }
 
     /**
      * VWorld Data API로 필지 경계 조회 (1차 소스)
      */
-    async getParcelBoundaryFromVworld(pnu: string): Promise<GeoJSON.Geometry | null> {
+    async getParcelBoundaryFromVworld(
+        pnu: string,
+        options: GisExternalRequestOptions = {}
+    ): Promise<GeoJSON.Geometry | null> {
         if (!this.vworldApiKey) {
             logger.debug('VWORLD_API_KEY is not configured');
             return null;
@@ -529,6 +622,7 @@ export class GisService {
                     page: 1,
                 },
                 timeout: 10000,
+                signal: options.signal,
             });
 
             const geometry = parseVworldDataParcelBoundary(response.data, pnu);
@@ -540,8 +634,13 @@ export class GisService {
             logger.debug(`No matching boundary from VWorld Data API for PNU: ${pnu}`);
             return null;
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'unknown error';
-            logger.error(`VWorld Data boundary API error (PNU: ${pnu}): ${message}`);
+            if (options.signal?.aborted) throw options.signal.reason;
+            logger.error(`VWorld Data boundary API error (PNU: ${pnu})`, {
+                errorName: error instanceof Error ? error.name : 'UnknownError',
+                status: axios.isAxiosError(error)
+                    ? error.response?.status
+                    : undefined,
+            });
             return null;
         }
     }
@@ -549,7 +648,10 @@ export class GisService {
     /**
      * VWorld 공식 연속지적도 WFS로 필지 경계 조회 (보조 소스)
      */
-    async getParcelBoundaryFromVworldWfs(pnu: string): Promise<GeoJSON.Geometry | null> {
+    async getParcelBoundaryFromVworldWfs(
+        pnu: string,
+        options: GisExternalRequestOptions = {}
+    ): Promise<GeoJSON.Geometry | null> {
         if (!this.vworldApiKey) {
             logger.debug('VWORLD_API_KEY is not configured');
             return null;
@@ -570,6 +672,7 @@ export class GisService {
                         output: 'application/json',
                     },
                     timeout: 10000,
+                    signal: options.signal,
                 }
             );
 
@@ -582,8 +685,13 @@ export class GisService {
             logger.debug(`No matching boundary from VWorld WFS for PNU: ${pnu}`);
             return null;
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'unknown error';
-            logger.error(`VWorld WFS boundary API error (PNU: ${pnu}): ${message}`);
+            if (options.signal?.aborted) throw options.signal.reason;
+            logger.error(`VWorld WFS boundary API error (PNU: ${pnu})`, {
+                errorName: error instanceof Error ? error.name : 'UnknownError',
+                status: axios.isAxiosError(error)
+                    ? error.response?.status
+                    : undefined,
+            });
             return null;
         }
     }
@@ -823,7 +931,8 @@ export class GisService {
     private async fetchAllBuildingRegistryRows(
         endpoint: string,
         pnu: string,
-        label: string
+        label: string,
+        options: GisExternalRequestOptions = {}
     ): Promise<unknown[]> {
         if (!this.dataPortalApiKey) throw new Error('DATA_PORTAL_API_KEY is not configured.');
 
@@ -833,14 +942,21 @@ export class GisService {
         const platGbCd =
             pnuParts.landGbn === '1' ? '0' : pnuParts.landGbn === '2' ? '1' : undefined;
 
-        const rows = await this.fetchBuildingRegistryPages(endpoint, pnuParts, label, pnu, platGbCd);
+        const rows = await this.fetchBuildingRegistryPages(
+            endpoint,
+            pnuParts,
+            label,
+            pnu,
+            platGbCd,
+            options
+        );
 
         // 대장 레코드의 대지구분이 PNU 11자리와 어긋난 필지(산→대지 전환 이력 등)
         // 는 platGbCd 필터로 0건이 될 수 있다. 그 경우 무필터로 1회 폴백해
         // 기존(무필터) 동작 대비 데이터 소실이 없게 한다.
         if (rows.length === 0 && platGbCd !== undefined) {
             const fallbackRows = await this.fetchBuildingRegistryPages(
-                endpoint, pnuParts, label, pnu, undefined
+                endpoint, pnuParts, label, pnu, undefined, options
             );
             if (fallbackRows.length > 0) {
                 logger.warn(
@@ -858,7 +974,8 @@ export class GisService {
         pnuParts: NonNullable<ReturnType<GisService['parsePNU']>>,
         label: string,
         pnu: string,
-        platGbCd: string | undefined
+        platGbCd: string | undefined,
+        options: GisExternalRequestOptions = {}
     ): Promise<unknown[]> {
         const numOfRows = 1000;
         const maxPages = 30;
@@ -868,6 +985,7 @@ export class GisService {
         const maxAttempts = 3;
 
         for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
+            options.signal?.throwIfAborted();
             let response;
             let lastError: unknown = null;
 
@@ -875,7 +993,7 @@ export class GisService {
             // 행까지 버리면 그 필지의 건물이 통째로 없는 것처럼 처리된다.
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
-                    response = await axios.get(endpoint, {
+                    response = await this.buildingRegistryHttpGet(endpoint, {
                         params: {
                             serviceKey: this.dataPortalApiKey,
                             sigunguCd: pnuParts.sigunguCd,
@@ -887,7 +1005,19 @@ export class GisService {
                             pageNo,
                             _type: 'json',
                         },
+                        timeout: 10000,
+                        signal: options.signal,
+                        maxContentLength: 5 * 1024 * 1024,
                     });
+                    const providerCode = this.getBuildingRegistryProviderErrorCode(
+                        response.data
+                    );
+                    if (providerCode) {
+                        throw new BuildingRegistryFetchError(
+                            `Building registry ${label} provider error`,
+                            providerCode
+                        );
+                    }
                     lastError = null;
                     break;
                 } catch (error) {
@@ -897,7 +1027,7 @@ export class GisService {
                             `Building registry ${label} transient error, retrying ` +
                                 `(PNU: ${pnu}, page: ${pageNo}, attempt: ${attempt}/${maxAttempts})`
                         );
-                        await this.sleepForRetry(attempt);
+                        await this.sleepForRetry(attempt, options.signal);
                         continue;
                     }
                     break;
@@ -910,7 +1040,17 @@ export class GisService {
                 // 실패는 실패로 던져 호출부가 명시적으로 처리하게 한다.
                 logger.error(
                     `Building registry ${label} fetch error (PNU: ${pnu}, page: ${pageNo})`,
-                    lastError
+                    {
+                        errorName: lastError instanceof Error
+                            ? lastError.name
+                            : 'UnknownError',
+                        status: axios.isAxiosError(lastError)
+                            ? lastError.response?.status
+                            : undefined,
+                        providerCode: lastError instanceof BuildingRegistryFetchError
+                            ? lastError.providerCode
+                            : undefined,
+                    }
                 );
                 throw new BuildingRegistryFetchError(
                     `Building registry ${label} fetch failed (PNU: ${pnu}, page: ${pageNo})`
@@ -918,7 +1058,15 @@ export class GisService {
             }
 
             try {
-                const body = response.data.response?.body;
+                const payload = response.data as {
+                    response?: {
+                        body?: {
+                            items?: { item?: unknown };
+                            totalCount?: unknown;
+                        };
+                    };
+                };
+                const body = payload.response?.body;
                 const pageRows = this.toArray<unknown>(body?.items?.item);
                 // 이후 페이지에서 totalCount 파싱이 실패해도 앞서 파싱한 값을
                 // 보존한다 — 페이지 행수로 덮으면 조기 종료로 조용히 잘린다.
@@ -946,22 +1094,30 @@ export class GisService {
     /**
      * 표제부 조회 (공공데이터포털)
      */
-    async getBuildingTitle(pnu: string): Promise<unknown[]> {
+    async getBuildingTitle(
+        pnu: string,
+        options: GisExternalRequestOptions = {}
+    ): Promise<unknown[]> {
         return this.fetchAllBuildingRegistryRows(
             GIS_SHARED_ENDPOINTS.getBrTitleInfo,
             pnu,
-            'title info'
+            'title info',
+            options
         );
     }
 
     /**
      * 전유부 조회 (호수 리스트)
      */
-    async getBuildingUnits(pnu: string): Promise<unknown[]> {
+    async getBuildingUnits(
+        pnu: string,
+        options: GisExternalRequestOptions = {}
+    ): Promise<unknown[]> {
         return this.fetchAllBuildingRegistryRows(
             GIS_SHARED_ENDPOINTS.getBrExposInfo,
             pnu,
-            'unit info'
+            'unit info',
+            options
         );
     }
 
@@ -970,13 +1126,21 @@ export class GisService {
      * @param pnu 필지고유번호 (19자리)
      * @returns 면적(㎡), 소유자수(명) 또는 null
      */
-    async getLandRegistryInfo(pnu: string): Promise<{ area: number; ownerCount: number; landCategory: string | null } | null> {
+    async getLandRegistryInfo(
+        pnu: string,
+        options: GisExternalRequestOptions = {}
+    ): Promise<{
+        sourcePnu: string;
+        area: number;
+        ownerCount: number;
+        landCategory: string | null;
+    } | null> {
         if (!this.vworldApiKey) {
             logger.debug('VWORLD_API_KEY is not configured for land registry lookup');
             return null;
         }
 
-        if (!pnu || pnu.length < 19) {
+        if (!/^\d{19}$/.test(pnu)) {
             logger.debug(`Invalid PNU for land registry lookup: ${pnu}`);
             return null;
         }
@@ -1003,38 +1167,60 @@ export class GisService {
                     domain: this.vworldApiDomain,
                 },
                 timeout: 15000,
+                signal: options.signal,
             });
 
             const data = response.data;
 
             // 응답 에러 체크
             if (data?.ladfrlVOList?.error) {
-                logger.warn(
-                    `Land registry API error for PNU ${pnu}: ${data.ladfrlVOList.error} - ${data.ladfrlVOList.message}`
-                );
+                logger.warn(`Land registry API returned an error for PNU ${pnu}`);
                 return null;
             }
 
             // 토지대장 정보 추출
             const list = data?.ladfrlVOList?.ladfrlVOList;
-            if (list && list.length > 0) {
+            if (Array.isArray(list) && list.length > 0) {
                 const item = list[0];
-                const area = item.lndpclAr ? Number(item.lndpclAr) : 0;
-                const ownerCount = item.cnrsPsnCo ? Number(item.cnrsPsnCo) : 0;
+                const sourcePnu = this.parseText(item.pnu);
+                const parsedArea = this.parseNumber(item.lndpclAr);
+                const parsedOwnerCount = this.parseNumber(item.cnrsPsnCo);
+                if (
+                    options.requireExactMetadata === true
+                    && (
+                        sourcePnu !== pnu
+                        || parsedArea === null
+                        || parsedArea <= 0
+                        || parsedOwnerCount === null
+                        || !Number.isSafeInteger(parsedOwnerCount)
+                        || parsedOwnerCount < 0
+                    )
+                ) {
+                    logger.warn(`Land registry response has no exact valid record for PNU ${pnu}`);
+                    return null;
+                }
+                const area = parsedArea ?? 0;
+                const ownerCount = parsedOwnerCount ?? 0;
                 // 지목 코드 (lndcgrCode) -> 한글로 변환
-                const lndcgrCode = item.lndcgrCode || null;
+                const lndcgrCode = this.parseText(item.lndcgrCode);
                 const landCategory = lndcgrCode ? (landCategoryMap[lndcgrCode] || lndcgrCode) : null;
 
                 logger.debug(`Land registry info found for PNU ${pnu}: area=${area}㎡, ownerCount=${ownerCount}명, landCategory=${landCategory}`);
-                return { area, ownerCount, landCategory };
+                return {
+                    sourcePnu: sourcePnu ?? pnu,
+                    area,
+                    ownerCount,
+                    landCategory,
+                };
             }
 
             logger.debug(`No land registry info found for PNU: ${pnu}`);
             return null;
         } catch (error: any) {
+            if (options.signal?.aborted) throw options.signal.reason;
             logger.error(`Vworld land registry API error (PNU: ${pnu})`, {
                 status: error.response?.status,
-                message: error.message,
+                errorName: error instanceof Error ? error.name : 'UnknownError',
             });
             return null;
         }
@@ -1096,13 +1282,49 @@ export class GisService {
      * @param stdrYear 기준연도. 생략 시 올해 → 전년도 순서로 조회한다.
      * @returns 개별공시지가 단가(원/m²) 또는 null
      */
-    async getOfficialLandPrice(pnu: string, stdrYear?: string | number): Promise<number | null> {
+    async getOfficialLandPrice(
+        pnu: string,
+        stdrYear?: string | number,
+        options: GisExternalRequestOptions = {}
+    ): Promise<number | null> {
+        if (!this.vworldApiKey || !/^\d{19}$/.test(pnu)) return null;
+        const endpoint = 'https://api.vworld.kr/ned/data/getIndvdLandPriceAttr';
+
+        for (const year of this.getLatestOfficialPriceYears(stdrYear)) {
+            const fields = await this.fetchVworldAttrFields(
+                endpoint,
+                'indvdLandPrices',
+                { pnu, stdrYear: year },
+                options
+            );
+            if (fields === null) return null;
+            if (fields.length === 0) continue;
+
+            for (const field of fields) {
+                const price = this.parseNumber(
+                    field.pblntfPclnd
+                    ?? field.pbIntfPcInd
+                    ?? field.pblntf_pclnd
+                );
+                if (price && price > 0) return Math.round(price);
+            }
+            return null;
+        }
+        return null;
+    }
+
+    /** MCP 등 출처 기준일을 보존해야 하는 경로용 정규화 결과. */
+    async getOfficialLandPriceRecord(
+        pnu: string,
+        stdrYear?: string | number,
+        options: GisExternalRequestOptions = {}
+    ): Promise<OfficialLandPriceInfo | null> {
         if (!this.vworldApiKey) {
             logger.debug('VWORLD_API_KEY is not configured for land price lookup');
             return null;
         }
 
-        if (!pnu || pnu.length < 19) {
+        if (!/^\d{19}$/.test(pnu)) {
             logger.debug(`Invalid PNU for land price lookup: ${pnu}`);
             return null;
         }
@@ -1113,22 +1335,32 @@ export class GisService {
             const fields = await this.fetchVworldAttrFields(endpoint, 'indvdLandPrices', {
                 pnu,
                 stdrYear: year,
-            });
+            }, options);
 
             if (fields === null) return null;
             if (fields.length === 0) continue;
 
             for (const field of fields) {
+                const sourcePnu = this.parseText(field.pnu);
+                const effectiveYear = this.parseText(field.stdrYear);
+                if (sourcePnu !== pnu || effectiveYear !== String(year)) {
+                    continue;
+                }
                 const price = this.parseNumber(
                     field.pblntfPclnd ?? field.pbIntfPcInd ?? field.pblntf_pclnd
                 );
                 if (price && price > 0) {
                     logger.debug(`Land price found for PNU ${pnu} (${year}): ${price} 원/m²`);
-                    return Math.round(price);
+                    return {
+                        officialPrice: Math.round(price),
+                        sourcePnu,
+                        stdrYear: effectiveYear,
+                        lastUpdtDt: this.parseText(field.lastUpdtDt),
+                    };
                 }
             }
 
-            logger.warn(`Land price response has no valid pblntfPclnd. Keys: ${Object.keys(fields[0] ?? {}).join(',')}`);
+            logger.warn('Land price response has no exact valid record');
             return null;
         }
 
@@ -1161,13 +1393,23 @@ export class GisService {
         );
     }
 
-    private getObjectKeys(value: unknown): string {
-        if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
-        return Object.keys(value as Record<string, unknown>).join(',');
-    }
-
-    private sleep(ms: number): Promise<void> {
-        return new Promise((resolve) => setTimeout(resolve, ms));
+    private async sleepWithSignal(
+        ms: number,
+        signal?: AbortSignal
+    ): Promise<void> {
+        signal?.throwIfAborted();
+        await new Promise<void>((resolve, reject) => {
+            let timer: ReturnType<typeof setTimeout>;
+            const onAbort = () => {
+                clearTimeout(timer);
+                reject(signal?.reason);
+            };
+            timer = setTimeout(() => {
+                signal?.removeEventListener('abort', onAbort);
+                resolve();
+            }, ms);
+            signal?.addEventListener('abort', onAbort, { once: true });
+        });
     }
 
     private isRetryableVworldError(error: any): boolean {
@@ -1197,7 +1439,9 @@ export class GisService {
         );
     }
 
-    private async waitForVworldAttrRequestSlot(): Promise<void> {
+    private async waitForVworldAttrRequestSlot(
+        signal?: AbortSignal
+    ): Promise<void> {
         const previous = this.vworldAttrRequestChain;
         let release: () => void = () => undefined;
 
@@ -1208,10 +1452,11 @@ export class GisService {
         await previous;
 
         try {
+            signal?.throwIfAborted();
             const intervalMs = Math.max(env.VWORLD_ATTR_REQUEST_INTERVAL_MS, 0);
             const elapsedMs = Date.now() - this.lastVworldAttrRequestAt;
             if (elapsedMs < intervalMs) {
-                await this.sleep(intervalMs - elapsedMs);
+                await this.sleepWithSignal(intervalMs - elapsedMs, signal);
             }
             this.lastVworldAttrRequestAt = Date.now();
         } finally {
@@ -1235,7 +1480,8 @@ export class GisService {
     private async fetchVworldAttrFields(
         endpoint: string,
         containerKey: string,
-        params: Record<string, string | number | undefined>
+        params: Record<string, string | number | undefined>,
+        options: GisExternalRequestOptions = {}
     ): Promise<Record<string, any>[] | null> {
         const numOfRows = 1000;
         const maxPages = 30;
@@ -1243,14 +1489,16 @@ export class GisService {
         let totalCount: number | null = null;
 
         for (let pageNo = 1; pageNo <= maxPages; pageNo++) {
+            options.signal?.throwIfAborted();
             const maxAttempts = 3;
             let responseData: any = null;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
-                    await this.waitForVworldAttrRequestSlot();
+                    await this.waitForVworldAttrRequestSlot(options.signal);
                     const response = await axios.get(endpoint, {
                         timeout: 15000,
+                        signal: options.signal,
                         params: {
                             ...params,
                             key: this.vworldApiKey,
@@ -1263,12 +1511,12 @@ export class GisService {
                     responseData = response.data;
                     break;
                 } catch (error: any) {
+                    if (options.signal?.aborted) throw options.signal.reason;
                     const canRetry = attempt < maxAttempts && this.isRetryableVworldError(error);
                     if (!canRetry) {
                         logger.error(`VWorld attr API request failed (${containerKey})`, {
                             status: error.response?.status,
-                            code: error.code || error.cause?.code,
-                            message: error.message,
+                            errorName: error instanceof Error ? error.name : 'UnknownError',
                             attempt,
                         });
                         return null;
@@ -1277,25 +1525,22 @@ export class GisService {
                     const delayMs = attempt * 750;
                     logger.warn(`VWorld attr API retry (${containerKey})`, {
                         status: error.response?.status,
-                        code: error.code || error.cause?.code,
-                        message: error.message,
+                        errorName: error instanceof Error ? error.name : 'UnknownError',
                         attempt,
                         nextDelayMs: delayMs,
                     });
-                    await this.sleep(delayMs);
+                    await this.sleepWithSignal(delayMs, options.signal);
                 }
             }
 
             const container = responseData?.[containerKey] ?? responseData?.response;
             if (!container) {
-                logger.warn(
-                    `VWorld attr response missing container: ${containerKey}. Top-level keys: ${this.getObjectKeys(responseData)}`
-                );
+                logger.warn(`VWorld attr response missing container: ${containerKey}`);
                 return null;
             }
 
             if (container.resultCode && container.resultCode !== '00') {
-                logger.warn(`VWorld attr API error (${containerKey}): ${container.resultCode} ${container.resultMsg ?? ''}`);
+                logger.warn(`VWorld attr API returned an error (${containerKey})`);
                 return null;
             }
 
@@ -1327,7 +1572,8 @@ export class GisService {
 
     async getApartmentHousePrices(
         pnu: string,
-        stdrYear?: string | number
+        stdrYear?: string | number,
+        options: GisExternalRequestOptions = {}
     ): Promise<ApartmentHouseOfficialPrice[] | null> {
         if (!this.vworldApiKey) {
             logger.debug('VWORLD_API_KEY is not configured for apartment price lookup');
@@ -1344,7 +1590,7 @@ export class GisService {
             const fields = await this.fetchVworldAttrFields(endpoint, 'apartHousingPrices', {
                 pnu,
                 stdrYear: year,
-            });
+            }, options);
 
             if (fields === null) return null;
             if (fields.length === 0) continue;
@@ -1402,7 +1648,8 @@ export class GisService {
      */
     async getIndividualHousingPrice(
         pnu: string,
-        stdrYear?: string | number
+        stdrYear?: string | number,
+        options: GisExternalRequestOptions = {}
     ): Promise<IndividualHousingOfficialPrice | null> {
         if (!this.vworldApiKey) {
             logger.debug('VWORLD_API_KEY is not configured for individual housing price lookup');
@@ -1418,7 +1665,7 @@ export class GisService {
             const fields = await this.fetchVworldAttrFields(endpoint, 'indvdHousingPrices', {
                 pnu,
                 stdrYear: year,
-            });
+            }, options);
 
             if (fields === null) return null;
             if (fields.length === 0) continue;
@@ -1611,6 +1858,9 @@ export class GisService {
     }
 
     private isRetriableRegistryError(error: unknown): boolean {
+        if (error instanceof BuildingRegistryFetchError) {
+            return this.isRetriableRegistryProviderCode(error.providerCode);
+        }
         if (error === null || typeof error !== 'object') return false;
         const err = error as { response?: { status?: number }; code?: string };
         const status = err.response?.status;
@@ -1621,10 +1871,49 @@ export class GisService {
             || err.code === 'EAI_AGAIN';
     }
 
+    private isRetriableRegistryProviderCode(
+        code: string | undefined
+    ): boolean {
+        return code === '05';
+    }
+
+    /** HTTP 200으로 전달되는 공공데이터포털 오류 envelope를 분리한다. */
+    private getBuildingRegistryProviderErrorCode(data: unknown): string | null {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            return null;
+        }
+        const root = data as Record<string, unknown>;
+        const response = root.response;
+        const header = response && typeof response === 'object'
+            && !Array.isArray(response)
+            ? (response as Record<string, unknown>).header
+            : undefined;
+        const standardCode = header && typeof header === 'object'
+            && !Array.isArray(header)
+            ? (header as Record<string, unknown>).resultCode
+            : undefined;
+        const commonHeader = root.cmmMsgHeader;
+        const commonCode = commonHeader && typeof commonHeader === 'object'
+            && !Array.isArray(commonHeader)
+            ? (commonHeader as Record<string, unknown>).returnReasonCode
+            : undefined;
+        const rawCode = standardCode ?? commonCode;
+        if (typeof rawCode !== 'string' && typeof rawCode !== 'number') {
+            return null;
+        }
+        const rawText = String(rawCode).trim();
+        if (!/^\d{1,3}$/.test(rawText)) return 'INVALID';
+        const normalized = rawText.padStart(2, '0');
+        return normalized === '00' ? null : normalized.slice(0, 16);
+    }
+
     /** 재시도 간 대기 (지수 백오프) */
-    private async sleepForRetry(attempt: number): Promise<void> {
+    private async sleepForRetry(
+        attempt: number,
+        signal?: AbortSignal
+    ): Promise<void> {
         const delayMs = Math.min(2000, 300 * 2 ** (attempt - 1));
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await this.sleepWithSignal(delayMs, signal);
     }
 
     private shouldStopRegistryPaging(
@@ -1860,17 +2149,20 @@ export class GisService {
      * @param pnu 필지고유번호 (19자리)
      * @returns 동 배열. 표제부가 없으면 빈 배열.
      */
-    async getBuildingDongs(pnu: string): Promise<BuildingDongInfo[]> {
+    async getBuildingDongs(
+        pnu: string,
+        options: GisExternalRequestOptions = {}
+    ): Promise<BuildingDongInfo[]> {
         logger.info(`Fetching building dongs for PNU: ${pnu}`);
 
         try {
-            const titleInfoList = await this.getBuildingTitle(pnu);
+            const titleInfoList = await this.getBuildingTitle(pnu, options);
             if (!titleInfoList || titleInfoList.length === 0) {
                 logger.debug(`No building title info found for PNU: ${pnu}`);
                 return [];
             }
 
-            const unitInfoList = await this.getBuildingUnits(pnu);
+            const unitInfoList = await this.getBuildingUnits(pnu, options);
             const dongs = this.composeBuildingDongs(titleInfoList, unitInfoList ?? [], pnu);
 
             // 전유부가 없는 단독건물은 표제부 면적으로 단일 세대를 만든다
@@ -1893,7 +2185,16 @@ export class GisService {
             );
             return dongs;
         } catch (error) {
-            logger.error(`Building dongs fetch error for PNU ${pnu}:`, error);
+            if (options.signal?.aborted) throw options.signal.reason;
+            logger.error(`Building dongs fetch error for PNU ${pnu}`, {
+                errorName: error instanceof Error ? error.name : 'UnknownError',
+                status: axios.isAxiosError(error)
+                    ? error.response?.status
+                    : undefined,
+                providerCode: error instanceof BuildingRegistryFetchError
+                    ? error.providerCode
+                    : undefined,
+            });
             return [];
         }
     }

@@ -25,6 +25,20 @@ function getEnvNumber(key: string, defaultValue: number): number {
     return isNaN(parsed) ? defaultValue : parsed;
 }
 
+// GIS MCP는 잘못된 운영 상한이 전체 API startup을 막지 않고
+// 해당 endpoint만 503으로 닫히도록 NaN을 설정 검증 계층에 전달한다.
+function getStrictOptionalEnvInteger(
+    key: string,
+    defaultValue: number
+): number {
+    const raw = process.env[key];
+    if (raw === undefined || raw.trim() === '') return defaultValue;
+    const normalized = raw.trim();
+    if (!/^-?\d+$/.test(normalized)) return Number.NaN;
+    const parsed = Number(normalized);
+    return Number.isSafeInteger(parsed) ? parsed : Number.NaN;
+}
+
 export function parseBuildingWriteOperationTargets(value: string): ReadonlySet<DatabaseTarget> {
     const targets = value
         .split(',')
@@ -155,6 +169,28 @@ export const env = {
         process.env.VWORLD_ATTR_REQUEST_INTERVAL_MS
     ),
     DATA_PORTAL_API_KEY: normalizeDataPortalApiKey(process.env.DATA_PORTAL_API_KEY),
+    GIS_MCP_TOKEN_REGISTRY_JSON: getEnvVar('GIS_MCP_TOKEN_REGISTRY_JSON', false),
+    GIS_MCP_TOKEN_SHA256: getEnvVar('GIS_MCP_TOKEN_SHA256', false),
+    GIS_MCP_PROXY_TOKEN_SHA256: getEnvVar('GIS_MCP_PROXY_TOKEN_SHA256', false),
+    GIS_MCP_ALLOWED_HOSTS: getEnvVar('GIS_MCP_ALLOWED_HOSTS', false),
+    GIS_MCP_ALLOWED_ORIGINS: getEnvVar('GIS_MCP_ALLOWED_ORIGINS', false),
+    GIS_MCP_REQUESTS_PER_MINUTE: getStrictOptionalEnvInteger(
+        'GIS_MCP_REQUESTS_PER_MINUTE',
+        20
+    ),
+    GIS_MCP_GLOBAL_REQUESTS_PER_MINUTE: getStrictOptionalEnvInteger(
+        'GIS_MCP_GLOBAL_REQUESTS_PER_MINUTE',
+        40
+    ),
+    GIS_MCP_REQUEST_DEADLINE_MS: getStrictOptionalEnvInteger(
+        'GIS_MCP_REQUEST_DEADLINE_MS',
+        45_000
+    ),
+    GIS_MCP_MAX_CONCURRENCY: getStrictOptionalEnvInteger(
+        'GIS_MCP_MAX_CONCURRENCY',
+        2
+    ),
+    GIS_MCP_MAX_QUEUE: getStrictOptionalEnvInteger('GIS_MCP_MAX_QUEUE', 4),
     LAND_AREA_SYNC_ENABLED: parseExactTrueFeatureFlag(process.env.LAND_AREA_SYNC_ENABLED),
     LAND_AREA_SYNC_ALLOWED_TARGETS:
         landAreaSyncAllowedTargetsManifest.allowedTargets,

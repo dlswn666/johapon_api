@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { queueService } from '../services/queue.service';
 import { createBuildInfo } from '../utils/build-info';
 import { getLegalMcpConfigurationStateV1 } from '../services/legal-research/mcp-config';
+import { getGisMcpConfigurationStateV1 } from '../services/public-data-mcp/mcp-config';
 
 const router = Router();
 
@@ -37,6 +38,32 @@ function legalMcpHealthFeatures() {
     };
 }
 
+function gisMcpHealthFeatures() {
+    const configuration = getGisMcpConfigurationStateV1({
+        vworldApiKey: env.VWORLD_API_KEY,
+        vworldApiDomain: env.VWORLD_API_DOMAIN,
+        dataPortalApiKey: env.DATA_PORTAL_API_KEY,
+        tokenSha256: env.GIS_MCP_TOKEN_SHA256,
+        tokenRegistryJson: env.GIS_MCP_TOKEN_REGISTRY_JSON,
+        proxyTokenSha256: env.GIS_MCP_PROXY_TOKEN_SHA256,
+        allowedHosts: env.GIS_MCP_ALLOWED_HOSTS,
+        allowedOrigins: env.GIS_MCP_ALLOWED_ORIGINS,
+        requestsPerMinute: env.GIS_MCP_REQUESTS_PER_MINUTE,
+        globalRequestsPerMinute: env.GIS_MCP_GLOBAL_REQUESTS_PER_MINUTE,
+        requestDeadlineMs: env.GIS_MCP_REQUEST_DEADLINE_MS,
+        maxConcurrency: env.GIS_MCP_MAX_CONCURRENCY,
+        maxQueue: env.GIS_MCP_MAX_QUEUE,
+    });
+    return {
+        // provider 실호출 성공이 아니라 startup 설정의 존재·형식만 나타낸다.
+        gisMcpConfigurationValid: configuration.configured,
+        gisMcpAuthMode: configuration.authMode,
+        gisMcpRegisteredClientCount: configuration.registeredClientCount,
+        gisMcpRegisteredTokenCount: configuration.registeredTokenCount,
+        gisMcpProviderMode: configuration.providerMode,
+    };
+}
+
 /**
  * 메모리 사용량을 바이트에서 MB로 변환
  */
@@ -60,6 +87,7 @@ router.get('/', (req: Request, res: Response) => {
         features: {
             ...landAreaSyncHealthFeatures(),
             ...legalMcpHealthFeatures(),
+            ...gisMcpHealthFeatures(),
         },
         uptime: process.uptime(),
         memory: {
@@ -96,6 +124,7 @@ router.get('/detailed', async (req: Request, res: Response) => {
         features: {
             ...landAreaSyncHealthFeatures(),
             ...legalMcpHealthFeatures(),
+            ...gisMcpHealthFeatures(),
         },
         node: {
             version: process.version,

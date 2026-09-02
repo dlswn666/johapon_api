@@ -11,6 +11,12 @@ import {
 } from './routes/legal-mcp';
 import { createLegalMcpRuntimeDependenciesV1 } from './services/legal-research/mcp-runtime';
 import { getLegalMcpConfigurationStateV1 } from './services/legal-research/mcp-config';
+import {
+    createGisMcpRoute,
+    type GisMcpRouteHandle,
+} from './routes/gis-mcp';
+import { createPublicDataMcpRuntimeDependenciesV1 } from './services/public-data-mcp/runtime';
+import { getGisMcpConfigurationStateV1 } from './services/public-data-mcp/mcp-config';
 import { closeServerAndMcpWithHardTimeoutV1 } from './utils/graceful-shutdown';
 
 // Express 앱 생성
@@ -25,8 +31,25 @@ const legalMcpConfiguration = getLegalMcpConfigurationStateV1({
     allowedHosts: env.LEGAL_MCP_ALLOWED_HOSTS,
 });
 const legalMcpConfigured = legalMcpConfiguration.configured;
+const gisMcpConfiguration = getGisMcpConfigurationStateV1({
+    vworldApiKey: env.VWORLD_API_KEY,
+    vworldApiDomain: env.VWORLD_API_DOMAIN,
+    dataPortalApiKey: env.DATA_PORTAL_API_KEY,
+    tokenSha256: env.GIS_MCP_TOKEN_SHA256,
+    tokenRegistryJson: env.GIS_MCP_TOKEN_REGISTRY_JSON,
+    proxyTokenSha256: env.GIS_MCP_PROXY_TOKEN_SHA256,
+    allowedHosts: env.GIS_MCP_ALLOWED_HOSTS,
+    allowedOrigins: env.GIS_MCP_ALLOWED_ORIGINS,
+    requestsPerMinute: env.GIS_MCP_REQUESTS_PER_MINUTE,
+    globalRequestsPerMinute: env.GIS_MCP_GLOBAL_REQUESTS_PER_MINUTE,
+    requestDeadlineMs: env.GIS_MCP_REQUEST_DEADLINE_MS,
+    maxConcurrency: env.GIS_MCP_MAX_CONCURRENCY,
+    maxQueue: env.GIS_MCP_MAX_QUEUE,
+});
+const gisMcpConfigured = gisMcpConfiguration.configured;
 
 let legalMcp: LegalMcpRouteHandle | null = null;
+let gisMcp: GisMcpRouteHandle | null = null;
 
 // MCP는 전역 1mb body parser보다 먼저 mount해야 전용 256kb 제한을 보장한다.
 if (legalMcpConfigured) {
@@ -63,6 +86,36 @@ if (legalMcpConfigured) {
     });
 }
 
+if (gisMcpConfigured) {
+    gisMcp = createGisMcpRoute({
+        dependencies: createPublicDataMcpRuntimeDependenciesV1({
+            requestDeadlineMs: env.GIS_MCP_REQUEST_DEADLINE_MS,
+            maxConcurrentRequests: env.GIS_MCP_MAX_CONCURRENCY,
+            maxQueuedRequests: env.GIS_MCP_MAX_QUEUE,
+        }),
+        tokenSha256: env.GIS_MCP_TOKEN_SHA256,
+        tokenRegistryJson: env.GIS_MCP_TOKEN_REGISTRY_JSON,
+        proxyTokenSha256: env.GIS_MCP_PROXY_TOKEN_SHA256,
+        allowedHosts: env.GIS_MCP_ALLOWED_HOSTS,
+        allowedOrigins: env.GIS_MCP_ALLOWED_ORIGINS,
+        requestsPerMinute: env.GIS_MCP_REQUESTS_PER_MINUTE,
+        globalRequestsPerMinute: env.GIS_MCP_GLOBAL_REQUESTS_PER_MINUTE,
+        onError: (error) => {
+            logger.error('GIS MCP transport error', {
+                errorName: error.name,
+            });
+        },
+    });
+    app.use('/gis-mcp', gisMcp.router);
+} else {
+    app.use('/gis-mcp', (_request, response) => {
+        response.set('Cache-Control', 'no-store');
+        response.status(503).json({
+            error: 'GIS_MCP_NOT_CONFIGURED',
+        });
+    });
+}
+
 // 미들웨어 설정
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
@@ -84,6 +137,7 @@ const server = app.listen(env.PORT, () => {
     logger.info(`Environment: ${env.NODE_ENV}, Port: ${env.PORT}`);
     logger.info(`Development database routing: ${env.hasDevelopmentDatabase ? 'ENABLED' : 'DISABLED'}`);
     logger.info(`Legal MCP Config - ${legalMcpConfigured ? 'CONFIGURED' : 'NOT CONFIGURED (endpoint disabled)'}`);
+    logger.info(`GIS MCP Config - ${gisMcpConfigured ? 'CONFIGURED' : 'NOT CONFIGURED (endpoint disabled)'}`);
     
     // GIS 환경 변수 상태 로깅
     logger.info(`GIS Config - VWORLD_API_KEY: ${env.VWORLD_API_KEY ? 'SET' : 'NOT SET'}`);
@@ -107,7 +161,20 @@ function shutdown(signal: 'SIGTERM' | 'SIGINT'): void {
     kgInicisService.destroy();
     void closeServerAndMcpWithHardTimeoutV1({
         server,
-        closeMcp: () => legalMcp?.close() ?? Promise.resolve(),
+        closeMcp: async () => {
+            const results = await Promise.allSettled([
+                legalMcp?.close() ?? Promise.resolve(),
+                gisMcp?.close() ?? Promise.resolve(),
+            ]);
+            const failures = results
+                .filter((result): result is PromiseRejectedResult =>
+                    result.status === 'rejected'
+                )
+                .map((result) => result.reason);
+            if (failures.length > 0) {
+                throw new AggregateError(failures, 'MCP close failed');
+            }
+        },
         timeoutMs: SHUTDOWN_HARD_TIMEOUT_MS,
         onForceClose: () => {
             logger.error('Graceful shutdown timed out; forcing open HTTP connections closed');
@@ -119,7 +186,7 @@ function shutdown(signal: 'SIGTERM' | 'SIGINT'): void {
         }
         const [httpResult, mcpResult] = results;
         if (mcpResult.status === 'rejected') {
-            logger.error('Legal MCP close failed', {
+            logger.error('MCP endpoints close failed', {
                 errorName: mcpResult.reason instanceof Error
                     ? mcpResult.reason.name
                     : 'UnknownError',
