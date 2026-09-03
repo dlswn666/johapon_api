@@ -176,13 +176,17 @@ jobs:
           DEPLOY_EVENT_NAME: ${{ github.event_name }}
           EXPECTED_ALLOWLIST_DIGEST: ${{ inputs.land_area_sync_allowlist_sha256 || '' }}
           EXPECTED_ALLOWLIST_COUNT: ${{ inputs.land_area_sync_allowlist_count || '' }}
+          DEPLOY_IMAGE_REPOSITORY: ${{ env.IMAGE_REPOSITORY }}
+          DEPLOY_GIT_SHA: ${{ github.sha }}
+          DEPLOY_IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image_digest }}
+          DEPLOY_BUILD_TIME: ${{ needs.build-and-push.outputs.build_time }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           fingerprint: ${{ secrets.EC2_SSH_FINGERPRINT }}
           command_timeout: 120m
-          envs: GHCR_USERNAME,GHCR_TOKEN,DEPLOY_EVENT_NAME,EXPECTED_ALLOWLIST_DIGEST,EXPECTED_ALLOWLIST_COUNT
+          envs: GHCR_USERNAME,GHCR_TOKEN,DEPLOY_EVENT_NAME,EXPECTED_ALLOWLIST_DIGEST,EXPECTED_ALLOWLIST_COUNT,DEPLOY_IMAGE_REPOSITORY,DEPLOY_GIT_SHA,DEPLOY_IMAGE_DIGEST,DEPLOY_BUILD_TIME
           script: |
             set -Eeuo pipefail
 
@@ -228,12 +232,12 @@ jobs:
               false
             fi
 
-            IMAGE_REPOSITORY="${{ env.IMAGE_REPOSITORY }}"
-            IMAGE_TAG="${IMAGE_REPOSITORY}:${{ github.sha }}"
-            EXPECTED_DIGEST="${{ needs.build-and-push.outputs.image_digest }}"
+            IMAGE_REPOSITORY="${DEPLOY_IMAGE_REPOSITORY}"
+            IMAGE_TAG="${IMAGE_REPOSITORY}:${DEPLOY_GIT_SHA}"
+            EXPECTED_DIGEST="${DEPLOY_IMAGE_DIGEST}"
             IMAGE="${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}"
-            EXPECTED_GIT_SHA="${{ github.sha }}"
-            EXPECTED_BUILD_TIME="${{ needs.build-and-push.outputs.build_time }}"
+            EXPECTED_GIT_SHA="${DEPLOY_GIT_SHA}"
+            EXPECTED_BUILD_TIME="${DEPLOY_BUILD_TIME}"
             EXPECTED_IMAGE_TAG="${IMAGE_TAG}"
             CONTAINER_NAME="alimtalk-proxy"
             CANDIDATE_CONTAINER="${CONTAINER_NAME}-candidate"
@@ -259,7 +263,11 @@ jobs:
             for variable_name in \
               GHCR_USERNAME \
               GHCR_TOKEN \
-              DEPLOY_EVENT_NAME
+              DEPLOY_EVENT_NAME \
+              DEPLOY_IMAGE_REPOSITORY \
+              DEPLOY_GIT_SHA \
+              DEPLOY_IMAGE_DIGEST \
+              DEPLOY_BUILD_TIME
             do
               if [[ -z "${!variable_name:-}" ]]; then
                 echo "Required deployment variable ${variable_name} was not transferred to EC2."

@@ -330,6 +330,10 @@ test('배포 workflow는 GHCR digest와 EC2 env 단일 원본으로 안전하게
     assert.ok(workflow.includes('IMAGE="${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}"'));
     assert.match(workflow, /GHCR_USERNAME: \$\{\{ github\.actor \}\}/);
     assert.match(workflow, /GHCR_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+    assert.match(workflow, /DEPLOY_IMAGE_REPOSITORY: \$\{\{ env\.IMAGE_REPOSITORY \}\}/);
+    assert.match(workflow, /DEPLOY_GIT_SHA: \$\{\{ github\.sha \}\}/);
+    assert.match(workflow, /DEPLOY_IMAGE_DIGEST: \$\{\{ needs\.build-and-push\.outputs\.image_digest \}\}/);
+    assert.match(workflow, /DEPLOY_BUILD_TIME: \$\{\{ needs\.build-and-push\.outputs\.build_time \}\}/);
     assert.match(workflow, /printf '%s' "\$\{GHCR_TOKEN\}"[\s\\]+\| docker login ghcr\.io --username "\$\{GHCR_USERNAME\}" --password-stdin/);
     assert.match(workflow, /docker pull "\$\{IMAGE\}"\s+logout_registry/);
     assert.match(workflow, /needs: quality-gates/);
@@ -343,7 +347,19 @@ test('배포 workflow는 GHCR digest와 EC2 env 단일 원본으로 안전하게
         assert.ok(!workflow.includes(`${name}: \${{ secrets.${name} }}`));
         assert.ok(!workflow.includes(`-e ${name}`));
     }
-    assert.match(workflow, /envs: GHCR_USERNAME,GHCR_TOKEN/);
+    assert.match(
+        workflow,
+        /envs: GHCR_USERNAME,GHCR_TOKEN,DEPLOY_EVENT_NAME,EXPECTED_ALLOWLIST_DIGEST,EXPECTED_ALLOWLIST_COUNT,DEPLOY_IMAGE_REPOSITORY,DEPLOY_GIT_SHA,DEPLOY_IMAGE_DIGEST,DEPLOY_BUILD_TIME/
+    );
+    const remoteScriptMarker = '          script: |\n';
+    const remoteScriptStart = workflow.indexOf(remoteScriptMarker);
+    assert.ok(remoteScriptStart >= 0);
+    const remoteScript = workflow.slice(remoteScriptStart + remoteScriptMarker.length);
+    assert.doesNotMatch(remoteScript, /\$\{\{/);
+    assert.match(remoteScript, /IMAGE_REPOSITORY="\$\{DEPLOY_IMAGE_REPOSITORY\}"/);
+    assert.match(remoteScript, /EXPECTED_GIT_SHA="\$\{DEPLOY_GIT_SHA\}"/);
+    assert.match(remoteScript, /EXPECTED_DIGEST="\$\{DEPLOY_IMAGE_DIGEST\}"/);
+    assert.match(remoteScript, /EXPECTED_BUILD_TIME="\$\{DEPLOY_BUILD_TIME\}"/);
     assert.match(workflow, /--env-file \.env/);
     assert.match(workflow, /env_mode="\$\(stat -c '%a' \.env\)"/);
     assert.match(workflow, /"\$\{env_mode\}" != "600"/);
