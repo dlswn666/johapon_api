@@ -578,7 +578,7 @@ IDE extension은 MCP 설정을 공유한다. 반면 **ChatGPT web은 로컬 Code
       "type": "http",
       "url": "https://api.tonghari.kr/mcp",
       "headers": {
-        "Authorization": "Bearer ${TONGHARI_LEGAL_MCP_TOKEN}"
+        "Authorization": "Bearer ${TONGHARI_LEGAL_MCP_BEARER}"
       }
     }
   }
@@ -586,8 +586,28 @@ IDE extension은 MCP 설정을 공유한다. 반면 **ChatGPT web은 로컬 Code
 ```
 
 환경변수 header 확장은 Claude Code 공식 MCP 설정 형식이다. project scope 설정을
-공유하더라도 raw 값은 각 사용자가 따로 주입한다. 근거:
+공유하더라도 raw 값은 각 사용자가 따로 주입한다. 이 구성은
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`을 함께 사용할 때 현재 Claude Code가
+이름에 `TOKEN`이 들어간 환경변수를 header 치환 전에 비우는 동작을 피하기 위해
+Claude 전용 변수명을 `TONGHARI_LEGAL_MCP_BEARER`로 고정한다. raw bearer 자체를
+바꾸거나 두 변수에 중복 저장하는 것은 아니다. 근거:
 [Claude Code MCP 환경변수 header](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcpjson).
+
+macOS Keychain에서 매 실행 시 주입하는 예시는 다음과 같다. `<client-id>`는 발급한
+client ID로 바꾸고 raw bearer를 명령행 인자나 파일에 직접 적지 않는다.
+
+```zsh
+tonghari_mcp_secret="$(
+  /usr/bin/security find-generic-password \
+    -a '<client-id>' \
+    -s 'kr.tonghari.legal-mcp' \
+    -w
+)" || exit 1
+TONGHARI_LEGAL_MCP_BEARER="$tonghari_mcp_secret" \
+CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
+claude
+unset tonghari_mcp_secret
+```
 
 ### VS Code
 
