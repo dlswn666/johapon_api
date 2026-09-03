@@ -1,5 +1,6 @@
 import {
     LEGAL_DISCLAIMER,
+    MAX_RELEVANT_CASES,
     type CaseShortfallReasonV1,
     type LegalAnswerV1,
     type LegalResearchPacketV1,
@@ -206,10 +207,10 @@ function renderOrdinances(answer: LegalAnswerV1, sourceMap: Map<string, LegalSou
 
 function renderCases(answer: LegalAnswerV1, sourceMap: Map<string, LegalSourceV1>): string {
     const lines: string[] = [
-        `반환 판례: ${answer.caseSynthesis.returnedCount}건 (최대 10건)`,
+        `반환 판례: ${answer.caseSynthesis.returnedCount}건 (최대 ${MAX_RELEVANT_CASES}건)`,
         answer.caseSynthesis.upstreamComplete
             ? '계획된 법령명·쟁점 검색 stream 내 최신순 완결성: 검증됨'
-            : '계획된 법령명·쟁점 검색 stream 내 최신순 완결성: 미완료 — 반환 목록은 확보된 후보 안에서만 최신순이며 해당 stream의 최신 10건을 증명하지 못함',
+            : `계획된 법령명·쟁점 검색 stream 내 최신순 완결성: 미완료 — 반환 목록은 확보된 후보 안에서만 최신순이며 해당 stream의 최신 ${MAX_RELEVANT_CASES}건을 증명하지 못함`,
         `검색계획 hash: ${escapeMarkdownText(answer.caseSynthesis.searchScope.normalizedPlanHash)}`,
         `법령명 stream: ${answer.caseSynthesis.searchScope.lawNameQueries.map(escapeMarkdownText).join(', ') || '없음'}`,
         `쟁점 stream: ${answer.caseSynthesis.searchScope.issueQueries.map(escapeMarkdownText).join(', ') || '없음'}`,
@@ -231,8 +232,8 @@ function renderCases(answer: LegalAnswerV1, sourceMap: Map<string, LegalSourceV1
             + `${escapeMarkdownText(source.holding)}; ${fitLabel}`
         );
     });
-    if (answer.caseSynthesis.returnedCount < 10) {
-        lines.push(`10건 미만 사유: ${shortfallLabel(answer.caseSynthesis.shortfallReason)}`);
+    if (answer.caseSynthesis.returnedCount < MAX_RELEVANT_CASES) {
+        lines.push(`${MAX_RELEVANT_CASES}건 미만 사유: ${shortfallLabel(answer.caseSynthesis.shortfallReason)}`);
     }
     return renderBullets(lines);
 }

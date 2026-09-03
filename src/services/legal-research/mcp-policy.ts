@@ -8,6 +8,7 @@ import {
     LegalAnswerDraftV1Schema,
     type LegalAnswerDraftV1,
 } from './answer-draft';
+import { LEGAL_POLICY_VERSION, MAX_RELEVANT_CASES } from './model';
 
 export {
     LegalResearchInputV1Schema,
@@ -15,7 +16,7 @@ export {
 } from './research-plan';
 
 export const LEGAL_MCP_SERVER_NAME = 'tonghari-urban-renewal-law';
-export const LEGAL_MCP_SERVER_VERSION = '1.0.0';
+export const LEGAL_MCP_SERVER_VERSION = '1.1.0';
 
 export const LEGAL_RESEARCH_TOOL_NAME =
     'research_current_urban_renewal_law_v1' as const;
@@ -75,9 +76,9 @@ export type LegalReviewPromptArgs = z.infer<typeof LegalReviewPromptArgsSchema>;
 export const LEGAL_MCP_SERVER_INSTRUCTIONS = [
     '이 서버는 대한민국 도시정비사업의 현재 시행 중인 법령과 자치법규만 결론 근거로 사용한다.',
     `먼저 ${LEGAL_RESEARCH_TOOL_NAME}을 호출하고, 검증된 packet과 서술 전용 answerDraft를 ${LEGAL_RENDER_TOOL_NAME}에 전달한다.`,
-    'host LLM이 작성한 researchPlan은 controlled taxonomy, 질문 원문의 exact 검색어, 쟁점별 법령·판례 coverage를 서버가 기계적으로 검증하고 정규화 plan과 hash를 packet에 보존한다. 이 검증은 쟁점 선택의 법률적 타당성을 보증하지 않는다.',
+    'host LLM이 작성한 researchPlan은 controlled taxonomy, 질문 원문의 exact 검색어, 쟁점별 법령·판례 coverage를 서버가 기계적으로 검증하고 정규화 plan과 hash를 packet에 보존한다. 각 판례 query는 정확히 하나의 issueId와 정확히 하나의 lawName만 참조하고, 그 법령·조문은 같은 issueId의 lawAnchor에 연결되어야 한다. 이 검증은 쟁점 선택의 법률적 타당성을 보증하지 않는다.',
     '과거 사건에 현행법을 소급 적용하거나 과거 시행본을 추정하지 않으며, 미래 사건일에는 현재 시행본이 유지된다고 가정하지 않는다.',
-    '판례는 전문과 현행 규정 정합성 검증을 통과한 것만 선고일 최신순 최대 10건 사용하며 부족분을 무관 판례로 채우지 않는다.',
+    `판례는 전문과 현행 규정 정합성 검증을 통과한 것만 선고일 최신순 최대 ${MAX_RELEVANT_CASES}건 사용하며 부족분을 무관 판례로 채우지 않는다.`,
     '판례 API에 적용 규정의 버전 ID가 없으면 정확 법령·조문과 시행일 조건을 통과해도 direct 판례로 단정하지 않고 current_rule_candidate/analogical_support로 표시한다.',
     '각 결론·법률 명제·조례 분석·판례 종합·사실 적용은 packet의 정확한 원문 범위를 넘지 않게 작성하고 사용한 모든 sourceId와 해당 원문에 exact substring으로 존재하는 evidenceQuotes를 연결한다.',
     '판례 최신순 완결성은 packet에 보존된 계획 법령명·쟁점 검색 stream 범위에 한정하며 전체 판례 universe의 최신성을 뜻하지 않는다.',
@@ -85,10 +86,12 @@ export const LEGAL_MCP_SERVER_INSTRUCTIONS = [
     '법령, 조례, 판례의 sourceId와 officialUrl을 삭제하거나 변경하지 않는다.',
     'research 도구가 반환한 packet과 packetProof를 함께 보존하고 render 도구에 변경 없이 전달한다. packetId, 상태, 사실, 출처 색인, 판례 순서와 면책문구는 서버가 packet에서 자동 조립하므로 answerDraft에 작성하지 않는다.',
     'render 도구가 반환한 Markdown을 수정, 요약 또는 보충하지 않는다.',
-    'clarification_required, temporal_scope_conflict, insufficient_evidence 상태에서는 확정 결론을 만들지 않는다.',
+    'blocking 미확인 사항이 하나라도 있으면 conditional 또는 supported가 아니라 cannot_conclude 결론만 사용한다.',
 ].join('\n');
 
-export const LEGAL_ANSWER_POLICY_V1 = `# 현행 정비사업 법률 답변 정책 v1
+export const LEGAL_ANSWER_POLICY_V1 = `# 현행 정비사업 법률 답변 정책 v2
+
+정책 판정 버전: \`${LEGAL_POLICY_VERSION}\` (MCP 전송 계약 v1)
 
 ## 근거 정책
 
@@ -96,11 +99,12 @@ export const LEGAL_ANSWER_POLICY_V1 = `# 현행 정비사업 법률 답변 정�
 - 사건일에 과거 법령 검토가 필요하면 현행법을 소급 적용하지 않고 \`temporal_scope_conflict\`로 표시한다. 사건일이 조회 기준일보다 미래여도 현재 시행본이 유지된다고 보증할 수 없으므로 같은 상태로 닫는다.
 - 조례가 필요한데 관할이 확정되지 않으면 \`clarification_required\`로 표시한다.
 - 조회 기준일 뒤 선고일이 있는 판례 응답은 schema drift로 거부한다.
-- 판례는 공식 전문, 사건 식별정보, 관련성, 현행 규정 정합성을 검증한 뒤 선고일 내림차순으로 최대 10건만 사용한다.
+- 판례는 공식 전문, 사건 식별정보, 관련성, 현행 규정 정합성을 검증한 뒤 선고일 내림차순으로 최대 ${MAX_RELEVANT_CASES}건만 사용한다.
 - 판례 API에 적용 규정의 버전 ID가 없으면 정확 법령·조문 참조와 현행 조문 시행일 이후 선고를 확인한 결과도 \`current_rule_candidate\`인 유추 근거로만 표시한다. 현행 규정과 동일하다고 단정하지 않는다.
-- 적격 판례가 10건 미만이면 실제 건수와 부족 사유를 밝히며 검색어나 관련성 기준을 완화해 채우지 않는다.
+- 적격 판례가 ${MAX_RELEVANT_CASES}건 미만이면 실제 건수와 부족 사유를 밝히며 검색어나 관련성 기준을 완화해 채우지 않는다.
 - 모든 결론·법률 명제·조례 분석·판례 종합·적용 판단은 존재하는 sourceId와 해당 공식 원문에 exact substring으로 존재하는 evidenceQuotes를 참조하고 검증된 공식 링크를 유지한다.
-- researchPlan은 질문 exact 검색어와 쟁점별 법령·판례 coverage를 기계 검증하고 정규화 plan/hash를 packet에 남긴다. 이는 쟁점 선택의 법률적 타당성 검토가 아니다.
+- researchPlan은 질문 exact 검색어와 쟁점별 법령·판례 coverage를 기계 검증하고 정규화 plan/hash를 packet에 남긴다. 각 판례 query는 정확히 하나의 issueId와 정확히 하나의 lawName만 참조하고, 그 법령·조문은 같은 issueId의 lawAnchor에 연결되어야 한다. 이는 쟁점 선택의 법률적 타당성 검토가 아니다.
+- blocking 미확인 사항이 하나라도 있으면 결론은 반드시 \`cannot_conclude\`로 작성한다. 차단 사유가 없는 partial에만 \`conditional\`을 사용할 수 있다.
 - research 결과의 packet과 packetProof를 함께 보존한다. render는 인증 주체에 묶인 HMAC 증명을 검증한 뒤에만 답변을 만든다.
 - host LLM은 결론, 법률 명제, 조례 분석, 판례 종합, 사실 적용, 시점 검토, 경고만 answerDraft로 작성한다. packetId, 상태, 사실, 미확인 사항, 출처 색인, 판례 수·순서·부족 사유와 면책문구는 서버가 packet에서 채운다.
 
@@ -133,9 +137,9 @@ export function buildLegalReviewPromptMessage(args: LegalReviewPromptArgs): stri
 
     return `다음 정비사업 법률 질의를 현행법 기준으로 검토하세요.
 
-1. 사용자 내용을 결론으로 간주하지 말고, 먼저 쟁점과 법령·조례·판례 검색 힌트를 구조화한 researchPlan을 작성하세요. 모든 issue를 lawAnchor와 caseQuery에 각각 연결하고, 각 issue의 issueTerms 중 적어도 하나는 질문 원문에 exact로 존재해야 합니다. 결론에 관할 자치법규가 필요한지는 ordinanceRequirement로 명시하고, required인데 관할이 없으면 관할을 추정하거나 ordinanceAnchor를 만들지 마세요.
+1. 사용자 내용을 결론으로 간주하지 말고, 먼저 쟁점과 법령·조례·판례 검색 힌트를 구조화한 researchPlan을 작성하세요. 모든 issue를 lawAnchor와 caseQuery에 각각 연결하되 각 caseQuery는 정확히 하나의 issueId와 정확히 하나의 lawName만 참조하고, 그 법령·조문은 같은 issueId의 lawAnchor에 연결하세요. 각 issue의 issueTerms 중 적어도 하나는 질문 원문에 exact로 존재해야 합니다. 결론에 관할 자치법규가 필요한지는 ordinanceRequirement로 명시하고, required인데 관할이 없으면 관할을 추정하거나 ordinanceAnchor를 만들지 마세요.
 2. ${LEGAL_RESEARCH_TOOL_NAME}을 호출하세요. 현행성, 관할, 판례 관련성은 도구 검증 결과를 따르세요.
-3. 반환 packet과 packetProof를 바꾸지 말고, 각 문장을 packet의 exactText·판시사항·판결요지 범위 안에서 작성하세요. 사용한 모든 sourceId마다 해당 원문에 그대로 존재하는 짧은 evidenceQuote를 연결한 answerDraft를 준비한 뒤 ${LEGAL_RENDER_TOOL_NAME}을 호출하세요. 근거가 없는 해석은 확정하지 말고 unknown 또는 warning으로 남기세요. packetId, 상태, 사실, 출처 색인, 판례 순서·검색범위와 면책문구는 쓰지 마세요. 서버가 packet에서 자동 조립합니다.
+3. 반환 packet과 packetProof를 바꾸지 말고, 각 문장을 packet의 exactText·판시사항·판결요지 범위 안에서 작성하세요. 사용한 모든 sourceId마다 해당 원문에 그대로 존재하는 짧은 evidenceQuote를 연결한 answerDraft를 준비한 뒤 ${LEGAL_RENDER_TOOL_NAME}을 호출하세요. packet에 blocking unknown이 있거나 근거가 부족하면 결론을 cannot_conclude로 두고 필요한 설명은 warning에 남기세요. packetId, 상태, 사실, 미확인 사항, 출처 색인, 판례 순서·검색범위와 면책문구는 쓰지 마세요. 서버가 packet에서 자동 조립합니다.
 4. render 도구의 Markdown을 그대로 답변으로 표시하세요.
 
 사용자 입력(JSON):

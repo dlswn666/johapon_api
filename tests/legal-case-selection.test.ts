@@ -37,7 +37,7 @@ function makeCase(caseSerialId: string, decisionDate: string): CaseSourceV1 {
     };
 }
 
-test('적격 후보 15건은 선고일 최신순 최대 10건만 안정적으로 선택한다', () => {
+test('적격 후보 15건은 선고일 최신순 최대 12건만 안정적으로 선택한다', () => {
     const candidates = Array.from({ length: 15 }, (_, index) => {
         const day = String(index + 1).padStart(2, '0');
         return makeCase(String(index + 1), `2026-08-${day}`);
@@ -63,12 +63,14 @@ test('적격 후보 15건은 선고일 최신순 최대 10건만 안정적으로
             '2026-08-08',
             '2026-08-07',
             '2026-08-06',
+            '2026-08-05',
+            '2026-08-04',
         ]
     );
-    assert.equal(result.audit.requestedMax, 10);
+    assert.equal(result.audit.requestedMax, 12);
     assert.equal(result.audit.candidateCount, 15);
     assert.equal(result.audit.qualifiedCount, 15);
-    assert.equal(result.audit.returnedCount, 10);
+    assert.equal(result.audit.returnedCount, 12);
     assert.equal(result.audit.shortfallReason, null);
     assert.equal(result.audit.queryRelaxedToFill, false);
     assert.deepEqual(candidates.map((candidate) => candidate.sourceId), before);
@@ -101,7 +103,7 @@ test('적격 판례가 7건이면 실제 7건과 부족 사유를 반환하고 p
     assert.equal(result.audit.shortfallReason, 'official_results_exhausted');
 });
 
-test('무관·전문 미확인·구법·비공식·중복 후보를 10건 채우기에 사용하지 않는다', () => {
+test('무관·전문 미확인·구법·비공식·중복 후보를 12건 채우기에 사용하지 않는다', () => {
     const valid = makeCase('500', '2026-05-01');
     const duplicate = { ...makeCase('500', '2026-05-01'), sourceId: 'case-500-duplicate' };
     const noFullText = { ...makeCase('400', '2026-04-01'), fullTextVerified: false };

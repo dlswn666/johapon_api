@@ -13,6 +13,7 @@ import { LawOpenApiClient } from './law-open-api-client';
 import {
     LEGAL_POLICY_VERSION,
     LEGAL_RESEARCH_PACKET_VERSION,
+    MAX_RELEVANT_CASES,
     type CaseSourceV1,
     type LawSourceV1,
     type LegalResearchPacketV1,
@@ -80,6 +81,7 @@ export interface LegalResearchOrchestratorOptionsV1 {
 }
 
 interface ResolvedLawAnchor {
+    issueIds: string[];
     exactName: string;
     articleLabels: string[];
     issueTerms: string[];
@@ -573,6 +575,13 @@ export class LegalResearchOrchestratorV1 {
             searchScope: 1,
             page: 1,
         }, signal);
+        if (result.items.some((item) =>
+            item.currentHistoryCode !== undefined
+            && item.currentHistoryCode !== '현행')) {
+            // target=eflaw/nw=3 결과에 연혁 법령이 섞이면
+            // 제공자 현행성 계약이 드리프트한 것으로 보고 전체를 닫는다.
+            throw new LegalOpenApiError('SCHEMA_DRIFT');
+        }
         const matches = result.items
             .filter((item) =>
                 exactLegalToken(item.name, anchor.exactName)
@@ -625,6 +634,7 @@ export class LegalResearchOrchestratorV1 {
             });
             // 법령명·법종 exact match 감사와 조문 근거 부재를 구분한다.
             return {
+                issueIds: [...anchor.issueIds],
                 exactName: anchor.exactName,
                 articleLabels: [],
                 issueTerms: anchor.issueTerms,
@@ -689,6 +699,7 @@ export class LegalResearchOrchestratorV1 {
         }
 
         return {
+            issueIds: [...anchor.issueIds],
             exactName: anchor.exactName,
             articleLabels: selected.map(articleLabel),
             issueTerms: anchor.issueTerms,
@@ -1007,7 +1018,7 @@ export class LegalResearchOrchestratorV1 {
         const processedSerialIds = new Set<string>();
         let detailFailureCount = 0;
         let detailLimitReached = false;
-        let latestTenProven = false;
+        let latestBoundaryProven = false;
 
         while (true) {
             const chronologicalSummaries = orderedSummaries();
@@ -1020,9 +1031,11 @@ export class LegalResearchOrchestratorV1 {
                 lawNameQueries,
                 issueQueries,
             }).cases;
-            const boundary = selected.length === 10
-                ? selected[selected.length - 1]
-                : null;
+            // 목표 건수에 아직 못 미쳐도 현재 가장 오래된 적격 판례를 임시
+            // 경계로 삼는다. 그렇지 않으면 다른 stream의 다음 page에 숨어 있는
+            // 더 최신 판례를 보기 전에 상세조회 예산을 오래된 후보에 소진할 수 있다.
+            const boundary = selected.at(-1) ?? null;
+            const targetReached = selected.length === MAX_RELEVANT_CASES;
             const boundarySummary: CaseSummary | null = boundary
                 ? {
                     caseSerialId: boundary.caseSerialId,
@@ -1031,8 +1044,8 @@ export class LegalResearchOrchestratorV1 {
                 }
                 : null;
             if (boundary && boundarySummary) {
-                // tier 우선 탐색으로 먼저 10건을 확보했더라도 최종 결과의 최신순을
-                // 증명하려면 현재 10번째보다 최신인 미처리 목록 후보를 먼저 검증한다.
+                // tier 우선 탐색으로 목표 건수를 확보했더라도 최종 결과의 최신순을
+                // 증명하려면 현재 경계보다 최신인 미처리 목록 후보를 먼저 검증한다.
                 const newerPending = chronologicalPending.filter((summary) =>
                     compareProviderCases(summary, boundarySummary) < 0);
                 if (newerPending.length === 0) {
@@ -1052,15 +1065,17 @@ export class LegalResearchOrchestratorV1 {
                         if (fetchedAny) continue;
                         break;
                     }
-                    latestTenProven = true;
-                    break;
+                    if (targetReached) {
+                        latestBoundaryProven = true;
+                        break;
+                    }
                 }
             }
 
             const prioritizedPending = prioritizedSummaries().filter(
                 (summary) => !processedSerialIds.has(summary.caseSerialId)
             );
-            const pending = boundarySummary
+            const pending = targetReached && boundarySummary
                 ? [
                     ...chronologicalPending.filter((summary) =>
                         compareProviderCases(summary, boundarySummary) < 0),
@@ -1137,12 +1152,12 @@ export class LegalResearchOrchestratorV1 {
             lawNameQueries,
             issueQueries,
         });
-        const enoughToProveLatestTen = latestTenProven
-            && preliminary.cases.length === 10
+        const enoughToProveLatestBoundary = latestBoundaryProven
+            && preliminary.cases.length === MAX_RELEVANT_CASES
             && detailFailureCount === 0
             && !searchIncomplete;
         return selectRelevantCasesV1(candidates, {
-            upstreamComplete: officialExhausted || enoughToProveLatestTen,
+            upstreamComplete: officialExhausted || enoughToProveLatestBoundary,
             lawNameQueries,
             issueQueries,
         });
@@ -1207,6 +1222,8 @@ export class LegalResearchOrchestratorV1 {
         let matchedProvisions: string[] = [];
         let controllingDates: string[] = [];
         for (const query of input.researchPlan.caseQueries) {
+            const issueId = query.issueIds[0];
+            if (!issueId) continue;
             const matchedTerms = query.issueTerms.filter((term) => includesTerm(searchable, term));
             if (matchedTerms.length === 0) continue;
 
@@ -1223,7 +1240,8 @@ export class LegalResearchOrchestratorV1 {
                 if (referencedArticles.size === 0) continue;
 
                 for (const resolved of resolvedLaws.filter((law) =>
-                    exactLegalToken(law.exactName, lawName))) {
+                    law.issueIds.includes(issueId)
+                    && exactLegalToken(law.exactName, lawName))) {
                     for (const source of resolved.sources) {
                         if (
                             referencedArticles.has(source.provision.article)
@@ -1241,7 +1259,7 @@ export class LegalResearchOrchestratorV1 {
 
             const matchedSources = [...sourcePool.values()];
 
-            matchedIssueIds = unique([...matchedIssueIds, ...query.issueIds]);
+            matchedIssueIds = unique([...matchedIssueIds, issueId]);
             matchedProvisions = unique([
                 ...matchedProvisions,
                 ...matchedSources.map((source) => `${source.title} ${source.provision.article}`),

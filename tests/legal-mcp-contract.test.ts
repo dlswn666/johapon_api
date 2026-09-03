@@ -406,12 +406,18 @@ describe('법률 MCP 공개 계약', () => {
             discover.body.result.instructions,
             LEGAL_MCP_SERVER_INSTRUCTIONS
         );
+        assert.match(
+            discover.body.result.instructions,
+            /정확히 하나의 issueId와 정확히 하나의 lawName/
+        );
 
         const tools = await mcpRequest(endpoint.baseUrl, 'tools/list');
         assert.deepEqual(
             tools.body.result.tools.map((tool: JsonObject) => tool.name).sort(),
             [LEGAL_RENDER_TOOL_NAME, LEGAL_RESEARCH_TOOL_NAME].sort()
         );
+        assert.equal(LEGAL_RESEARCH_TOOL_NAME, 'research_current_urban_renewal_law_v1');
+        assert.equal(LEGAL_RENDER_TOOL_NAME, 'render_legal_answer_v1');
         const researchTool = tools.body.result.tools.find(
             (tool: JsonObject) => tool.name === LEGAL_RESEARCH_TOOL_NAME
         );
@@ -449,11 +455,24 @@ describe('법률 MCP 공개 계약', () => {
             prompt.body.result.messages[0].content.text,
             new RegExp(LEGAL_RENDER_TOOL_NAME)
         );
+        assert.match(
+            prompt.body.result.messages[0].content.text,
+            /정확히 하나의 issueId와 정확히 하나의 lawName/
+        );
 
         const resources = await mcpRequest(endpoint.baseUrl, 'resources/list');
         assert.deepEqual(
             resources.body.result.resources.map((resource: JsonObject) => resource.uri),
             [LEGAL_POLICY_RESOURCE_URI]
+        );
+        assert.equal(LEGAL_POLICY_RESOURCE_URI, 'tonghari-law://policy/current-answer/v1');
+        assert.equal(
+            resources.body.result.resources[0].title,
+            '현행 정비사업 법률 답변 정책 v2'
+        );
+        assert.equal(
+            resources.body.result.resources[0].annotations.lastModified,
+            '2026-09-03T00:00:00+09:00'
         );
 
         const resource = await mcpRequest(endpoint.baseUrl, 'resources/read', {
@@ -465,7 +484,15 @@ describe('법률 MCP 공개 계약', () => {
         );
         assert.match(
             resource.body.result.contents[0].text,
+            /^# 현행 정비사업 법률 답변 정책 v2/
+        );
+        assert.match(
+            resource.body.result.contents[0].text,
             /packetProof/
+        );
+        assert.match(
+            resource.body.result.contents[0].text,
+            /정확히 하나의 issueId와 정확히 하나의 lawName/
         );
     });
 

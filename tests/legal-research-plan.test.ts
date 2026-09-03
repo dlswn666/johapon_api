@@ -62,6 +62,55 @@ describe('LegalResearchPlanV1Schema', () => {
         assert.equal(result.success, false);
     });
 
+    it('한 판례 query가 여러 쟁점을 한꺼번에 참조하는 계획을 거부한다', () => {
+        const result = LegalResearchPlanV1Schema.safeParse({
+            ...validPlan,
+            issues: [
+                ...validPlan.issues,
+                {
+                    issueId: 'ISSUE-2',
+                    issue: '대표자 선정 절차',
+                    requestedOutcome: 'procedure',
+                },
+            ],
+            lawAnchors: [
+                ...validPlan.lawAnchors,
+                {
+                    ...validPlan.lawAnchors[0],
+                    issueIds: ['ISSUE-2'],
+                    issueTerms: ['대표자 선정'],
+                },
+            ],
+            caseQueries: [{
+                ...validPlan.caseQueries[0],
+                issueIds: ['ISSUE-1', 'ISSUE-2'],
+            }],
+        });
+
+        assert.equal(result.success, false);
+    });
+
+    it('한 판례 query에 여러 법령을 넣어 법령별 조문 근거를 교차 차용하지 않는다', () => {
+        const result = LegalResearchPlanV1Schema.safeParse({
+            ...validPlan,
+            lawAnchors: [
+                ...validPlan.lawAnchors,
+                {
+                    ...validPlan.lawAnchors[0],
+                    exactName: '주택법',
+                    articleLabels: ['제1조'],
+                },
+            ],
+            caseQueries: [{
+                ...validPlan.caseQueries[0],
+                lawNames: ['도시 및 주거환경정비법', '주택법'],
+                articleLabels: ['제1조'],
+            }],
+        });
+
+        assert.equal(result.success, false);
+    });
+
     it('URL과 인증 query를 검색어로 받지 않는다', () => {
         for (const issueTerm of [
             'https://law.go.kr/DRF/lawSearch.do',
@@ -92,6 +141,90 @@ describe('LegalResearchPlanV1Schema', () => {
         });
 
         assert.equal(result.success, false);
+    });
+
+    it('다른 issue에만 연결된 법령 anchor를 판례 검색 근거로 차용하지 않는다', () => {
+        const result = LegalResearchPlanV1Schema.safeParse({
+            ...validPlan,
+            issues: [
+                ...validPlan.issues,
+                {
+                    issueId: 'ISSUE-2',
+                    issue: '총회 의결 절차',
+                    requestedOutcome: 'procedure',
+                },
+            ],
+            lawAnchors: [
+                ...validPlan.lawAnchors,
+                {
+                    issueIds: ['ISSUE-2'],
+                    exactName: '주택법',
+                    lawType: '법률',
+                    articleLabels: ['제1조'],
+                    issueTerms: ['총회 의결'],
+                },
+            ],
+            caseQueries: [
+                {
+                    ...validPlan.caseQueries[0],
+                    lawNames: ['주택법'],
+                    articleLabels: ['제1조'],
+                },
+                {
+                    issueIds: ['ISSUE-2'],
+                    lawNames: ['주택법'],
+                    articleLabels: ['제1조'],
+                    issueTerms: ['총회 의결'],
+                },
+            ],
+        });
+
+        assert.equal(result.success, false);
+        assert.match(
+            JSON.stringify(result.error?.issues ?? []),
+            /같은 issueId의 현행 법령 anchor/
+        );
+    });
+
+    it('같은 법령명이어도 다른 issue의 조문 anchor를 차용하지 않는다', () => {
+        const result = LegalResearchPlanV1Schema.safeParse({
+            ...validPlan,
+            issues: [
+                ...validPlan.issues,
+                {
+                    issueId: 'ISSUE-2',
+                    issue: '총회 전자투표 절차',
+                    requestedOutcome: 'procedure',
+                },
+            ],
+            lawAnchors: [
+                ...validPlan.lawAnchors,
+                {
+                    ...validPlan.lawAnchors[0],
+                    issueIds: ['ISSUE-2'],
+                    articleLabels: ['제45조'],
+                    issueTerms: ['전자투표'],
+                },
+            ],
+            caseQueries: [
+                {
+                    ...validPlan.caseQueries[0],
+                    articleLabels: ['제45조'],
+                },
+                {
+                    issueIds: ['ISSUE-2'],
+                    lawNames: ['도시 및 주거환경정비법'],
+                    articleLabels: ['제45조'],
+                    issueTerms: ['전자투표'],
+                },
+            ],
+        });
+
+        assert.equal(result.success, false);
+        assert.match(
+            JSON.stringify(result.error?.issues ?? []),
+            /같은 issueId·법령의 anchor/
+        );
     });
 
     it('모든 쟁점이 법령 anchor와 판례 query에 각각 포함되어야 한다', () => {

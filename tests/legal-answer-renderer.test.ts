@@ -7,6 +7,7 @@ import {
 import {
     LEGAL_ANSWER_SECTION_HEADINGS,
     LEGAL_ANSWER_VERSION,
+    LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT,
     LEGAL_DISCLAIMER,
     LEGAL_POLICY_VERSION,
     LEGAL_RESEARCH_PACKET_VERSION,
@@ -185,7 +186,7 @@ function makePacket(): LegalResearchPacketV1 {
             packetResearchPlan
         ),
         caseSearchAudit: {
-            requestedMax: 10,
+            requestedMax: 12,
             candidateCount: 2,
             qualifiedCount: 2,
             returnedCount: 2,
@@ -318,11 +319,11 @@ test('현행 법령·관할 조례·판례의 공식 링크와 실제 반환 건
     assert.match(markdown, /https:\/\/www\.law\.go\.kr\/lsInfoP\.do\?lsiSeq=LAW-MST-1/);
     assert.match(markdown, /https:\/\/www\.law\.go\.kr\/ordinInfoP\.do\?ordinSeq=ORD-MST-1/);
     assert.match(markdown, /https:\/\/www\.law\.go\.kr\/precInfoP\.do\?precSeq=200/);
-    assert.match(markdown, /반환 판례: 2건 \(최대 10건\)/);
+    assert.match(markdown, /반환 판례: 2건 \(최대 12건\)/);
     assert.match(markdown, /조사 상태: complete \(조사 계약 완료\)/);
     assert.match(markdown, /계획된 법령명·쟁점 검색 stream 내 최신순 완결성: 검증됨/);
     assert.match(markdown, /검색계획 hash:/);
-    assert.match(markdown, /10건 미만 사유: 관련성 기준을 충족한 공식 검색 결과가 더 없음/);
+    assert.match(markdown, /12건 미만 사유: 관련성 기준을 충족한 공식 검색 결과가 더 없음/);
     assert.match(markdown, /과거 법령 추가 확인 필요: 아니오/);
 });
 
@@ -342,11 +343,16 @@ test('사건일 미제공 시 과거 법령 확인 필요 여부를 아니오로
     const answer = makeAnswer(packet);
     answer.status = packet.status;
     answer.scope = structuredClone(packet.scope);
-    answer.conclusion.kind = 'cannot_conclude';
+    answer.conclusion = {
+        kind: 'cannot_conclude',
+        text: LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT,
+        sourceIds: [],
+        evidenceQuotes: [],
+    };
     answer.temporalReview.summary = '사건일은 인용 조문의 시행일 이후이므로 소급 적용 문제가 없다.';
     answer.caseSynthesis.upstreamComplete = false;
     answer.caseSynthesis.shortfallReason = 'upstream_incomplete';
-    answer.applications[0].temporalApplicability = 'unknown';
+    answer.applications = [];
     answer.unknowns = structuredClone(packet.unknowns);
 
     const markdown = renderLegalAnswerV1(packet, answer);
@@ -367,6 +373,42 @@ test('판례 섹션은 패킷의 최신순과 caseSerialId DESC 동률 순서를
     const caseSection = markdown.slice(caseSectionStart, applicationSectionStart);
 
     assert.ok(caseSection.indexOf('조합설립인가처분취소 200') < caseSection.indexOf('조합설립인가처분취소 100'));
+});
+
+test('blocking unknown 답변은 서버 고정 결론과 빈 적용 판단만 렌더링한다', () => {
+    const packet = makePacket();
+    packet.status = 'insufficient_evidence';
+    packet.unknowns = [{
+        code: 'MISSING_REPRESENTATIVE_DESIGNATION',
+        text: '공동소유자의 대표자 지정 여부가 확인되지 않았다.',
+        impact: '전자투표의 유효성을 확정할 수 없다.',
+        blocking: true,
+    }];
+    const answer = makeAnswer(packet);
+    answer.status = packet.status;
+    answer.unknowns = structuredClone(packet.unknowns);
+    answer.conclusion = {
+        kind: 'cannot_conclude',
+        text: LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT,
+        sourceIds: [],
+        evidenceQuotes: [],
+    };
+    answer.applications = [];
+
+    const markdown = renderLegalAnswerV1(packet, answer);
+    const conclusionStart = markdown.indexOf('## 1. 검토 결론');
+    const scopeStart = markdown.indexOf('## 2. 적용 기준일·사건일·관할');
+    const applicationStart = markdown.indexOf('## 7. 사실에 대한 적용과 판단');
+    const temporalStart = markdown.indexOf('## 8. 소급 적용·경과조치 검토');
+    assert.match(markdown.slice(conclusionStart, scopeStart), new RegExp(LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT));
+    assert.match(markdown.slice(applicationStart, temporalStart), /해당 없음/);
+
+    answer.conclusion.text = '대표자 지정이 없어도 A의 찬성표는 유효하다.';
+    answer.applications = makeAnswer(packet).applications;
+    assert.throws(
+        () => renderLegalAnswerV1(packet, answer),
+        LegalContractValidationError
+    );
 });
 
 test('동적 문장의 줄바꿈과 가짜 heading은 고정 섹션 구조를 바꾸지 못한다', () => {
@@ -413,24 +455,24 @@ test('빈 선택 섹션도 생략하지 않고 해당 없음 또는 0건으로 �
     const ordinanceStart = markdown.indexOf('## 5. 관할 조례·규칙');
     const caseStart = markdown.indexOf('## 6. 관련 판례');
     assert.match(markdown.slice(ordinanceStart, caseStart), /해당 없음/);
-    assert.match(markdown.slice(caseStart), /반환 판례: 0건 \(최대 10건\)/);
+    assert.match(markdown.slice(caseStart), /반환 판례: 0건 \(최대 12건\)/);
 });
 
-test('partial 패킷은 판례가 10건이어도 최신 10건 완결성 미증명을 숨기지 않는다', () => {
+test('partial 패킷은 판례가 12건이어도 최신 12건 완결성 미증명을 숨기지 않는다', () => {
     const packet = makePacket();
-    packet.cases = Array.from({ length: 10 }, (_, index) =>
+    packet.cases = Array.from({ length: 12 }, (_, index) =>
         makeCase(String(900 - index), `2026-08-${String(20 - index).padStart(2, '0')}`));
     packet.status = 'partial';
-    packet.caseSearchAudit.candidateCount = 10;
-    packet.caseSearchAudit.qualifiedCount = 10;
-    packet.caseSearchAudit.returnedCount = 10;
+    packet.caseSearchAudit.candidateCount = 12;
+    packet.caseSearchAudit.qualifiedCount = 12;
+    packet.caseSearchAudit.returnedCount = 12;
     packet.caseSearchAudit.upstreamComplete = false;
     packet.caseSearchAudit.shortfallReason = null;
     const answer = makeAnswer(packet);
     answer.status = 'partial';
     answer.conclusion.kind = 'conditional';
     answer.caseSynthesis = {
-        returnedCount: 10,
+        returnedCount: 12,
         summary: '확보된 적격 판례를 최신순으로 정리했다.',
         sourceIds: packet.cases.map((legalCase) => legalCase.sourceId),
         shortfallReason: null,
@@ -460,7 +502,7 @@ test('partial 패킷은 판례가 10건이어도 최신 10건 완결성 미증�
     const markdown = renderLegalAnswerV1(packet, answer);
     assert.match(markdown, /조사 상태: partial \(공식 상류 조회 미완료\)/);
     assert.match(markdown, /최신순 완결성: 미완료/);
-    assert.match(markdown, /해당 stream의 최신 10건을 증명하지 못함/);
+    assert.match(markdown, /해당 stream의 최신 12건을 증명하지 못함/);
 });
 
 test('검증되지 않은 sourceId 또는 변경된 면책문구는 렌더링 전에 차단한다', () => {

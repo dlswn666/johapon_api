@@ -446,7 +446,7 @@ export function createLegalMcpServer(
         {
             title: '현행 정비사업 법률 검토',
             description:
-                '쟁점별 구조화 조사계획을 만든 뒤 근거 조사와 고정 형식 렌더링 도구를 순서대로 호출한다.',
+                '각 판례 query를 정확히 하나의 issue와 하나의 법령에 연결한 구조화 조사계획을 만든 뒤 근거 조사와 고정 형식 렌더링 도구를 순서대로 호출한다.',
             argsSchema: LegalReviewPromptArgsSchema,
         },
         (args) => ({
@@ -464,13 +464,13 @@ export function createLegalMcpServer(
         LEGAL_POLICY_RESOURCE_NAME,
         LEGAL_POLICY_RESOURCE_URI,
         {
-            title: '현행 정비사업 법률 답변 정책 v1',
+            title: '현행 정비사업 법률 답변 정책 v2',
             description: '근거 선별, 상태 판정, 인용과 고정 답변 순서',
             mimeType: 'text/markdown',
             annotations: {
                 audience: ['assistant'],
                 priority: 1,
-                lastModified: '2026-08-31T00:00:00+09:00',
+                lastModified: '2026-09-03T00:00:00+09:00',
             },
         },
         async (uri) => ({
