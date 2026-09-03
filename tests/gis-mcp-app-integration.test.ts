@@ -31,6 +31,7 @@ test('GIS MCP는 두 provider와 독립 registry가 모두 유효할 때만 활�
         missing: [],
         invalid: [],
         authMode: 'client_registry',
+        authSource: 'json_registry',
         registeredClientCount: 2,
         registeredTokenCount: 2,
         providerMode: 'vworld_and_data_portal',
@@ -76,16 +77,22 @@ test('GIS MCP router는 법률 MCP와 분리되고 전역 parser 전에 mount된
     assert.equal(legalMount < globalParser, true);
     assert.match(source, /GIS_MCP_NOT_CONFIGURED/);
     assert.match(source, /Promise\.allSettled/);
+    assert.match(source, /createGisMcpTokenRegistryFileProviderV1/);
+    assert.match(source, /tokenRegistryFileProvider: gisMcpTokenRegistryFileProvider/);
+    assert.match(source, /setGisMcpHealthTokenRegistryFileProviderV1/);
 });
 test('health는 secret 없이 GIS MCP 설정 형식만 두 응답에 노출한다', async () => {
     const source = await readFile('src/routes/health.ts', 'utf8');
     assert.match(source, /gisMcpConfigurationValid:/);
     assert.match(source, /gisMcpAuthMode:/);
+    assert.match(source, /gisMcpAuthSource:/);
     assert.match(source, /gisMcpRegisteredClientCount:/);
     assert.match(source, /gisMcpRegisteredTokenCount:/);
     assert.match(source, /gisMcpProviderMode:/);
+    assert.match(source, /await getGisMcpRuntimeConfigurationStateV1/);
+    assert.match(source, /await gisMcpHealthFeatures\(\)/);
     assert.equal(
-        (source.match(/\.\.\.gisMcpHealthFeatures\(\)/g) ?? []).length,
+        (source.match(/\.\.\.(?:await )?gisMcpHealthFeatures\(\)/g) ?? []).length,
         2
     );
 });

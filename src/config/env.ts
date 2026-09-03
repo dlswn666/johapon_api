@@ -169,6 +169,7 @@ export const env = {
         process.env.VWORLD_ATTR_REQUEST_INTERVAL_MS
     ),
     DATA_PORTAL_API_KEY: normalizeDataPortalApiKey(process.env.DATA_PORTAL_API_KEY),
+    GIS_MCP_TOKEN_REGISTRY_FILE: getEnvVar('GIS_MCP_TOKEN_REGISTRY_FILE', false),
     GIS_MCP_TOKEN_REGISTRY_JSON: getEnvVar('GIS_MCP_TOKEN_REGISTRY_JSON', false),
     GIS_MCP_TOKEN_SHA256: getEnvVar('GIS_MCP_TOKEN_SHA256', false),
     GIS_MCP_PROXY_TOKEN_SHA256: getEnvVar('GIS_MCP_PROXY_TOKEN_SHA256', false),

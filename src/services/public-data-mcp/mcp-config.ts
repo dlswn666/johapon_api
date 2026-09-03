@@ -1,4 +1,9 @@
 import { parseGisMcpTokenRegistryJson } from '../../middleware/gis-mcp-token-registry';
+import {
+    readGisMcpTokenRegistryFileAsyncV1,
+    readGisMcpTokenRegistryFileV1,
+    type GisMcpTokenRegistryFileProviderV1,
+} from '../../middleware/gis-mcp-token-registry-file';
 
 export interface GisMcpConfigurationInputV1 {
     vworldApiKey: string;
@@ -6,6 +11,7 @@ export interface GisMcpConfigurationInputV1 {
     dataPortalApiKey: string;
     tokenSha256: string;
     tokenRegistryJson: string;
+    tokenRegistryFile?: string;
     proxyTokenSha256: string;
     allowedHosts: string;
     allowedOrigins: string;
@@ -35,11 +41,18 @@ export type GisMcpAuthModeV1 =
     | 'legacy_single'
     | 'client_registry';
 
+export type GisMcpAuthSourceV1 =
+    | 'disabled'
+    | 'legacy_single'
+    | 'json_registry'
+    | 'file_registry';
+
 export interface GisMcpConfigurationStateV1 {
     configured: boolean;
     missing: GisMcpConfigurationFieldV1[];
     invalid: GisMcpConfigurationFieldV1[];
     authMode: GisMcpAuthModeV1;
+    authSource: GisMcpAuthSourceV1;
     registeredClientCount: number;
     registeredTokenCount: number;
     providerMode: 'disabled' | 'vworld_and_data_portal';
@@ -87,32 +100,74 @@ function isOpaqueSecret(value: string, maximumLength: number): boolean {
         && !/[\s&#?]/.test(value);
 }
 
+interface GisMcpAuthenticationInspection {
+    missing: boolean;
+    invalid: boolean;
+    authMode: GisMcpAuthModeV1;
+    authSource: GisMcpAuthSourceV1;
+    registeredClientCount: number;
+    registeredTokenCount: number;
+}
+
+function validRegistryAuthentication(
+    clientCount: number,
+    authSource: 'json_registry' | 'file_registry'
+): GisMcpAuthenticationInspection {
+    return {
+        missing: false,
+        invalid: false,
+        authMode: 'client_registry',
+        authSource,
+        registeredClientCount: clientCount,
+        registeredTokenCount: clientCount,
+    };
+}
+
+function invalidRegistryAuthentication(
+    authSource: 'json_registry' | 'file_registry'
+): GisMcpAuthenticationInspection {
+    return {
+        missing: false,
+        invalid: true,
+        authMode: 'disabled',
+        authSource,
+        registeredClientCount: 0,
+        registeredTokenCount: 0,
+    };
+}
+
 function inspectTokenAuthentication(
     tokenSha256: string,
-    tokenRegistryJson: string
-): Pick<
-    GisMcpConfigurationStateV1,
-    'authMode' | 'registeredClientCount' | 'registeredTokenCount'
-> & { missing: boolean; invalid: boolean } {
+    tokenRegistryJson: string,
+    tokenRegistryFile: string | undefined
+): GisMcpAuthenticationInspection {
     const legacy = tokenSha256.trim();
     const registry = tokenRegistryJson.trim();
+    const registryFileValue = tokenRegistryFile ?? '';
+    const registryFile = registryFileValue.trim();
     const hasLegacy = legacy.length > 0;
     const hasRegistry = registry.length > 0;
+    const hasRegistryFile = registryFile.length > 0;
+    const configuredSourceCount = Number(hasLegacy)
+        + Number(hasRegistry)
+        + Number(hasRegistryFile);
 
-    if (!hasLegacy && !hasRegistry) {
+    if (configuredSourceCount === 0) {
         return {
             missing: true,
             invalid: false,
             authMode: 'disabled',
+            authSource: 'disabled',
             registeredClientCount: 0,
             registeredTokenCount: 0,
         };
     }
-    if (hasLegacy && hasRegistry) {
+    if (configuredSourceCount !== 1) {
         return {
             missing: false,
             invalid: true,
             authMode: 'disabled',
+            authSource: 'disabled',
             registeredClientCount: 0,
             registeredTokenCount: 0,
         };
@@ -123,28 +178,61 @@ function inspectTokenAuthentication(
             missing: false,
             invalid: !valid,
             authMode: valid ? 'legacy_single' : 'disabled',
+            authSource: 'legacy_single',
             registeredClientCount: valid ? 1 : 0,
             registeredTokenCount: valid ? 1 : 0,
         };
     }
 
     try {
-        const parsed = parseGisMcpTokenRegistryJson(registry);
-        return {
-            missing: false,
-            invalid: false,
-            authMode: 'client_registry',
-            registeredClientCount: parsed.clients.length,
-            registeredTokenCount: parsed.clients.length,
-        };
+        const parsed = hasRegistryFile
+            ? readGisMcpTokenRegistryFileV1(registryFileValue)
+            : parseGisMcpTokenRegistryJson(registry);
+        return validRegistryAuthentication(
+            parsed.clients.length,
+            hasRegistryFile ? 'file_registry' : 'json_registry'
+        );
     } catch {
-        return {
-            missing: false,
-            invalid: true,
-            authMode: 'disabled',
-            registeredClientCount: 0,
-            registeredTokenCount: 0,
-        };
+        return invalidRegistryAuthentication(
+            hasRegistryFile ? 'file_registry' : 'json_registry'
+        );
+    }
+}
+
+async function inspectTokenAuthenticationRuntime(
+    tokenSha256: string,
+    tokenRegistryJson: string,
+    tokenRegistryFile: string | undefined,
+    provider: GisMcpTokenRegistryFileProviderV1 | undefined
+): Promise<GisMcpAuthenticationInspection> {
+    const hasLegacy = tokenSha256.trim().length > 0;
+    const hasRegistry = tokenRegistryJson.trim().length > 0;
+    const registryFileValue = tokenRegistryFile ?? '';
+    const hasRegistryFile = registryFileValue.trim().length > 0;
+    if (
+        Number(hasLegacy) + Number(hasRegistry) + Number(hasRegistryFile) !== 1
+        || !hasRegistryFile
+    ) {
+        return inspectTokenAuthentication(
+            tokenSha256,
+            tokenRegistryJson,
+            tokenRegistryFile
+        );
+    }
+
+    try {
+        if (provider && !provider.isForPathV1(registryFileValue)) {
+            return invalidRegistryAuthentication('file_registry');
+        }
+        const registry = provider
+            ? await provider.readRegistryV1()
+            : await readGisMcpTokenRegistryFileAsyncV1(registryFileValue);
+        return validRegistryAuthentication(
+            registry.clients.length,
+            'file_registry'
+        );
+    } catch {
+        return invalidRegistryAuthentication('file_registry');
     }
 }
 
@@ -154,8 +242,16 @@ export function getGisMcpConfigurationStateV1(
 ): GisMcpConfigurationStateV1 {
     const authentication = inspectTokenAuthentication(
         input.tokenSha256,
-        input.tokenRegistryJson
+        input.tokenRegistryJson,
+        input.tokenRegistryFile
     );
+    return buildGisMcpConfigurationState(input, authentication);
+}
+
+function buildGisMcpConfigurationState(
+    input: GisMcpConfigurationInputV1,
+    authentication: GisMcpAuthenticationInspection
+): GisMcpConfigurationStateV1 {
     const values: Array<[
         Exclude<
             GisMcpConfigurationFieldV1,
@@ -232,8 +328,28 @@ export function getGisMcpConfigurationStateV1(
         missing,
         invalid,
         authMode: authentication.authMode,
+        authSource: authentication.authSource,
         registeredClientCount: authentication.registeredClientCount,
         registeredTokenCount: authentication.registeredTokenCount,
         providerMode: configured ? 'vworld_and_data_portal' : 'disabled',
     };
+}
+
+/** health 요청에서는 file I/O를 event loop 밖에서 수행하고 auth와 provider cache를 공유한다. */
+export async function getGisMcpRuntimeConfigurationStateV1(
+    input: GisMcpConfigurationInputV1,
+    provider?: GisMcpTokenRegistryFileProviderV1,
+    startupConfiguration?: GisMcpConfigurationStateV1
+): Promise<GisMcpConfigurationStateV1> {
+    // startup에 endpoint가 mount되지 않았다면 file 복구만으로 health를 true로 만들지 않는다.
+    if (startupConfiguration && !startupConfiguration.configured) {
+        return startupConfiguration;
+    }
+    const authentication = await inspectTokenAuthenticationRuntime(
+        input.tokenSha256,
+        input.tokenRegistryJson,
+        input.tokenRegistryFile,
+        provider
+    );
+    return buildGisMcpConfigurationState(input, authentication);
 }

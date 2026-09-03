@@ -7,6 +7,7 @@ import { createMcpHandler } from '@modelcontextprotocol/server';
 import {
     Router,
     json,
+    type RequestHandler,
     type ErrorRequestHandler,
     type NextFunction,
     type Request,
@@ -22,6 +23,8 @@ import {
     createPublicDataMcpServer,
     type PublicDataMcpServerDependencies,
 } from '../services/public-data-mcp/server';
+import { PUBLIC_DATA_MCP_TOOL_NAMES } from '../services/public-data-mcp/policy';
+import { createLogger } from '../utils/logger';
 
 export const GIS_MCP_JSON_BODY_LIMIT = '256kb' as const;
 
@@ -34,6 +37,15 @@ export class GisMcpRouteConfigurationError extends Error {
     }
 }
 
+export interface GisMcpAccessAuditEventV1 {
+    clientId: string;
+    method: string;
+    tool?: string;
+    statusCode: number;
+    durationMs: number;
+    outcome: 'completed' | 'closed_before_finish';
+}
+
 export interface CreateGisMcpRouteOptions extends GisMcpTokenVerifierOptions {
     dependencies: PublicDataMcpServerDependencies;
     allowedHosts?: AllowlistInput;
@@ -42,6 +54,7 @@ export interface CreateGisMcpRouteOptions extends GisMcpTokenVerifierOptions {
     globalRequestsPerMinute?: number;
     proxyTokenSha256?: string;
     onError?: (error: Error) => void;
+    onAccessAudit?: (event: GisMcpAccessAuditEventV1) => void;
 }
 
 export interface GisMcpRouteHandle {
@@ -131,6 +144,75 @@ function bodyParserErrorResponse(
     });
 }
 
+const auditLogger = createLogger('GIS-MCP:AUDIT');
+const AUDITED_MCP_METHODS = new Set([
+    'initialize',
+    'notifications/initialized',
+    'ping',
+    'tools/list',
+    'tools/call',
+    'prompts/list',
+    'prompts/get',
+    'resources/list',
+    'resources/read',
+]);
+const AUDITED_GIS_TOOL_NAMES = new Set<string>(PUBLIC_DATA_MCP_TOOL_NAMES);
+
+function auditedMcpMethod(value: unknown): string {
+    return typeof value === 'string' && AUDITED_MCP_METHODS.has(value)
+        ? value
+        : 'unknown';
+}
+
+function auditedGisTool(value: unknown): string | undefined {
+    return typeof value === 'string' && AUDITED_GIS_TOOL_NAMES.has(value)
+        ? value
+        : undefined;
+}
+
+/** 인증된 client 식별자와 결과만 기록하며 token, body, IP는 기록하지 않는다. */
+export function createGisMcpAccessAuditMiddlewareV1(
+    onAccessAudit: (event: GisMcpAccessAuditEventV1) => void = (event) => {
+        auditLogger.info('GIS MCP authenticated access', event);
+    }
+): RequestHandler {
+    return (request, response, next) => {
+        const startedAt = Date.now();
+        let emitted = false;
+        const emit = (outcome: GisMcpAccessAuditEventV1['outcome']): void => {
+            if (emitted) return;
+            emitted = true;
+            const body = typeof request.body === 'object' && request.body !== null
+                ? request.body as Record<string, unknown>
+                : undefined;
+            const params = typeof body?.params === 'object' && body.params !== null
+                ? body.params as Record<string, unknown>
+                : undefined;
+            const method = auditedMcpMethod(body?.method);
+            const tool = method === 'tools/call'
+                ? auditedGisTool(params?.name)
+                : undefined;
+            try {
+                onAccessAudit({
+                    clientId: request.auth?.clientId ?? 'unknown',
+                    method,
+                    ...(tool ? { tool } : {}),
+                    statusCode: response.statusCode,
+                    durationMs: Math.max(0, Date.now() - startedAt),
+                    outcome,
+                });
+            } catch {
+                // 감사 sink 실패가 read-only MCP 응답을 바꾸지 않도록 격리한다.
+            }
+        };
+        response.once('finish', () => emit('completed'));
+        response.once('close', () => {
+            if (!response.writableFinished) emit('closed_before_finish');
+        });
+        next();
+    };
+}
+
 /** `/gis-mcp`에 mount할 modern Streamable HTTP router와 종료 hook을 만든다. */
 export function createGisMcpRoute(
     options: CreateGisMcpRouteOptions
@@ -167,8 +249,11 @@ export function createGisMcpRoute(
     router.use(createGisMcpAuthMiddleware({
         tokenSha256: options.tokenSha256,
         tokenRegistryJson: options.tokenRegistryJson,
+        tokenRegistryFile: options.tokenRegistryFile,
+        tokenRegistryFileProvider: options.tokenRegistryFileProvider,
         now: options.now,
     }));
+    router.use(createGisMcpAccessAuditMiddlewareV1(options.onAccessAudit));
     router.use(json({ limit: GIS_MCP_JSON_BODY_LIMIT, strict: true }));
     router.use(createGisMcpRateLimitMiddleware({
         perTokenRequestsPerMinute: options.requestsPerMinute,

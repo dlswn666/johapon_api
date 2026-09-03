@@ -1,0 +1,464 @@
+name: GIS MCP Client Registry Operations
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Registry operation'
+        required: true
+        type: choice
+        options: [validate, list, add, revoke, recover]
+      operation_id:
+        description: 'Unique lowercase operation ID (8-64 characters)'
+        required: true
+        type: string
+      client_id:
+        description: 'Lowercase client ID; required for add/revoke/recover'
+        required: false
+        type: string
+      expected_client_count:
+        description: 'recover only: exact current registry client count (1-32)'
+        required: false
+        type: string
+      expected_client_state:
+        description: 'recover only: exact target client state, present or absent'
+        required: false
+        type: string
+      pending_digest_commitment:
+        description: 'add only: SHA-256 of canonical JSON {version,operationId,action,clientId,tokenSha256}'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gis-mcp-client-registry-production
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    environment: gis-mcp-registry
+    steps:
+      - name: Checkout exact main revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Validate, bind, and run the EC2 registry operation
+        shell: bash
+        env:
+          REGISTRY_EVENT_NAME: ${{ github.event_name }}
+          REGISTRY_REF: ${{ github.ref }}
+          REGISTRY_OPERATION: ${{ inputs.operation }}
+          REGISTRY_OPERATION_ID: ${{ inputs.operation_id }}
+          REGISTRY_CLIENT_ID: ${{ inputs.client_id }}
+          REGISTRY_EXPECTED_CLIENT_COUNT: ${{ inputs.expected_client_count }}
+          REGISTRY_EXPECTED_CLIENT_STATE: ${{ inputs.expected_client_state }}
+          REGISTRY_PENDING_COMMITMENT: ${{ inputs.pending_digest_commitment }}
+          REGISTRY_PENDING_SHA256: ${{ secrets.GIS_MCP_REGISTRY_PENDING_SHA256 }}
+          REGISTRY_RUN_ID: ${{ github.run_id }}
+          REGISTRY_RUN_ATTEMPT: ${{ github.run_attempt }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_FINGERPRINT: ${{ secrets.EC2_SSH_FINGERPRINT }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          [[ "${REGISTRY_EVENT_NAME}" == "workflow_dispatch" ]] || { echo "::error::workflow_dispatch is required."; exit 1; }
+          [[ "${REGISTRY_REF}" == "refs/heads/main" ]] || { echo "::error::refs/heads/main is required."; exit 1; }
+          [[ "${REGISTRY_OPERATION}" =~ ^(validate|list|add|revoke|recover)$ ]] || { echo "::error::Invalid operation."; exit 1; }
+          [[ "${#REGISTRY_OPERATION_ID}" -ge 8 && "${#REGISTRY_OPERATION_ID}" -le 64 ]] \
+            && [[ "${REGISTRY_OPERATION_ID}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
+            || { echo "::error::Invalid operation_id."; exit 1; }
+          [[ "${REGISTRY_RUN_ID}" =~ ^[1-9][0-9]*$ && "${REGISTRY_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::Invalid run identity."; exit 1; }
+
+          if [[ "${REGISTRY_OPERATION}" == "add" || "${REGISTRY_OPERATION}" == "revoke" \
+            || "${REGISTRY_OPERATION}" == "recover" ]]; then
+            [[ "${#REGISTRY_CLIENT_ID}" -le 64 && "${REGISTRY_CLIENT_ID}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
+              || { echo "::error::Invalid client_id."; exit 1; }
+          elif [[ -n "${REGISTRY_CLIENT_ID}" ]]; then
+            echo "::error::client_id is allowed only for add/revoke/recover."
+            exit 1
+          fi
+
+          if [[ "${REGISTRY_OPERATION}" == "recover" ]]; then
+            [[ "${REGISTRY_EXPECTED_CLIENT_COUNT}" =~ ^([1-9]|[12][0-9]|3[0-2])$ ]] \
+              || { echo "::error::recover requires expected_client_count from 1 through 32."; exit 1; }
+            [[ "${REGISTRY_EXPECTED_CLIENT_STATE}" =~ ^(present|absent)$ ]] \
+              || { echo "::error::recover requires expected_client_state present or absent."; exit 1; }
+          elif [[ -n "${REGISTRY_EXPECTED_CLIENT_COUNT}" || -n "${REGISTRY_EXPECTED_CLIENT_STATE}" ]]; then
+            echo "::error::Expected client state inputs are allowed only for recover."
+            exit 1
+          fi
+
+          pending_digest="${REGISTRY_PENDING_SHA256:-}"
+          unset REGISTRY_PENDING_SHA256
+          operation_token_commitment=""
+          if [[ "${REGISTRY_OPERATION}" == "add" || "${REGISTRY_OPERATION}" == "revoke" \
+            || "${REGISTRY_OPERATION}" == "recover" ]]; then
+            [[ "${REGISTRY_RUN_ATTEMPT}" == "1" ]] || { echo "::error::State-changing operations cannot be re-run."; exit 1; }
+          fi
+          if [[ "${REGISTRY_OPERATION}" == "add" ]]; then
+            [[ "${pending_digest}" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Pending digest secret is invalid."; exit 1; }
+            [[ "${REGISTRY_PENDING_COMMITMENT}" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Pending commitment is invalid."; exit 1; }
+            printf '::add-mask::%s\n' "${pending_digest}"
+            actual_commitment="$(
+              printf '%s\n' "${pending_digest}" | node -e '
+                const crypto = require("node:crypto");
+                let digest = "";
+                process.stdin.setEncoding("utf8");
+                process.stdin.on("data", chunk => { digest += chunk; });
+                process.stdin.on("end", () => {
+                  digest = digest.replace(/\n$/, "");
+                  if (!/^[0-9a-f]{64}$/.test(digest)) process.exit(1);
+                  const canonical = JSON.stringify({
+                    version: 1,
+                    operationId: process.argv[1],
+                    action: "add",
+                    clientId: process.argv[2],
+                    tokenSha256: digest,
+                  });
+                  process.stdout.write(crypto.createHash("sha256").update(canonical, "utf8").digest("hex"));
+                });
+              ' "${REGISTRY_OPERATION_ID}" "${REGISTRY_CLIENT_ID}"
+            )"
+            [[ "${actual_commitment}" == "${REGISTRY_PENDING_COMMITMENT}" ]] \
+              || { echo "::error::Pending digest commitment does not bind this dispatch."; exit 1; }
+            operation_token_commitment="${REGISTRY_PENDING_COMMITMENT}"
+          else
+            [[ -z "${pending_digest}" && -z "${REGISTRY_PENDING_COMMITMENT}" ]] \
+              || { echo "::error::Pending digest data is allowed only for add."; exit 1; }
+            if [[ "${REGISTRY_OPERATION}" == "revoke" ]]; then
+              operation_token_commitment="none"
+            fi
+          fi
+
+          missing=0
+          for name in EC2_HOST EC2_USERNAME EC2_SSH_KEY EC2_SSH_FINGERPRINT; do
+            [[ -n "${!name:-}" ]] || missing=1
+          done
+          [[ "${missing}" -eq 0 ]] || { echo "::error::Required EC2 connection secret is missing."; exit 1; }
+          [[ "${EC2_USERNAME}" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "::error::Invalid EC2 username."; exit 1; }
+          [[ "${#EC2_HOST}" -le 253 && "${EC2_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
+            || { echo "::error::Invalid EC2 host."; exit 1; }
+          [[ -f scripts/gis-mcp-registry-remote.sh && ! -L scripts/gis-mcp-registry-remote.sh ]] \
+            || { echo "::error::Remote operator is missing."; exit 1; }
+          bash -n scripts/gis-mcp-registry-remote.sh
+          operator_sha256="$(sha256sum scripts/gis-mcp-registry-remote.sh | awk '{print $1}')"
+          [[ "${operator_sha256}" =~ ^[0-9a-f]{64}$ ]] \
+            || { echo "::error::Remote operator digest is invalid."; exit 1; }
+
+          local_root="${RUNNER_TEMP}/gis-mcp-registry-${REGISTRY_RUN_ID}-${REGISTRY_RUN_ATTEMPT}"
+          install -d -m 700 "${local_root}"
+          key_path="${local_root}/id"
+          known_hosts_path="${local_root}/known_hosts"
+          install -m 600 /dev/null "${key_path}"
+          printf '%s\n' "${EC2_SSH_KEY}" > "${key_path}"
+          host_keys="$(ssh-keyscan -T 10 -t ed25519,ecdsa,rsa "${EC2_HOST}" 2>/dev/null)"
+          [[ -n "${host_keys}" ]] || { echo "::error::Host key scan failed."; exit 1; }
+          matched=""
+          while IFS= read -r host_key; do
+            fingerprint="$(printf '%s\n' "${host_key}" | ssh-keygen -lf - -E sha256 | awk '{print $2}')"
+            if [[ "${fingerprint}" == "${EC2_SSH_FINGERPRINT}" ]]; then matched="${host_key}"; break; fi
+          done <<< "${host_keys}"
+          [[ -n "${matched}" ]] || { echo "::error::EC2 fingerprint mismatch."; exit 1; }
+          printf '%s\n' "${matched}" > "${known_hosts_path}"
+          chmod 600 "${known_hosts_path}"
+          ssh_options=(-i "${key_path}" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=40 -o "UserKnownHostsFile=${known_hosts_path}")
+          run_key="${REGISTRY_RUN_ID}-${REGISTRY_RUN_ATTEMPT}"
+          remote_root="alimtalk-proxy/.gis-mcp-registry-operations/${run_key}"
+          remote_completed=0
+          remote_success=0
+          remote_unknown=0
+          remote_acknowledged=0
+
+          cleanup() {
+            status=$?
+            trap - EXIT INT TERM HUP
+            set +e
+            ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+              "RUN_KEY='${run_key}' REMOTE_COMPLETED='${remote_completed}' REMOTE_SUCCESS='${remote_success}' REMOTE_UNKNOWN='${remote_unknown}' REMOTE_ACKNOWLEDGED='${remote_acknowledged}' REGISTRY_OPERATION='${REGISTRY_OPERATION}' REGISTRY_OPERATION_ID='${REGISTRY_OPERATION_ID}' REGISTRY_CLIENT_ID='${REGISTRY_CLIENT_ID}' EXPECTED_TOKEN_COMMITMENT='${operation_token_commitment}' EXPECTED_SCRIPT_SHA256='${operator_sha256}' bash -s" >/dev/null 2>&1 <<'REMOTE_CLEANUP'
+          set -euo pipefail
+          [[ "${RUN_KEY}" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]]
+          [[ "${REMOTE_COMPLETED}" =~ ^[01]$ && "${REMOTE_SUCCESS}" =~ ^[01]$ \
+            && "${REMOTE_UNKNOWN}" =~ ^[01]$ && "${REMOTE_ACKNOWLEDGED}" =~ ^[01]$ ]]
+          [[ "${REGISTRY_OPERATION}" =~ ^(validate|list|add|revoke|recover)$ ]]
+          [[ "${#REGISTRY_OPERATION_ID}" -ge 8 && "${#REGISTRY_OPERATION_ID}" -le 64 \
+            && "${REGISTRY_OPERATION_ID}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]
+          [[ "${EXPECTED_SCRIPT_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          if [[ "${REGISTRY_OPERATION}" == "add" ]]; then
+            [[ "${EXPECTED_TOKEN_COMMITMENT}" =~ ^[0-9a-f]{64}$ ]]
+          elif [[ "${REGISTRY_OPERATION}" == "revoke" ]]; then
+            [[ "${EXPECTED_TOKEN_COMMITMENT}" == "none" ]]
+          else
+            [[ -z "${EXPECTED_TOKEN_COMMITMENT}" ]]
+          fi
+          [[ "${REMOTE_SUCCESS}" != "1" || "${REMOTE_COMPLETED}" == "1" ]]
+          root="${HOME}/alimtalk-proxy/.gis-mcp-registry-operations/${RUN_KEY}"
+          script="${root}/operator.sh"
+          active="${root}/active"
+          operation_marker="${HOME}/alimtalk-proxy/.gis-mcp-registry-commit-unknown"
+          receipts_dir="${HOME}/alimtalk-proxy/.gis-mcp-registry-receipts"
+          receipt="${receipts_dir}/${RUN_KEY}"
+          receipt_temp="${receipt}.tmp"
+          if [[ -e "${root}" || -L "${root}" ]]; then
+            [[ -d "${root}" && ! -L "${root}" \
+              && "$(stat -c '%u:%a' "${root}")" == "$(id -u):700" ]] || exit 71
+          fi
+          active_live=0
+          if [[ -e "${active}" || -L "${active}" ]]; then
+            [[ -f "${active}" && ! -L "${active}" \
+              && "$(stat -c '%u:%a' "${active}")" == "$(id -u):600" ]] || exit 71
+            mapfile -t active_lines < "${active}"
+            active_pid="${active_lines[2]:-}"
+            active_pid="${active_pid#pid=}"
+            active_boot_id="${active_lines[3]:-}"
+            active_boot_id="${active_boot_id#bootId=}"
+            active_start_time="${active_lines[4]:-}"
+            active_start_time="${active_start_time#startTime=}"
+            [[ "${#active_lines[@]}" -eq 5 \
+              && "${active_lines[0]}" == "version=2" \
+              && "${active_lines[1]}" == "runKey=${RUN_KEY}" \
+              && "${active_lines[2]}" == "pid=${active_pid}" \
+              && "${active_pid}" =~ ^[1-9][0-9]*$ \
+              && "${active_lines[3]}" == "bootId=${active_boot_id}" \
+              && "${active_boot_id}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ \
+              && "${active_lines[4]}" == "startTime=${active_start_time}" \
+              && "${active_start_time}" =~ ^[1-9][0-9]*$ ]] || exit 71
+            current_boot_id="$(< /proc/sys/kernel/random/boot_id)"
+            [[ "${current_boot_id}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
+              || exit 71
+            if [[ "${active_boot_id}" == "${current_boot_id}" \
+              && ( -e "/proc/${active_pid}/stat" || -L "/proc/${active_pid}/stat" ) ]]; then
+              [[ -r "/proc/${active_pid}/stat" && ! -L "/proc/${active_pid}/stat" ]] || exit 71
+              active_proc_stat="$(< "/proc/${active_pid}/stat")"
+              active_proc_tail="${active_proc_stat##*) }"
+              read -r -a active_proc_fields <<< "${active_proc_tail}"
+              [[ "${active_proc_fields[19]:-}" =~ ^[1-9][0-9]*$ ]] || exit 71
+              if [[ "${active_proc_fields[19]}" == "${active_start_time}" ]]; then
+                active_live=1
+              fi
+            fi
+          fi
+          # A still-running remote shell may merely be waiting for the production flock.
+          # Never unlink its evidence; its own EXIT trap performs the eventual cleanup.
+          if [[ "${active_live}" -eq 1 ]]; then
+            exit 0
+          fi
+
+          marker_matches_current=0
+          receipt_matches_current=0
+          if [[ "${REGISTRY_OPERATION}" == "add" || "${REGISTRY_OPERATION}" == "revoke" ]]; then
+          if [[ -e "${operation_marker}" || -L "${operation_marker}" ]]; then
+            [[ -f "${operation_marker}" && ! -L "${operation_marker}" \
+              && "$(stat -c '%u:%a' "${operation_marker}")" == "$(id -u):600" ]] || exit 71
+            mapfile -t marker_lines < "${operation_marker}"
+            [[ "${#marker_lines[@]}" -eq 12 && "${marker_lines[0]}" == "version=4" \
+              && "${marker_lines[1]}" =~ ^runKey=[1-9][0-9]*-[1-9][0-9]*$ \
+              && "${marker_lines[2]}" =~ ^operation=(add|revoke)$ \
+              && "${marker_lines[3]}" =~ ^operationId=[a-z0-9]+(-[a-z0-9]+)*$ \
+              && "${marker_lines[4]}" =~ ^clientId=[a-z0-9]+(-[a-z0-9]+)*$ \
+              && "${marker_lines[5]}" =~ ^preCount=([1-9]|[12][0-9]|3[0-2])$ \
+              && "${marker_lines[6]}" =~ ^preState=(present|absent)$ \
+              && "${marker_lines[7]}" =~ ^postCount=([1-9]|[12][0-9]|3[0-2])$ \
+              && "${marker_lines[8]}" =~ ^postState=(present|absent)$ \
+              && "${marker_lines[9]}" == "tokenCommitment=${EXPECTED_TOKEN_COMMITMENT}" \
+              && "${marker_lines[10]}" == "scriptSha256=${EXPECTED_SCRIPT_SHA256}" \
+              && "${marker_lines[11]}" =~ ^outcome=(intent|verified|known-precommit|unknown)$ ]] \
+              || exit 71
+            if [[ "${marker_lines[1]}" == "runKey=${RUN_KEY}" \
+              && "${marker_lines[2]}" == "operation=${REGISTRY_OPERATION}" \
+              && "${marker_lines[3]}" == "operationId=${REGISTRY_OPERATION_ID}" \
+              && "${marker_lines[4]}" == "clientId=${REGISTRY_CLIENT_ID}" ]]; then
+              marker_matches_current=1
+            fi
+          fi
+          if [[ -e "${receipt}" || -L "${receipt}" ]]; then
+            [[ -d "${receipts_dir}" && ! -L "${receipts_dir}" \
+              && "$(stat -c '%u:%a' "${receipts_dir}")" == "$(id -u):700" \
+              && -f "${receipt}" && ! -L "${receipt}" \
+              && "$(stat -c '%u:%a' "${receipt}")" == "$(id -u):600" \
+              && ! -e "${receipt_temp}" && ! -L "${receipt_temp}" ]] || exit 71
+            mapfile -t receipt_lines < "${receipt}"
+            [[ "${#receipt_lines[@]}" -eq 12 \
+              && "${receipt_lines[0]}" == "version=4" \
+              && "${receipt_lines[1]}" == "runKey=${RUN_KEY}" \
+              && "${receipt_lines[2]}" == "operation=${REGISTRY_OPERATION}" \
+              && "${receipt_lines[3]}" == "operationId=${REGISTRY_OPERATION_ID}" \
+              && "${receipt_lines[4]}" == "clientId=${REGISTRY_CLIENT_ID}" \
+              && "${receipt_lines[5]}" =~ ^preCount=([1-9]|[12][0-9]|3[0-2])$ \
+              && "${receipt_lines[6]}" =~ ^preState=(present|absent)$ \
+              && "${receipt_lines[7]}" =~ ^postCount=([1-9]|[12][0-9]|3[0-2])$ \
+              && "${receipt_lines[8]}" =~ ^postState=(present|absent)$ \
+              && "${receipt_lines[9]}" == "tokenCommitment=${EXPECTED_TOKEN_COMMITMENT}" \
+              && "${receipt_lines[10]}" == "scriptSha256=${EXPECTED_SCRIPT_SHA256}" ]] || exit 71
+            receipt_pre_count="${receipt_lines[5]#preCount=}"
+            receipt_pre_state="${receipt_lines[6]#preState=}"
+            receipt_post_count="${receipt_lines[7]#postCount=}"
+            receipt_post_state="${receipt_lines[8]#postState=}"
+            if [[ "${REMOTE_SUCCESS}" -eq 1 ]]; then
+              [[ "${receipt_lines[11]}" == "outcome=verified" ]] || exit 71
+            else
+              [[ "${REMOTE_COMPLETED}" -eq 1 \
+                && "${receipt_lines[11]}" == "outcome=known-precommit" ]] || exit 71
+            fi
+            if [[ "${receipt_lines[11]}" == "outcome=known-precommit" \
+              && "${receipt_pre_count}" == "${receipt_post_count}" \
+              && "${receipt_pre_state}" == "${receipt_post_state}" ]]; then
+              :
+            elif [[ "${REGISTRY_OPERATION}" == "add" ]]; then
+              [[ "${receipt_pre_state}" == "absent" && "${receipt_post_state}" == "present" \
+                && "${receipt_post_count}" -eq "$((receipt_pre_count + 1))" ]] || exit 71
+            else
+              [[ "${receipt_pre_state}" == "present" && "${receipt_post_state}" == "absent" \
+                && "${receipt_pre_count}" -eq "$((receipt_post_count + 1))" ]] || exit 71
+            fi
+            receipt_matches_current=1
+          fi
+          [[ "$((marker_matches_current + receipt_matches_current))" -le 1 ]] || exit 71
+          if [[ "${REMOTE_ACKNOWLEDGED}" -eq 0 && "${marker_matches_current}" -eq 1 ]]; then
+            exit 0
+          fi
+          [[ "${REMOTE_ACKNOWLEDGED}" -eq 0 || "${marker_matches_current}" -eq 0 ]] || exit 71
+          fi
+
+          if [[ -e "${active}" || -L "${active}" ]]; then
+            rm -f -- "${active}"
+          fi
+          if [[ -e "${script}" || -L "${script}" ]]; then
+            [[ -f "${script}" && ! -L "${script}" \
+              && "$(stat -c '%u:%a' "${script}")" == "$(id -u):600" \
+              && "$(sha256sum -- "${script}" | awk '{print $1}')" == "${EXPECTED_SCRIPT_SHA256}" ]] \
+              || exit 71
+            rm -f -- "${script}"
+          fi
+          if [[ -d "${root}" && ! -L "${root}" ]]; then rmdir -- "${root}"; fi
+          if [[ "${receipt_matches_current}" -eq 1 ]]; then exit 20; fi
+          REMOTE_CLEANUP
+            cleanup_status=$?
+            rm -f -- "${key_path}" "${known_hosts_path}" >/dev/null 2>&1 || true
+            rmdir -- "${local_root}" >/dev/null 2>&1 || true
+            if [[ "${cleanup_status}" -eq 20 && "${remote_completed}" -eq 1 ]]; then
+              if [[ "${remote_success}" -eq 1 ]]; then exit 0; else exit 64; fi
+            fi
+            if [[ "${status}" -eq 75 ]]; then exit 75; fi
+            [[ "${cleanup_status}" -eq 0 ]] || exit 71
+            exit "${status}"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          trap 'exit 129' HUP
+
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" "RUN_KEY='${run_key}' bash -s" <<'REMOTE_PREPARE'
+          set -euo pipefail
+          [[ "${RUN_KEY}" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]]
+          parent="${HOME}/alimtalk-proxy/.gis-mcp-registry-operations"
+          root="${parent}/${RUN_KEY}"
+          if [[ -e "${parent}" || -L "${parent}" ]]; then
+            [[ -d "${parent}" && ! -L "${parent}" && "$(stat -c '%u:%a' "${parent}")" == "$(id -u):700" ]]
+          else
+            mkdir -m 700 -- "${parent}"
+          fi
+          (umask 077; mkdir -m 700 -- "${root}")
+          REMOTE_PREPARE
+          scp "${ssh_options[@]}" scripts/gis-mcp-registry-remote.sh \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/operator.sh"
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "RUN_KEY='${run_key}' EXPECTED_SCRIPT_SHA256='${operator_sha256}' bash -s" <<'REMOTE_VERIFY'
+          set -euo pipefail
+          root="${HOME}/alimtalk-proxy/.gis-mcp-registry-operations/${RUN_KEY}"
+          script="${root}/operator.sh"
+          [[ -d "${root}" && ! -L "${root}" && "$(stat -c '%u:%a' "${root}")" == "$(id -u):700" ]]
+          [[ -f "${script}" && ! -L "${script}" && "$(stat -c '%u' "${script}")" == "$(id -u)" ]]
+          chmod 600 "${script}"
+          [[ "${EXPECTED_SCRIPT_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$(sha256sum -- "${script}" | awk '{print $1}')" == "${EXPECTED_SCRIPT_SHA256}" ]]
+          bash -n "${script}"
+          REMOTE_VERIFY
+
+          remote_command="REGISTRY_OPERATION='${REGISTRY_OPERATION}' REGISTRY_OPERATION_ID='${REGISTRY_OPERATION_ID}' REGISTRY_CLIENT_ID='${REGISTRY_CLIENT_ID}' REGISTRY_EXPECTED_CLIENT_COUNT='${REGISTRY_EXPECTED_CLIENT_COUNT}' REGISTRY_EXPECTED_CLIENT_STATE='${REGISTRY_EXPECTED_CLIENT_STATE}' REGISTRY_EXPECTED_TOKEN_COMMITMENT='${operation_token_commitment}' REGISTRY_EXPECTED_SCRIPT_SHA256='${operator_sha256}' REGISTRY_RUN_ID='${REGISTRY_RUN_ID}' REGISTRY_RUN_ATTEMPT='${REGISTRY_RUN_ATTEMPT}' bash 'alimtalk-proxy/.gis-mcp-registry-operations/${run_key}/operator.sh'"
+          set +e
+          stdin_status=0
+          if [[ "${REGISTRY_OPERATION}" == "add" || "${REGISTRY_OPERATION}" == "revoke" ]]; then
+            remote_unknown=1
+          fi
+          if [[ "${REGISTRY_OPERATION}" == "add" ]]; then
+            printf '%s\n' "${pending_digest}" | ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" "${remote_command}"
+            statuses=("${PIPESTATUS[@]}")
+            stdin_status="${statuses[0]}"
+            ssh_status="${statuses[1]}"
+          else
+            ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" "${remote_command}" </dev/null
+            ssh_status=$?
+          fi
+          set -e
+          pending_digest=""
+          if [[ "${stdin_status}" -eq 0 && "${ssh_status}" -eq 0 ]]; then
+            remote_completed=1
+            remote_success=1
+            remote_unknown=0
+          elif [[ "${stdin_status}" -eq 0 && "${ssh_status}" -eq 64 ]]; then
+            remote_completed=1
+            remote_unknown=0
+          elif [[ "${ssh_status}" -eq 75 || "${ssh_status}" -eq 255 || "${ssh_status}" -ge 128 \
+            || "${stdin_status}" -ne 0 ]]; then
+            if [[ "${REGISTRY_OPERATION}" == "add" || "${REGISTRY_OPERATION}" == "revoke" ]]; then
+              remote_unknown=1
+            fi
+          elif [[ "${REGISTRY_OPERATION}" == "add" || "${REGISTRY_OPERATION}" == "revoke" ]]; then
+            remote_unknown=1
+          fi
+
+          if [[ "${remote_completed}" == "1" \
+            && ( "${REGISTRY_OPERATION}" == "add" || "${REGISTRY_OPERATION}" == "revoke" ) ]]; then
+            if [[ "${remote_success}" == "1" ]]; then
+              ack_expected_outcome="verified"
+            else
+              ack_expected_outcome="known-precommit"
+            fi
+            ack_command="REGISTRY_PROTOCOL_ACTION='ack' REGISTRY_ACK_EXPECTED_OUTCOME='${ack_expected_outcome}' REGISTRY_OPERATION='${REGISTRY_OPERATION}' REGISTRY_OPERATION_ID='${REGISTRY_OPERATION_ID}' REGISTRY_CLIENT_ID='${REGISTRY_CLIENT_ID}' REGISTRY_EXPECTED_TOKEN_COMMITMENT='${operation_token_commitment}' REGISTRY_EXPECTED_SCRIPT_SHA256='${operator_sha256}' REGISTRY_RUN_ID='${REGISTRY_RUN_ID}' REGISTRY_RUN_ATTEMPT='${REGISTRY_RUN_ATTEMPT}' bash 'alimtalk-proxy/.gis-mcp-registry-operations/${run_key}/operator.sh'"
+            set +e
+            ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" "${ack_command}" </dev/null
+            ack_status=$?
+            set -e
+            if [[ "${ack_status}" -eq 0 ]]; then
+              remote_acknowledged=1
+            else
+              echo "::notice::ACK response was not terminal; attempting one idempotent ACK resume."
+              set +e
+              ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" "${ack_command}" </dev/null
+              ack_resume_status=$?
+              set -e
+              if [[ "${ack_resume_status}" -eq 0 ]]; then
+                remote_acknowledged=1
+              else
+                remote_unknown=1
+                echo "::error::ACK_REQUIRED: the durable operation marker was not acknowledged; do not retry the mutation and use guarded recover."
+                exit 75
+              fi
+            fi
+          fi
+
+          if [[ "${remote_success}" == "1" ]]; then
+            exit 0
+          fi
+          if [[ "${remote_completed}" == "1" ]]; then
+            echo "::error::Registry operation stopped at a known precommit failure."
+            exit 64
+          fi
+          if [[ "${remote_unknown}" == "1" ]]; then
+            echo "::error::COMMIT_STATE_UNKNOWN: do not retry; use guarded recover after inspection."
+            exit 75
+          fi
+          if [[ "${REGISTRY_OPERATION}" == "recover" ]]; then
+            echo "::error::Recovery did not complete; the registry was never mutated. Inspect evidence before a new recover dispatch."
+            exit 70
+          fi
+          echo "::error::Registry operation failed without changing the registry."
+          exit "${ssh_status}"
