@@ -8,7 +8,7 @@ import {
 } from '../types/gis-inspect.types';
 import { buildPnuFromKakaoAddress } from './gis-shared/pnu';
 import { maskSecretParams } from './gis-shared/secret-mask';
-import { GIS_SHARED_ENDPOINTS } from './gis-shared/endpoints';
+import { GIS_SHARED_ENDPOINTS, BUILDING_HUB_BASE_URL } from './gis-shared/endpoints';
 
 const logger = createLogger('GIS-INSPECT');
 
@@ -19,6 +19,12 @@ const VWORLD_ADDRESS_URL = 'https://api.vworld.kr/req/address';
 const VWORLD_DATA_URL = 'https://api.vworld.kr/req/data';
 const VWORLD_NED_BASE = 'https://api.vworld.kr/ned/data';
 const VWORLD_BOUNDARY_WFS_URL = 'https://api.vworld.kr/ned/wfs/getCtnlgsSpceWFS';
+// 층별개요는 인스펙터 진단 전용이다. GIS_SHARED_ENDPOINTS 에 넣지 않는 이유는
+// 그 키 집합(GisSharedEndpointName)이 land-area-sync 의 zero 라벨 계약
+// (adapter.ts ZERO_LABEL / EndpointZeroLabel)에 전수로 물려 있어서, 증거 계약을
+// 넓히지 않으려면 여기서 base URL 만 재사용하는 편이 맞다. HTTPS 는 그대로 보장된다.
+const BLDRGST_FLOOR_OUTLINE_URL = `${BUILDING_HUB_BASE_URL}/getBrFlrOulnInfo`;
+
 const REQUEST_TIMEOUT_MS = 15000;
 
 /** 응답 steps 배열의 고정 순서 */
@@ -34,6 +40,7 @@ const STEP_DEFS: Array<{ id: string; name: string; provider: 'VWORLD' | 'DATA_GO
     { id: 'indiv_house_price', name: '개별주택가격', provider: 'VWORLD' },
     { id: 'building_title', name: '건축물대장 표제부', provider: 'DATA_GO_KR' },
     { id: 'building_units', name: '건축물대장 전유부', provider: 'DATA_GO_KR' },
+    { id: 'building_floors', name: '건축물대장 층별개요', provider: 'DATA_GO_KR' },
     { id: 'land_share_registry', name: '대지권등록부 (ldaregList)', provider: 'VWORLD' },
     { id: 'building_ho_land_share', name: '집합건물 호별 대지권 (buldHoCoList)', provider: 'VWORLD' },
 ];
@@ -286,7 +293,7 @@ export class GisInspectService {
             }
         }
 
-        // ── 4~13. PNU 의존 스텝
+        // ── 4~14. PNU 의존 스텝
         if (!pnu) {
             const reason = '주소에서 PNU를 확보하지 못했습니다.';
             byId.set('boundary_vworld', this.skippedStep('boundary_vworld', VWORLD_DATA_URL, reason));
@@ -297,6 +304,7 @@ export class GisInspectService {
             byId.set('indiv_house_price', this.skippedStep('indiv_house_price', `${VWORLD_NED_BASE}/getIndvdHousingPriceAttr`, reason));
             byId.set('building_title', this.skippedStep('building_title', GIS_SHARED_ENDPOINTS.getBrTitleInfo, reason));
             byId.set('building_units', this.skippedStep('building_units', GIS_SHARED_ENDPOINTS.getBrExposInfo, reason));
+            byId.set('building_floors', this.skippedStep('building_floors', BLDRGST_FLOOR_OUTLINE_URL, reason));
             byId.set('land_share_registry', this.skippedStep('land_share_registry', `${VWORLD_NED_BASE}/ldaregList`, reason));
             byId.set('building_ho_land_share', this.skippedStep('building_ho_land_share', `${VWORLD_NED_BASE}/buldHoCoList`, reason));
         } else {
@@ -319,7 +327,7 @@ export class GisInspectService {
                 _type: 'json',
             };
 
-            // data.go.kr 건축물대장 2종은 병렬 (레이트리밋 없음)
+            // data.go.kr 건축물대장 3종은 병렬 (레이트리밋 없음)
             const dataPortalPromise = Promise.all([
                 this.callStep(
                     'building_title',
@@ -329,6 +337,16 @@ export class GisInspectService {
                 this.callStep(
                     'building_units',
                     GIS_SHARED_ENDPOINTS.getBrExposInfo,
+                    { ...bldRgstParams }
+                ),
+                // 층별개요 — 표제부 totArea 만으로는 연면적을 검증할 수 없어 함께 받는다.
+                // 옥탑 계단실·물탱크실·주차장처럼 연면적 산입에서 빠지는 층이 있고,
+                // 그 표시가 areaExctYn 에 안 들어오는 경우가 많다(2026-09-03 미아동 실측:
+                // 층 128개 중 areaExctYn 이 채워진 것은 23개뿐, 명백한 제외 6개 층이 공백).
+                // 판단은 etcPurps 텍스트와 "층별 area 합 − 제외분 = totArea" 산식으로 한다.
+                this.callStep(
+                    'building_floors',
+                    BLDRGST_FLOOR_OUTLINE_URL,
                     { ...bldRgstParams }
                 ),
             ]);
@@ -362,9 +380,10 @@ export class GisInspectService {
             byId.set('building_ho_land_share', await this.callStep('building_ho_land_share', `${VWORLD_NED_BASE}/buldHoCoList`,
                 this.nedParams({ pnu })));
 
-            const [titleStep, unitsStep] = await dataPortalPromise;
+            const [titleStep, unitsStep, floorsStep] = await dataPortalPromise;
             byId.set('building_title', titleStep);
             byId.set('building_units', unitsStep);
+            byId.set('building_floors', floorsStep);
         }
 
         return {

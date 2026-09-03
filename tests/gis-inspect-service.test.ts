@@ -140,19 +140,19 @@ const VALID_ADDRESS = {
     mountainYn: 'N' as const,
 };
 
-test('inspect: 13개 스텝을 정의 순서대로 반환하고 전부 SUCCESS', async () => {
+test('inspect: 14개 스텝을 정의 순서대로 반환하고 전부 SUCCESS', async () => {
     const { GisInspectService } = await serviceModule;
     const { httpGet } = createStubHttpGet();
     const result = await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
 
-    assert.equal(result.steps.length, 13);
+    assert.equal(result.steps.length, 14);
     assert.deepEqual(
         result.steps.map((s) => s.id),
         [
             'geocode', 'coord_to_pnu', 'reverse_geocode',
             'boundary_vworld', 'boundary_vworld_wfs',
             'land_registry', 'land_price', 'apart_price', 'indiv_house_price',
-            'building_title', 'building_units',
+            'building_title', 'building_units', 'building_floors',
             'land_share_registry', 'building_ho_land_share',
         ]
     );
@@ -279,7 +279,7 @@ test('inspect: 건축물대장 스텝은 land-area-sync 어댑터와 같은 파�
     const { httpGet, calls } = createStubHttpGet();
     await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
 
-    for (const endpoint of ['getBrTitleInfo', 'getBrExposInfo']) {
+    for (const endpoint of ['getBrTitleInfo', 'getBrExposInfo', 'getBrFlrOulnInfo']) {
         const call = calls.find((c) => c.url.includes(endpoint));
         assert.ok(call, `${endpoint} 호출 없음`);
         assert.match(call.url, /^https:\/\/apis\.data\.go\.kr\//);
@@ -320,7 +320,7 @@ test('inspect: PNU 확보 실패 시 PNU 의존 스텝은 SKIPPED', async () => 
     for (const id of [
         'boundary_vworld', 'boundary_vworld_wfs', 'land_registry', 'land_price',
         'apart_price', 'indiv_house_price', 'building_title', 'building_units',
-        'land_share_registry', 'building_ho_land_share',
+        'building_floors', 'land_share_registry', 'building_ho_land_share',
     ]) {
         assert.ok(skipped.includes(id), `${id} should be SKIPPED`);
     }
