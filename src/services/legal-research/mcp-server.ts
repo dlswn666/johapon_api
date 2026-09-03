@@ -33,11 +33,12 @@ import {
     safeLegalOpenApiMessage,
 } from './errors';
 import { toKoreanDate } from './clock';
+import { LEGAL_RESEARCH_PACKET_MAX_BYTES } from './model';
 
 type MaybePromise<T> = T | Promise<T>;
 type JsonObject = Record<string, unknown>;
 
-export const LEGAL_MCP_MAX_PACKET_BYTES = 128 * 1024;
+export const LEGAL_MCP_MAX_PACKET_BYTES = LEGAL_RESEARCH_PACKET_MAX_BYTES;
 export const LEGAL_MCP_PACKET_MAX_AGE_MS = 30 * 60 * 1000;
 const LEGAL_MCP_PACKET_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
@@ -464,7 +465,7 @@ export function createLegalMcpServer(
         LEGAL_POLICY_RESOURCE_NAME,
         LEGAL_POLICY_RESOURCE_URI,
         {
-            title: '현행 정비사업 법률 답변 정책 v2',
+            title: '현행 정비사업 법률 답변 정책 v4',
             description: '근거 선별, 상태 판정, 인용과 고정 답변 순서',
             mimeType: 'text/markdown',
             annotations: {

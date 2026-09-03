@@ -412,6 +412,12 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.equal(packet.caseSearchAudit.requestedMax, 12);
         assert.equal(packet.caseSearchAudit.listSort, 'ddes');
         assert.equal(packet.caseSearchAudit.shortfallReason, null);
+        assert.deepEqual(packet.caseSearchAudit.lawNameQueries, [lawSummary.name]);
+        assert.deepEqual(packet.caseSearchAudit.issueQueries, ['동의', '조합설립']);
+        assert.deepEqual(packet.caseSearchAudit.executedBodyQueries, [
+            `${lawSummary.name} 동의`,
+            `${lawSummary.name} 조합설립`,
+        ]);
         assert.ok(packet.cases.every((legalCase) =>
             legalCase.currentLawFit === 'current_rule_candidate'
             && legalCase.relevance.grade === 'analogical'
@@ -420,6 +426,626 @@ describe('LegalResearchOrchestratorV1', () => {
             packet.cases.map((item) => item.decisionDate),
             [...packet.cases.map((item) => item.decisionDate)].sort().reverse()
         );
+    });
+
+    it('목록의 선택 메타데이터가 없어도 상세가 최종 필드를 채우면 판결문 exact 발췌로 반환한다', async () => {
+        const summary: CaseSummary = {
+            caseSerialId: '215',
+            caseName: '조합설립인가처분취소 215',
+            officialUrl: 'https://www.law.go.kr/precInfoP.do?precSeq=215',
+        };
+        const fullText = `${'앞'.repeat(900)} 조합설립 동의 요건을 판단한 공식 판결문 ${'뒤'.repeat(900)}`;
+        const packet = await buildOrchestrator([summary], {
+            detailFactory() {
+                return {
+                    caseSerialId: summary.caseSerialId,
+                    caseName: summary.caseName,
+                    caseNumber: '2026두215',
+                    decisionDate: '20260820',
+                    courtName: '대법원',
+                    referenceProvisions: '도시 및 주거환경정비법 제35조',
+                    fullText,
+                };
+            },
+        }).research(input);
+
+        assert.equal(packet.cases.length, 1);
+        assert.equal(packet.cases[0].listingIdentityVerified, true);
+        assert.equal(packet.cases[0].fullTextVerified, true);
+        assert.equal(packet.cases[0].holdingSource, 'official_full_text_excerpt');
+        assert.equal(packet.cases[0].holding.length <= 500, true);
+        assert.equal(fullText.includes(packet.cases[0].holding), true);
+        assert.match(packet.cases[0].holding, /조합설립/);
+        assert.equal(packet.cases[0].reasoningSummary, packet.cases[0].holding);
+        assert.equal(packet.caseSearchAudit.exclusions.fullTextUnavailable, 0);
+        assert.equal(packet.caseSearchAudit.exclusions.identityMismatch, 0);
+    });
+
+    it('공식 판시사항과 판결요지도 각각 500자 exact prefix로 제한한다', async () => {
+        const summary = makeCase(216, '2026-08-20');
+        const officialHoldings = `${'판'.repeat(650)} 조합설립 동의`;
+        const officialSummary = `${'요'.repeat(650)} 조합설립 동의`;
+        const packet = await buildOrchestrator([summary], {
+            detailFactory(item) {
+                return {
+                    ...detailFor(item),
+                    holdings: officialHoldings,
+                    summary: officialSummary,
+                };
+            },
+        }).research(input);
+
+        assert.equal(packet.cases.length, 1);
+        assert.equal(Array.from(packet.cases[0].holding).length, 500);
+        assert.equal(Array.from(packet.cases[0].reasoningSummary).length, 500);
+        assert.equal(officialHoldings.includes(packet.cases[0].holding), true);
+        assert.equal(officialSummary.includes(packet.cases[0].reasoningSummary), true);
+    });
+
+    it('strong 검토 후보는 법령명·쟁점어의 분리된 300자 exact 문맥으로 recall하고 시행령 오인은 거부한다', async () => {
+        const reviewInput: LegalResearchInputV1 = {
+            ...input,
+            question: '공동소유자의 대표조합원 지정 문제는 어떻게 되는가?',
+            researchPlan: {
+                issues: [{
+                    issueId: 'ISSUE-1',
+                    issue: '공동소유자의 대표조합원 지정',
+                    requestedOutcome: 'eligibility',
+                }],
+                lawAnchors: [{
+                    issueIds: ['ISSUE-1'],
+                    exactName: lawSummary.name,
+                    lawType: '법률',
+                    articleLabels: ['제35조'],
+                    issueTerms: ['공동소유자'],
+                }],
+                ordinanceRequirement: 'not_required',
+                ordinanceAnchors: [],
+                caseQueries: [{
+                    issueIds: ['ISSUE-1'],
+                    lawNames: [lawSummary.name],
+                    articleLabels: ['제35조'],
+                    issueTerms: ['공동소유자'],
+                }],
+            },
+        };
+        const currentLawDetail: CurrentLawDetail = {
+            ...lawDetail,
+            articles: [{
+                ...lawDetail.articles[0],
+                content: '제35조 공동소유자의 대표조합원 지정에 관한 사항을 정한다.',
+                paragraphs: [],
+            }],
+        };
+        const valid = makeCase(217, '2025-08-20');
+        const subordinate = makeCase(216, '2025-08-19');
+        const packet = await buildOrchestrator([valid, subordinate], {
+            currentLawDetail,
+            detailFactory(summary) {
+                const suffix = `${'가'.repeat(360)} 공동소유자의 대표조합원 지정이 문제되었다.`;
+                const fullText = summary.caseSerialId === valid.caseSerialId
+                    ? `${lawSummary.name}의문언을 검토하였다. ${suffix}`
+                    : `${lawSummary.name}시행령의 문언을 검토하였다. ${suffix}`;
+                return {
+                    ...detailFor(summary),
+                    holdings: '공동소유자의 대표조합원 지정이 문제된 사안',
+                    summary: '공동소유자 관련 판단이다.',
+                    referenceProvisions: `${lawSummary.name} 제35조`,
+                    fullText,
+                };
+            },
+        }).research(reviewInput);
+
+        assert.deepEqual(
+            packet.caseReviewCandidates.map((candidate) => candidate.caseSerialId),
+            [valid.caseSerialId]
+        );
+        const match = packet.caseReviewCandidates[0].matches[0];
+        assert.match(match.lawContextExcerpt, /도시 및 주거환경정비법의문언/);
+        assert.doesNotMatch(match.lawContextExcerpt, /공동소유자/);
+        assert.match(match.issueContextExcerpt ?? '', /공동소유자/);
+        assert.doesNotMatch(match.issueContextExcerpt ?? '', /도시 및 주거환경정비법/);
+        assert.ok(Array.from(match.lawContextExcerpt).length <= 300);
+        assert.ok(Array.from(match.issueContextExcerpt ?? '').length <= 300);
+    });
+
+    it('전자투표 issue는 결의무효 같은 일반 strong term으로 우회하지 않는다', async () => {
+        const electronicInput: LegalResearchInputV1 = {
+            ...input,
+            question: '총회결의무효와 전자투표가 문제되는가?',
+            researchPlan: {
+                issues: [{
+                    issueId: 'ISSUE-2',
+                    issue: '총회 결의 절차와 무효',
+                    requestedOutcome: 'procedure',
+                }],
+                lawAnchors: [{
+                    issueIds: ['ISSUE-2'],
+                    exactName: lawSummary.name,
+                    lawType: '법률',
+                    articleLabels: ['제35조'],
+                    issueTerms: ['전자투표'],
+                }],
+                ordinanceRequirement: 'not_required',
+                ordinanceAnchors: [],
+                caseQueries: [
+                    {
+                        issueIds: ['ISSUE-2'],
+                        lawNames: [lawSummary.name],
+                        articleLabels: ['제35조'],
+                        issueTerms: ['전자투표'],
+                    },
+                    {
+                        issueIds: ['ISSUE-2'],
+                        lawNames: [lawSummary.name],
+                        articleLabels: ['제35조'],
+                        issueTerms: ['총회결의무효'],
+                    },
+                ],
+            },
+        };
+        const currentLawDetail: CurrentLawDetail = {
+            ...lawDetail,
+            articles: [{
+                ...lawDetail.articles[0],
+                content: '제35조 전자투표 방식의 의사표시를 정한다.',
+                paragraphs: [],
+            }],
+        };
+        const generalOnly = makeCase(219, '2025-08-20');
+        const electronic = makeCase(218, '2025-08-19');
+        const detailFactory = (summary: CaseSummary): CaseDetail => ({
+            ...detailFor(summary),
+            holdings: summary.caseSerialId === generalOnly.caseSerialId
+                ? '총회결의무효 청구를 판단하였다.'
+                : '전자투표 방식의 효력을 판단하였다.',
+            summary: '총회 의사표시에 관한 판단이다.',
+            referenceProvisions: `${lawSummary.name} 제35조`,
+            fullText: `${lawSummary.name}의 규정을 검토하였다. ${'가'.repeat(330)} ${
+                summary.caseSerialId === generalOnly.caseSerialId
+                    ? '총회결의무효 청구를 판단하였다.'
+                    : '전자투표 방식의 효력을 판단하였다.'
+            }`,
+        });
+
+        const rejected = await buildOrchestrator([generalOnly], {
+            currentLawDetail,
+            detailFactory,
+        }).research(electronicInput);
+        assert.equal(rejected.caseReviewCandidates.length, 0);
+        assert.deepEqual(rejected.caseReviewAudit.issues, [{
+            issueId: 'ISSUE-2',
+            qualifiedCount: 0,
+            returnedCount: 0,
+        }]);
+
+        const accepted = await buildOrchestrator([generalOnly, electronic], {
+            currentLawDetail,
+            detailFactory,
+        }).research(electronicInput);
+        assert.deepEqual(
+            accepted.caseReviewCandidates.map((candidate) => candidate.caseSerialId),
+            [electronic.caseSerialId]
+        );
+        assert.equal(accepted.caseReviewCandidates[0].matches[0].issueTerm, '전자투표');
+    });
+
+    it('대표자 단독 query는 공동소유 쟁점군 article fallback을 열지 않는다', async () => {
+        const representativeOnlyInput: LegalResearchInputV1 = {
+            ...input,
+            question: '대표자 선정 절차가 문제되는가?',
+            researchPlan: {
+                issues: [{
+                    issueId: 'ISSUE-1',
+                    issue: '대표자 선정 절차',
+                    requestedOutcome: 'procedure',
+                }],
+                lawAnchors: [{
+                    issueIds: ['ISSUE-1'],
+                    exactName: lawSummary.name,
+                    lawType: '법률',
+                    articleLabels: ['제35조'],
+                    issueTerms: ['대표자'],
+                }],
+                ordinanceRequirement: 'not_required',
+                ordinanceAnchors: [],
+                caseQueries: [{
+                    issueIds: ['ISSUE-1'],
+                    lawNames: [lawSummary.name],
+                    articleLabels: ['제35조'],
+                    issueTerms: ['대표자'],
+                }],
+            },
+        };
+        const summary = makeCase(217, '2025-08-18');
+        const packet = await buildOrchestrator([summary], {
+            currentLawDetail: {
+                ...lawDetail,
+                articles: [{
+                    ...lawDetail.articles[0],
+                    content: '제35조 대표자 선정 절차를 정한다.',
+                    paragraphs: [],
+                }],
+            },
+            detailFactory(value) {
+                return {
+                    ...detailFor(value),
+                    holdings: undefined,
+                    summary: undefined,
+                    referenceProvisions: undefined,
+                    fullText: `${lawSummary.name} 제35조의 토지등소유자 범위를 정한다.`,
+                };
+            },
+        }).research(representativeOnlyInput);
+
+        assert.deepEqual(packet.caseReviewCandidates, []);
+        assert.deepEqual(packet.caseReviewAudit.issues, [{
+            issueId: 'ISSUE-1',
+            qualifiedCount: 0,
+            returnedCount: 0,
+        }]);
+    });
+
+    it('late strict decision identity가 review를 제거해도 replacement 경계를 다시 증명한다', async () => {
+        const reviewInput: LegalResearchInputV1 = {
+            ...input,
+            question: '공동소유자의 대표조합원 지정 문제는 어떻게 되는가?',
+            researchPlan: {
+                issues: [{
+                    issueId: 'ISSUE-1',
+                    issue: '공동소유자의 대표조합원 지정',
+                    requestedOutcome: 'eligibility',
+                }],
+                lawAnchors: [{
+                    issueIds: ['ISSUE-1'],
+                    exactName: lawSummary.name,
+                    lawType: '법률',
+                    articleLabels: ['제35조'],
+                    issueTerms: ['공동소유자'],
+                }],
+                ordinanceRequirement: 'not_required',
+                ordinanceAnchors: [],
+                caseQueries: [{
+                    issueIds: ['ISSUE-1'],
+                    lawNames: [lawSummary.name],
+                    articleLabels: ['제35조'],
+                    issueTerms: ['공동소유자'],
+                }],
+            },
+        };
+        const strictCases = Array.from({ length: 11 }, (_, index) =>
+            makeCase(900 - index, `2026-08-${String(31 - index).padStart(2, '0')}`));
+        const reviewCases = Array.from({ length: 12 }, (_, index) =>
+            makeCase(800 - index * 10, `2026-08-${String(20 - index).padStart(2, '0')}`));
+        const displacedReview = reviewCases.at(-1)!;
+        const sharedCaseNumber = '2026두공동사건';
+        displacedReview.caseNumber = sharedCaseNumber;
+        const leadingIrrelevant = makeCase(680, '2026-08-09');
+        const lateStrictBase = makeCase(670, '2026-08-09');
+        lateStrictBase.caseNumber = sharedCaseNumber;
+        const trailingIrrelevant = [660, 650, 640].map((serial) =>
+            makeCase(serial, '2026-08-09'));
+        const replacement = makeCase(630, '2026-08-09');
+        const caseItems = [
+            ...strictCases,
+            ...reviewCases,
+            leadingIrrelevant,
+            lateStrictBase,
+            ...trailingIrrelevant,
+            replacement,
+        ];
+        const irrelevantIds = new Set([
+            leadingIrrelevant.caseSerialId,
+            ...trailingIrrelevant.map((item) => item.caseSerialId),
+        ]);
+
+        for (const omitLateListIdentity of [false, true]) {
+            const lateStrict = caseItems.find((item) =>
+                item.caseSerialId === lateStrictBase.caseSerialId)!;
+            lateStrict.caseNumber = omitLateListIdentity ? undefined : sharedCaseNumber;
+            lateStrict.courtName = omitLateListIdentity ? undefined : '대법원';
+            const provider = new FakeProvider(caseItems, {
+                currentLawDetail: {
+                    ...lawDetail,
+                    articles: [{
+                        ...lawDetail.articles[0],
+                        content: '제35조 공동소유자의 대표조합원 지정에 관한 사항을 정한다.',
+                        paragraphs: [],
+                    }],
+                },
+                detailFactory(summary) {
+                    if (irrelevantIds.has(summary.caseSerialId)) {
+                        return {
+                            ...detailFor(summary),
+                            holdings: '별개의 행정처분을 판단하였다.',
+                            summary: '이 사건 쟁점과 무관하다.',
+                            referenceProvisions: undefined,
+                            fullText: '별개의 행정처분에 관한 판례 전문이다.',
+                        };
+                    }
+                    const strict = strictCases.some((item) =>
+                        item.caseSerialId === summary.caseSerialId)
+                        || summary.caseSerialId === lateStrictBase.caseSerialId;
+                    return {
+                        ...detailFor(summary),
+                        caseNumber: summary.caseSerialId === lateStrictBase.caseSerialId
+                            ? sharedCaseNumber
+                            : summary.caseNumber,
+                        courtName: summary.caseSerialId === lateStrictBase.caseSerialId
+                            ? '대법원'
+                            : summary.courtName,
+                        holdings: '공동소유자의 대표조합원 지정이 문제된 사안',
+                        summary: '공동소유자 관련 판단이다.',
+                        referenceProvisions: strict
+                            ? `${lawSummary.name} 제35조`
+                            : undefined,
+                        fullText: `${lawSummary.name}의 문언을 검토하였다. ${
+                            '가'.repeat(320)
+                        } 공동소유자의 대표조합원 지정이 문제되었다.`,
+                    };
+                },
+            });
+
+            const packet = await buildOrchestratorWithProvider(provider)
+                .research(reviewInput);
+
+            assert.ok(provider.caseDetailIds.includes(lateStrictBase.caseSerialId));
+            assert.ok(provider.caseDetailIds.includes(replacement.caseSerialId));
+            assert.equal(provider.caseDetailIds.length, 29);
+            assert.equal(packet.caseReviewCandidates.length, 12);
+            assert.ok(packet.caseReviewCandidates.some((candidate) =>
+                candidate.caseSerialId === replacement.caseSerialId));
+            assert.equal(
+                packet.caseReviewCandidates.at(-1)?.caseSerialId,
+                replacement.caseSerialId
+            );
+            assert.equal(replacement.decisionDate, displacedReview.decisionDate);
+            assert.ok(!packet.caseReviewCandidates.some((candidate) =>
+                candidate.caseSerialId === displacedReview.caseSerialId));
+            assert.equal(packet.caseReviewAudit.upstreamComplete, true);
+        }
+    });
+
+    it('pending canonical serial·case-folded decision identity를 detail cap 전에 우선 검증한다', async () => {
+        const canonicalInput: LegalResearchInputV1 = {
+            ...input,
+            question: '공동소유자의 대표조합원 지정 문제는 어떻게 되는가?',
+            researchPlan: {
+                issues: [{
+                    issueId: 'ISSUE-1',
+                    issue: '공동소유자의 대표조합원 지정',
+                    requestedOutcome: 'eligibility',
+                }],
+                lawAnchors: [{
+                    issueIds: ['ISSUE-1'],
+                    exactName: lawSummary.name,
+                    lawType: '법률',
+                    articleLabels: ['제35조'],
+                    issueTerms: ['공동소유자', '대표조합원'],
+                }],
+                ordinanceRequirement: 'not_required',
+                ordinanceAnchors: [],
+                caseQueries: [{
+                    issueIds: ['ISSUE-1'],
+                    lawNames: [lawSummary.name],
+                    articleLabels: ['제35조'],
+                    issueTerms: ['공동소유자', '대표조합원'],
+                }],
+            },
+        };
+        const strictCases = Array.from({ length: 10 }, (_, index) =>
+            makeCase(1900 - index, `2026-08-${String(31 - index).padStart(2, '0')}`));
+        const reviewCases = Array.from({ length: 12 }, (_, index) =>
+            makeCase(
+                1800 - index,
+                `2026-08-${index >= 10 ? '09' : String(20 - index).padStart(2, '0')}`
+            ));
+        const overlapReview = reviewCases.at(-1)!;
+        const caseFoldReview = reviewCases.at(-2)!;
+        caseFoldReview.caseNumber = '2026두ABC';
+        const selectiveJunk = [
+            makeCase(1700, '2026-08-08'),
+            makeCase(1699, '2026-08-08'),
+        ];
+        const selective = [...strictCases, ...reviewCases, ...selectiveJunk];
+        const canonicalOverlap: CaseSummary = {
+            ...makeCase(Number(overlapReview.caseSerialId), '2026-08-09'),
+            caseSerialId: `000${overlapReview.caseSerialId}`,
+            caseName: '후순위 strict canonical duplicate',
+        };
+        const caseFoldOverlap: CaseSummary = {
+            ...makeCase(1701, '2026-08-09'),
+            caseName: '후순위 strict case-folded identity duplicate',
+            caseNumber: '2026두abc',
+        };
+        const issueJunk = Array.from({ length: 96 }, (_, index) =>
+            makeCase(1600 - index, '2026-08-07'));
+        const allCases = [
+            ...selective,
+            canonicalOverlap,
+            caseFoldOverlap,
+            ...issueJunk,
+        ];
+        const detailIds: string[] = [];
+        const provider: LegalResearchProviderV1 = {
+            async searchCurrentLaws() {
+                return { totalCount: 1, page: 1, items: [lawSummary] };
+            },
+            async getCurrentLawDetail() {
+                return {
+                    ...lawDetail,
+                    articles: [{
+                        ...lawDetail.articles[0],
+                        content: '제35조 공동소유자의 대표조합원 지정에 관한 사항을 정한다.',
+                        paragraphs: [],
+                    }],
+                };
+            },
+            async searchCurrentOrdinances() {
+                throw new Error('자치법규 검색은 호출되지 않아야 합니다.');
+            },
+            async getCurrentOrdinanceDetail() {
+                throw new Error('자치법규 상세는 호출되지 않아야 합니다.');
+            },
+            async searchCases(search) {
+                const items = search.referenceLawName
+                    ? [canonicalOverlap, caseFoldOverlap]
+                    : search.query?.endsWith('공동소유자')
+                        ? selective
+                        : issueJunk;
+                return {
+                    totalCount: items.length,
+                    page: search.page ?? 1,
+                    items: (search.page ?? 1) === 1 ? items : [],
+                };
+            },
+            async getCaseDetail({ caseSerialId }) {
+                detailIds.push(caseSerialId);
+                const summary = allCases.find((candidate) =>
+                    candidate.caseSerialId === caseSerialId);
+                if (!summary) throw new Error('missing canonical overlap fixture case');
+                if (issueJunk.includes(summary) || selectiveJunk.includes(summary)) {
+                    return {
+                        ...detailFor(summary),
+                        holdings: '별개의 행정처분을 판단하였다.',
+                        summary: '이 사건 쟁점과 무관하다.',
+                        referenceProvisions: undefined,
+                        fullText: '별개의 행정처분에 관한 판례 전문이다.',
+                    };
+                }
+                const strict = strictCases.includes(summary)
+                    || summary === canonicalOverlap
+                    || summary === caseFoldOverlap;
+                return {
+                    ...detailFor(summary),
+                    holdings: '공동소유자의 대표조합원 지정이 문제된 사안',
+                    summary: '공동소유자 관련 판단이다.',
+                    referenceProvisions: strict
+                        ? `${lawSummary.name} 제35조`
+                        : undefined,
+                    fullText: `${lawSummary.name}의 문언을 검토하였다. ${
+                        '가'.repeat(320)
+                    } 공동소유자의 대표조합원 지정이 문제되었다.`,
+                };
+            },
+        };
+
+        const packet = await buildOrchestratorWithProvider(provider).research(canonicalInput);
+
+        assert.equal(detailIds.length, 120);
+        assert.ok(detailIds.includes(canonicalOverlap.caseSerialId));
+        assert.ok(detailIds.includes(caseFoldOverlap.caseSerialId));
+        assert.equal(packet.caseReviewCandidates.length, 10);
+        assert.ok(!packet.caseReviewCandidates.some((candidate) =>
+            candidate.caseSerialId === overlapReview.caseSerialId));
+        assert.ok(!packet.caseReviewCandidates.some((candidate) =>
+            candidate.caseSerialId === caseFoldReview.caseSerialId));
+        assert.equal(packet.caseReviewAudit.upstreamComplete, false);
+        assert.equal(packet.caseReviewAudit.shortfallReason, 'upstream_incomplete');
+    });
+
+    it('최신 경계를 확정하기 전에 목록 선고일이 없는 모든 후보를 상세조회한다', async () => {
+        const datedCases = Array.from({ length: 12 }, (_, index) =>
+            makeCase(9000 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
+        const undatedCase: CaseSummary = {
+            ...makeCase(9999, '2026-08-31'),
+            decisionDate: undefined,
+        };
+        const provider = new FakeProvider([...datedCases, undatedCase], {
+            detailFactory(summary) {
+                return summary.caseSerialId === undatedCase.caseSerialId
+                    ? {
+                        ...detailFor(summary),
+                        decisionDate: '20260831',
+                    }
+                    : detailFor(summary);
+            },
+        });
+
+        const packet = await buildOrchestratorWithProvider(provider).research(input);
+
+        assert.ok(provider.caseDetailIds.includes(undatedCase.caseSerialId));
+        assert.equal(packet.cases.length, 12);
+        assert.equal(packet.cases[0].caseSerialId, undatedCase.caseSerialId);
+        assert.equal(packet.caseSearchAudit.upstreamComplete, true);
+    });
+
+    it('상세의 병합 사건번호 첫 토큰과 제한된 법원 약칭은 같은 목록 identity로 인정한다', async () => {
+        const summary: CaseSummary = {
+            ...makeCase(216, '2026-08-20'),
+            caseNumber: '2020노486',
+            courtName: '대전지방법원',
+        };
+        const packet = await buildOrchestrator([summary], {
+            detailFactory(value) {
+                return {
+                    ...detailFor(value),
+                    caseNumber: '２０２０노４８６, 2018노3185(병합)',
+                    decisionDate: '2026. 08. 20.',
+                    courtName: '대전지법',
+                };
+            },
+        }).research(input);
+
+        assert.equal(packet.cases.length, 1);
+        assert.equal(packet.cases[0].listingIdentityVerified, true);
+        assert.equal(packet.caseSearchAudit.exclusions.identityMismatch, 0);
+    });
+
+    it('실제 사건번호·법원·선고일 충돌은 각각 identityMismatch로 제외한다', async () => {
+        const caseItems = [
+            makeCase(217, '2026-08-20'),
+            makeCase(218, '2026-08-19'),
+            makeCase(219, '2026-08-18'),
+        ];
+        const packet = await buildOrchestrator(caseItems, {
+            detailFactory(summary) {
+                const detail = detailFor(summary);
+                if (summary.caseSerialId === '217') {
+                    return { ...detail, caseNumber: '2026두999, 2024두1(병합)' };
+                }
+                if (summary.caseSerialId === '218') {
+                    return { ...detail, courtName: '대전지방법원' };
+                }
+                return { ...detail, decisionDate: '20260817' };
+            },
+        }).research(input);
+
+        assert.deepEqual(packet.cases, []);
+        assert.equal(packet.caseSearchAudit.exclusions.identityMismatch, 3);
+    });
+
+    it('전문은 있지만 관련 쟁점 문맥이 없으면 전문 누락이 아니라 irrelevant로 제외한다', async () => {
+        const summary = makeCase(220, '2026-08-20');
+        const packet = await buildOrchestrator([summary], {
+            detailFactory(value) {
+                return {
+                    ...detailFor(value),
+                    holdings: undefined,
+                    summary: undefined,
+                    fullText: '이 판결문은 손해배상 청구와 계약 해지만을 판단한다.',
+                };
+            },
+        }).research(input);
+
+        assert.deepEqual(packet.cases, []);
+        assert.equal(packet.caseSearchAudit.exclusions.fullTextUnavailable, 0);
+        assert.equal(packet.caseSearchAudit.exclusions.irrelevant, 1);
+    });
+
+    it('판시사항과 판결요지가 있어도 공식 전문이 없으면 fullTextUnavailable로 제외한다', async () => {
+        const summary = makeCase(221, '2026-08-20');
+        const packet = await buildOrchestrator([summary], {
+            detailFactory(value) {
+                return {
+                    ...detailFor(value),
+                    fullText: undefined,
+                };
+            },
+        }).research(input);
+
+        assert.deepEqual(packet.cases, []);
+        assert.equal(packet.caseSearchAudit.exclusions.fullTextUnavailable, 1);
     });
 
     it('현행 상세는 응답에 공통으로 존재하는 법령ID로 조회하고 MST는 출처에 보존한다', async () => {
@@ -767,6 +1393,7 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.deepEqual(packet.laws, []);
         assert.equal(provider.caseSearchPages.length, 0);
         assert.equal(provider.caseDetailIds.length, 0);
+        assert.equal(packet.caseSearchAudit.executedBodyQueries, undefined);
         assert.ok(packet.unknowns.some((unknown) =>
             unknown.code === 'LAW_PROVISION_NOT_FOUND' && unknown.blocking));
     });
@@ -1093,7 +1720,122 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.equal(packet.caseSearchAudit.upstreamComplete, true);
     });
 
-    it('stream provenance로 교집합, 쟁점어, 법령명-only 순서로 상세조회하고 최종 결과는 최신순으로 정렬한다', async () => {
+    it('이전 page 날짜가 경계보다 오래되어도 미조회 page의 무일자 최신 후보를 상세조회한다', async () => {
+        const lawFirstPage = Array.from({ length: 100 }, (_, index) =>
+            makeCase(90000 + index, '2020-01-01'));
+        const issueEligible = Array.from({ length: 12 }, (_, index) =>
+            makeCase(91000 + index, '2026-08-20'));
+        const hiddenUndated: CaseSummary = {
+            ...makeCase(92000, '2026-08-31'),
+            decisionDate: undefined,
+        };
+        const allCases = [...lawFirstPage, ...issueEligible, hiddenUndated];
+        const calls: string[] = [];
+        const provider: LegalResearchProviderV1 = {
+            async searchCurrentLaws() {
+                return { totalCount: 1, page: 1, items: [lawSummary] };
+            },
+            async getCurrentLawDetail() {
+                return lawDetail;
+            },
+            async searchCurrentOrdinances() {
+                throw new Error('자치법규 검색은 호출되지 않아야 합니다.');
+            },
+            async getCurrentOrdinanceDetail() {
+                throw new Error('자치법규 상세는 호출되지 않아야 합니다.');
+            },
+            async searchCases(search) {
+                const page = search.page ?? 1;
+                if (search.referenceLawName) {
+                    calls.push(`law:${page}`);
+                    return {
+                        totalCount: 101,
+                        page,
+                        items: page === 1 ? lawFirstPage : page === 2 ? [hiddenUndated] : [],
+                    };
+                }
+                calls.push(`query:${page}`);
+                return {
+                    totalCount: issueEligible.length,
+                    page,
+                    items: page === 1 ? issueEligible : [],
+                };
+            },
+            async getCaseDetail({ caseSerialId }) {
+                const summary = allCases.find((candidate) =>
+                    candidate.caseSerialId === caseSerialId);
+                if (!summary) throw new Error('missing nullable-date fixture case');
+                if (summary === hiddenUndated) {
+                    return {
+                        ...detailFor(summary),
+                        decisionDate: '20260831',
+                    };
+                }
+                const detail = detailFor(summary);
+                return lawFirstPage.includes(summary)
+                    ? { ...detail, referenceProvisions: '도시 및 주거환경정비법 제35조의2' }
+                    : detail;
+            },
+        };
+
+        const packet = await buildOrchestratorWithProvider(provider).research(input);
+
+        assert.ok(calls.includes('law:2'));
+        assert.equal(packet.cases.length, 12);
+        assert.equal(packet.cases[0].caseSerialId, hiddenUndated.caseSerialId);
+        assert.equal(packet.caseSearchAudit.upstreamComplete, true);
+    });
+
+    it('nullable 목록의 모든 후속 page를 확인하다 요청 상한에 도달하면 최신 경계를 미완료로 닫는다', async () => {
+        const issueEligible = Array.from({ length: 12 }, (_, index) =>
+            makeCase(93000 + index, '2026-08-20'));
+        let searchRequestCount = 0;
+        const provider: LegalResearchProviderV1 = {
+            async searchCurrentLaws() {
+                return { totalCount: 1, page: 1, items: [lawSummary] };
+            },
+            async getCurrentLawDetail() {
+                return lawDetail;
+            },
+            async searchCurrentOrdinances() {
+                throw new Error('자치법규 검색은 호출되지 않아야 합니다.');
+            },
+            async getCurrentOrdinanceDetail() {
+                throw new Error('자치법규 상세는 호출되지 않아야 합니다.');
+            },
+            async searchCases(search) {
+                searchRequestCount += 1;
+                const page = search.page ?? 1;
+                if (search.referenceLawName) {
+                    return {
+                        totalCount: 100,
+                        page,
+                        items: [makeCase(94000 + page, '2020-01-01')],
+                    };
+                }
+                return {
+                    totalCount: issueEligible.length,
+                    page,
+                    items: page === 1 ? issueEligible : [],
+                };
+            },
+            async getCaseDetail({ caseSerialId }) {
+                const summary = issueEligible.find((candidate) =>
+                    candidate.caseSerialId === caseSerialId);
+                if (!summary) throw new Error('오래된 보완 stream은 상세조회하지 않아야 합니다.');
+                return detailFor(summary);
+            },
+        };
+
+        const packet = await buildOrchestratorWithProvider(provider).research(input);
+
+        assert.equal(searchRequestCount, 48);
+        assert.ok(packet.cases.length > 0 && packet.cases.length < 12);
+        assert.equal(packet.caseSearchAudit.upstreamComplete, false);
+        assert.equal(packet.status, 'partial');
+    });
+
+    it('stream provenance로 교집합, 복합 검색, 법령명-only 순서로 상세조회하고 최종 결과는 최신순으로 정렬한다', async () => {
         const intersection = makeCase(6100, '2026-06-01');
         const issueOnly = makeCase(6200, '2026-07-01');
         const lawOnly = makeCase(6300, '2026-08-01');
@@ -1142,7 +1884,7 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.equal(packet.caseSearchAudit.upstreamComplete, true);
     });
 
-    it('다중 쟁점 stream에서는 선택적 검색 후보를 포괄 교집합보다 먼저 검증한다', async () => {
+    it('다중 법령명+쟁점 복합 stream에서는 선택적 검색 후보를 포괄 교집합보다 먼저 검증한다', async () => {
         const broadIntersection = Array.from({ length: 100 }, (_, index) =>
             makeCase(6400 + index, '2026-08-30'));
         const broadIssueOnly = Array.from({ length: 20 }, (_, index) =>
@@ -1172,10 +1914,10 @@ describe('LegalResearchOrchestratorV1', () => {
                         items: broadIntersection,
                     };
                 }
-                if (search.query === '조합설립') {
+                if (search.query === `${lawSummary.name} 조합설립`) {
                     return { totalCount: selective.length, page: 1, items: selective };
                 }
-                if (search.query === '요건') {
+                if (search.query === `${lawSummary.name} 요건`) {
                     return {
                         totalCount: broadIssueOnly.length,
                         page: 1,
@@ -1222,7 +1964,7 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.equal(packet.caseSearchAudit.upstreamComplete, false);
     });
 
-    it('120건 예산에서 쟁점어 후보를 법령명-only 후보보다 먼저 검증해 적격 12건을 보존한다', async () => {
+    it('복합 stream을 먼저 검색해 단독 광범위 쟁점어가 120건 상세 예산을 소비하지 않는다', async () => {
         const lawOnly = Array.from({ length: 120 }, (_, index) =>
             makeCase(7000 + index, '2026-08-30'));
         const issueCandidates = Array.from({ length: 12 }, (_, index) =>
@@ -1253,7 +1995,14 @@ describe('LegalResearchOrchestratorV1', () => {
                         items: page === 1 ? lawOnly.slice(0, 100) : lawOnly.slice(100),
                     };
                 }
-                searchCalls.push(`issue:${page}`);
+                searchCalls.push(`query:${search.query}:${page}`);
+                if (search.query === '조합설립' || search.query === '동의') {
+                    return {
+                        totalCount: lawOnly.length,
+                        page,
+                        items: page === 1 ? lawOnly.slice(0, 100) : lawOnly.slice(100),
+                    };
+                }
                 return {
                     totalCount: issueCandidates.length,
                     page,
@@ -1274,6 +2023,13 @@ describe('LegalResearchOrchestratorV1', () => {
 
         const packet = await buildOrchestratorWithProvider(provider).research(input);
 
+        assert.deepEqual(searchCalls.slice(0, 3), [
+            `query:${lawSummary.name} 동의:1`,
+            `query:${lawSummary.name} 조합설립:1`,
+            'law:1',
+        ]);
+        assert.ok(!searchCalls.some((call) =>
+            call === 'query:조합설립:1' || call === 'query:동의:1'));
         assert.deepEqual(detailIds.slice(0, 12), issueCandidates.map((item) => item.caseSerialId));
         assert.ok(searchCalls.includes('law:2'));
         assert.equal(detailIds.length, 120);

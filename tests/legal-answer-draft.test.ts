@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as z from 'zod/v4';
 import {
+    LEGAL_ANSWER_DRAFT_MAX_BYTES,
     LEGAL_ANSWER_DRAFT_LIMITS,
     LegalAnswerDraftV1Schema,
     buildLegalAnswerFromDraftV1,
@@ -70,6 +71,7 @@ function makeCase(): CaseSourceV1 {
         court: '대법원',
         decisionDate: '2026-05-01',
         holding: '조합설립 동의 요건을 판시하였다.',
+        holdingSource: 'official_holdings',
         reasoningSummary: '현행 조문과 동일한 규정을 해석하였다.',
         referencedProvisions: ['도시정비법 제35조'],
         fullTextVerified: true,
@@ -171,6 +173,7 @@ function makePacket(): LegalResearchPacketV1 {
             },
         ],
         cases: [legalCase],
+        caseReviewCandidates: [],
         lawSearchAudit: {
             target: 'eflaw',
             currentOnlyNw: 3,
@@ -197,6 +200,7 @@ function makePacket(): LegalResearchPacketV1 {
             resultSort: 'decision_date_desc_case_serial_id_desc',
             lawNameQueries: ['도시 및 주거환경정비법'],
             issueQueries: ['조합설립 동의'],
+            executedBodyQueries: ['도시 및 주거환경정비법 조합설립 동의'],
             relevancePolicyVersion: LEGAL_POLICY_VERSION,
             queryRelaxedToFill: false,
             upstreamComplete: true,
@@ -209,6 +213,18 @@ function makePacket(): LegalResearchPacketV1 {
                 currentLawMisaligned: 0,
                 unofficialUrl: 0,
             },
+        },
+        caseReviewAudit: {
+            requestedMax: 12,
+            candidatePoolCount: 1,
+            qualifiedCount: 0,
+            returnedCount: 0,
+            resultSort: 'decision_date_desc_case_serial_id_desc',
+            upstreamComplete: true,
+            latestScope: 'planned_streams_verified',
+            shortfallReason: 'official_results_exhausted',
+            paddingApplied: false,
+            issues: [{ issueId: 'ISSUE-1', qualifiedCount: 0, returnedCount: 0 }],
         },
         unknowns: [],
         provenance: {
@@ -360,6 +376,29 @@ test('enum, 문자열 길이, 배열 수와 중복 참조 상한을 명시적으
     assert.equal(LegalAnswerDraftV1Schema.safeParse(unsupportedFreeText).success, false);
 });
 
+test('개별 필드 상한을 모두 지켜도 answerDraft 전체 UTF-8 96KiB를 넘을 수 없다', () => {
+    const oversized = makeDraft();
+    oversized.ruleClaims = Array.from(
+        { length: LEGAL_ANSWER_DRAFT_LIMITS.ruleClaimCount },
+        (_, index) => ({
+            claimId: `rule-${index + 1}`,
+            text: '가'.repeat(LEGAL_ANSWER_DRAFT_LIMITS.ruleClaimTextLength),
+            sourceIds: ['law-1'],
+            evidenceQuotes: [{
+                sourceId: 'law-1',
+                quote: '나'.repeat(LEGAL_ANSWER_DRAFT_LIMITS.evidenceQuoteLength),
+            }],
+        })
+    );
+    assert.ok(Buffer.byteLength(JSON.stringify(oversized), 'utf8') > LEGAL_ANSWER_DRAFT_MAX_BYTES);
+
+    const result = LegalAnswerDraftV1Schema.safeParse(oversized);
+    assert.equal(result.success, false);
+    if (!result.success) {
+        assert.match(result.error.message, /UTF-8 98304 bytes/);
+    }
+});
+
 test('builder는 패킷 불변 필드와 판례 메타데이터를 서버 packet에서만 채운다', () => {
     const packet = makePacket();
     const draft = makeDraft();
@@ -377,7 +416,10 @@ test('builder는 패킷 불변 필드와 판례 메타데이터를 서버 packet
         ['law-1', 'ordinance-1', 'case-300']
     );
     assert.deepEqual(answer.caseSynthesis, {
+        candidateCount: 1,
+        qualifiedCount: 1,
         returnedCount: 1,
+        exclusions: packet.caseSearchAudit.exclusions,
         summary: draft.caseSummary,
         sourceIds: ['case-300'],
         shortfallReason: 'official_results_exhausted',

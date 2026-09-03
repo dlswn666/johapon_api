@@ -11,6 +11,7 @@ import {
     LEGAL_DISCLAIMER,
     LEGAL_POLICY_VERSION,
     LEGAL_RESEARCH_PACKET_VERSION,
+    type CaseReviewCandidateV1,
     type CaseSourceV1,
     type LegalAnswerV1,
     type LegalResearchPacketV1,
@@ -20,6 +21,7 @@ import {
     validateLegalAnswerMarkdownV1,
 } from '../src/services/legal-research/validator';
 import {
+    buildCaseSearchQueriesV1,
     buildLegalPlanCoverageAuditV1,
     type LegalResearchPlanV1,
 } from '../src/services/legal-research/research-plan';
@@ -68,6 +70,7 @@ function makeCase(serial: string, date: string): CaseSourceV1 {
         court: '대법원',
         decisionDate: date,
         holding: '조합설립 동의 요건을 판시하였다.',
+        holdingSource: 'official_holdings',
         reasoningSummary: '현행 규정과 동일한 규정을 해석하였다.',
         referencedProvisions: ['도시정비법 제35조'],
         fullTextVerified: true,
@@ -169,6 +172,7 @@ function makePacket(): LegalResearchPacketV1 {
             },
         ],
         cases,
+        caseReviewCandidates: [],
         lawSearchAudit: {
             target: 'eflaw',
             currentOnlyNw: 3,
@@ -195,6 +199,7 @@ function makePacket(): LegalResearchPacketV1 {
             resultSort: 'decision_date_desc_case_serial_id_desc',
             lawNameQueries: ['도시 및 주거환경정비법'],
             issueQueries: ['조합설립 동의'],
+            executedBodyQueries: ['도시 및 주거환경정비법 조합설립 동의'],
             relevancePolicyVersion: LEGAL_POLICY_VERSION,
             queryRelaxedToFill: false,
             upstreamComplete: true,
@@ -207,6 +212,18 @@ function makePacket(): LegalResearchPacketV1 {
                 currentLawMisaligned: 0,
                 unofficialUrl: 0,
             },
+        },
+        caseReviewAudit: {
+            requestedMax: 12,
+            candidatePoolCount: 2,
+            qualifiedCount: 0,
+            returnedCount: 0,
+            resultSort: 'decision_date_desc_case_serial_id_desc',
+            upstreamComplete: true,
+            latestScope: 'planned_streams_verified',
+            shortfallReason: 'official_results_exhausted',
+            paddingApplied: false,
+            issues: [{ issueId: 'ISSUE-1', qualifiedCount: 0, returnedCount: 0 }],
         },
         unknowns: [],
         provenance: {
@@ -247,7 +264,10 @@ function makeAnswer(packet: LegalResearchPacketV1): LegalAnswerV1 {
             },
         ],
         caseSynthesis: {
+            candidateCount: packet.caseSearchAudit.candidateCount,
+            qualifiedCount: packet.caseSearchAudit.qualifiedCount,
             returnedCount: 2,
+            exclusions: structuredClone(packet.caseSearchAudit.exclusions),
             summary: '현행 규정과 동일한 법리를 다룬 직접 관련 판례이다.',
             sourceIds: ['case-200', 'case-100'],
             shortfallReason: 'official_results_exhausted',
@@ -262,6 +282,8 @@ function makeAnswer(packet: LegalResearchPacketV1): LegalAnswerV1 {
                 issueQueries: packet.caseSearchAudit.issueQueries,
             },
         },
+        caseReviewCandidates: structuredClone(packet.caseReviewCandidates),
+        caseReviewAudit: structuredClone(packet.caseReviewAudit),
         applications: [
             {
                 applicationId: 'application-1',
@@ -287,12 +309,10 @@ function makeAnswer(packet: LegalResearchPacketV1): LegalAnswerV1 {
         },
         unknowns: [],
         warnings: [],
-        // 렌더러가 sourceIndex 입력 순서에 의존하지 않는지 확인하기 위해 섞는다.
         sourceIndex: structuredClone([
-            packet.cases[1],
-            packet.ordinances[0],
-            packet.laws[0],
-            packet.cases[0],
+            ...packet.laws,
+            ...packet.ordinances,
+            ...packet.cases,
         ]),
         disclaimer: LEGAL_DISCLAIMER,
     };
@@ -319,7 +339,9 @@ test('현행 법령·관할 조례·판례의 공식 링크와 실제 반환 건
     assert.match(markdown, /https:\/\/www\.law\.go\.kr\/lsInfoP\.do\?lsiSeq=LAW-MST-1/);
     assert.match(markdown, /https:\/\/www\.law\.go\.kr\/ordinInfoP\.do\?ordinSeq=ORD-MST-1/);
     assert.match(markdown, /https:\/\/www\.law\.go\.kr\/precInfoP\.do\?precSeq=200/);
-    assert.match(markdown, /반환 판례: 2건 \(최대 12건\)/);
+    assert.match(markdown, /공식 후보 검토: 2건; 검증 적격: 2건; 반환: 2건 \(최대 12건\)/);
+    assert.match(markdown, /제외 집계: 전문 미확인 0건/);
+    assert.match(markdown, /공식 판시사항: 조합설립 동의 요건을 판시하였다/);
     assert.match(markdown, /조사 상태: complete \(조사 계약 완료\)/);
     assert.match(markdown, /계획된 법령명·쟁점 검색 stream 내 최신순 완결성: 검증됨/);
     assert.match(markdown, /검색계획 hash:/);
@@ -429,11 +451,15 @@ test('빈 선택 섹션도 생략하지 않고 해당 없음 또는 0건으로 �
     packet.caseSearchAudit.candidateCount = 0;
     packet.caseSearchAudit.qualifiedCount = 0;
     packet.caseSearchAudit.returnedCount = 0;
+    packet.caseReviewAudit.candidatePoolCount = 0;
 
     const answer = makeAnswer(packet);
     answer.ordinanceAnalysis = [];
     answer.caseSynthesis = {
+        candidateCount: 0,
+        qualifiedCount: 0,
         returnedCount: 0,
+        exclusions: structuredClone(packet.caseSearchAudit.exclusions),
         summary: '',
         sourceIds: [],
         shortfallReason: 'official_results_exhausted',
@@ -455,7 +481,150 @@ test('빈 선택 섹션도 생략하지 않고 해당 없음 또는 0건으로 �
     const ordinanceStart = markdown.indexOf('## 5. 관할 조례·규칙');
     const caseStart = markdown.indexOf('## 6. 관련 판례');
     assert.match(markdown.slice(ordinanceStart, caseStart), /해당 없음/);
-    assert.match(markdown.slice(caseStart), /반환 판례: 0건 \(최대 12건\)/);
+    assert.match(markdown.slice(caseStart), /공식 후보 검토: 0건; 검증 적격: 0건; 반환: 0건 \(최대 12건\)/);
+});
+
+test('검토 후보 12개 링크와 전자투표 0건을 결론 근거·출처 색인과 격리해 렌더링한다', () => {
+    const packet = makePacket();
+    packet.question = '공동소유자의 대표조합원 지정과 전자투표 유효성은?';
+    const reviewPlan: LegalResearchPlanV1 = {
+        issues: [
+            {
+                issueId: 'ISSUE-1',
+                issue: '공동소유자의 대표조합원 지정',
+                requestedOutcome: 'eligibility',
+            },
+            {
+                issueId: 'ISSUE-2',
+                issue: '전자투표 방식의 유효성',
+                requestedOutcome: 'procedure',
+            },
+        ],
+        lawAnchors: [
+            {
+                issueIds: ['ISSUE-1'],
+                exactName: '도시 및 주거환경정비법',
+                lawType: '법률',
+                articleLabels: ['제35조'],
+                issueTerms: ['공동소유자'],
+            },
+            {
+                issueIds: ['ISSUE-2'],
+                exactName: '도시 및 주거환경정비법',
+                lawType: '법률',
+                articleLabels: ['제35조'],
+                issueTerms: ['전자투표'],
+            },
+        ],
+        ordinanceRequirement: 'not_required',
+        ordinanceAnchors: [],
+        caseQueries: [
+            {
+                issueIds: ['ISSUE-1'],
+                lawNames: ['도시 및 주거환경정비법'],
+                articleLabels: ['제35조'],
+                issueTerms: ['공동소유자'],
+            },
+            {
+                issueIds: ['ISSUE-2'],
+                lawNames: ['도시 및 주거환경정비법'],
+                articleLabels: ['제35조'],
+                issueTerms: ['전자투표'],
+            },
+        ],
+    };
+    packet.planCoverageAudit = buildLegalPlanCoverageAuditV1(packet.question, reviewPlan);
+    const searches = buildCaseSearchQueriesV1(
+        packet.planCoverageAudit.normalizedPlan.caseQueries
+    );
+    packet.caseSearchAudit.lawNameQueries = searches.lawNameQueries;
+    packet.caseSearchAudit.issueQueries = searches.issueQueries;
+    packet.caseSearchAudit.executedBodyQueries = searches.executedBodyQueries;
+    const reviewCandidates: CaseReviewCandidateV1[] = Array.from(
+        { length: 12 },
+        (_, index) => {
+            const serial = String(400 - index);
+            return {
+                reviewOnly: true,
+                official: true,
+                verificationStatus: 'verified',
+                caseSerialId: serial,
+                caseName: `공동소유자 검토판례 ${serial}`,
+                caseNumber: `2024누${serial}`,
+                court: '서울고법',
+                decisionDate: `2024-08-${String(20 - index).padStart(2, '0')}`,
+                officialUrl: `https://www.law.go.kr/precInfoP.do?precSeq=${serial}`,
+                retrievedAt,
+                fullTextHash: 'd'.repeat(64),
+                fullTextVerified: true,
+                listingIdentityVerified: true,
+                currentLawFit: 'changed_rule',
+                useInConclusion: 'excluded',
+                issueIds: ['ISSUE-1'],
+                matches: [{
+                    issueId: 'ISSUE-1',
+                    lawName: '도시 및 주거환경정비법',
+                    issueTerm: '공동소유자',
+                    relevanceBasis: 'exact_law_and_strong_term',
+                    lawContextExcerpt: '도시 및 주거환경정비법의문언을 검토하였다.',
+                    issueContextExcerpt: '공동소유자의 대표조합원 지정 주장을 판단하였다.',
+                }],
+                excerptLabel: '판결문 발췌',
+            };
+        }
+    );
+    packet.caseReviewCandidates = reviewCandidates;
+    packet.caseSearchAudit.candidateCount = 14;
+    packet.caseSearchAudit.exclusions.currentLawMisaligned = 12;
+    packet.caseReviewAudit = {
+        requestedMax: 12,
+        candidatePoolCount: 14,
+        qualifiedCount: 12,
+        returnedCount: 12,
+        resultSort: 'decision_date_desc_case_serial_id_desc',
+        upstreamComplete: true,
+        latestScope: 'planned_streams_verified',
+        shortfallReason: null,
+        paddingApplied: false,
+        issues: [
+            { issueId: 'ISSUE-1', qualifiedCount: 12, returnedCount: 12 },
+            { issueId: 'ISSUE-2', qualifiedCount: 0, returnedCount: 0 },
+        ],
+    };
+    const answer = makeAnswer(packet);
+    const markdown = renderLegalAnswerV1(packet, answer);
+
+    assert.match(markdown, /검색상 최신 판례 검토 후보 — 결론·동일 쟁점 근거 아님/);
+    assert.equal(markdown.match(/검토 \d+\. \[/g)?.length, 12);
+    assert.match(markdown, /쟁점별 ISSUE-2: 반환 후보의 저장된 match 기준 0건 \(계획 stream 소진; 후보당 match 상한으로 미평가 가능\)/);
+    assert.match(markdown, /두 문맥이 같은 법률쟁점인지 여부 미검증/);
+    const sourceIndex = markdown.slice(markdown.indexOf('## 10. 공식 출처 색인'));
+    assert.doesNotMatch(sourceIndex, /precSeq=400/);
+    assert.doesNotMatch(answer.caseSynthesis.summary, /공동소유자 검토판례/);
+});
+
+test('판시사항 대체값은 생성된 판시사항이 아니라 판결문 발췌로 표시한다', () => {
+    const packet = makePacket();
+    packet.cases[0].holding = '조합설립 동의 요건을 판단한 판결문 문장';
+    packet.cases[0].reasoningSummary = packet.cases[0].holding;
+    packet.cases[0].holdingSource = 'official_full_text_excerpt';
+    const answer = makeAnswer(packet);
+    answer.sourceIndex = structuredClone([
+        ...packet.laws,
+        ...packet.ordinances,
+        ...packet.cases,
+    ]);
+    answer.caseSynthesis.evidenceQuotes[0].quote = packet.cases[0].holding;
+    const applicationCaseQuote = answer.applications[0].evidenceQuotes.find(
+        (quote) => quote.sourceId === packet.cases[0].sourceId
+    );
+    assert.ok(applicationCaseQuote);
+    applicationCaseQuote.quote = packet.cases[0].holding;
+
+    const markdown = renderLegalAnswerV1(packet, answer);
+
+    assert.match(markdown, /판결문 발췌: 조합설립 동의 요건을 판단한 판결문 문장/);
+    assert.doesNotMatch(markdown, /공식 판시사항: 조합설립 동의 요건을 판단한 판결문 문장/);
 });
 
 test('partial 패킷은 판례가 12건이어도 최신 12건 완결성 미증명을 숨기지 않는다', () => {
@@ -468,11 +637,15 @@ test('partial 패킷은 판례가 12건이어도 최신 12건 완결성 미증�
     packet.caseSearchAudit.returnedCount = 12;
     packet.caseSearchAudit.upstreamComplete = false;
     packet.caseSearchAudit.shortfallReason = null;
+    packet.caseReviewAudit.candidatePoolCount = 12;
     const answer = makeAnswer(packet);
     answer.status = 'partial';
     answer.conclusion.kind = 'conditional';
     answer.caseSynthesis = {
+        candidateCount: 12,
+        qualifiedCount: 12,
         returnedCount: 12,
+        exclusions: structuredClone(packet.caseSearchAudit.exclusions),
         summary: '확보된 적격 판례를 최신순으로 정리했다.',
         sourceIds: packet.cases.map((legalCase) => legalCase.sourceId),
         shortfallReason: null,

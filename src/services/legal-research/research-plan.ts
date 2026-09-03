@@ -7,6 +7,8 @@ const FACT_ID_PATTERN = /^FACT-[1-9][0-9]*$/;
 const ARTICLE_PATTERN = /^제\d+조(?:의\d+)?$/;
 const LOCAL_AUTHORITY_CODE_PATTERN = /^\d{2,12}$/;
 
+export const MAX_CASE_QUERY_STREAMS_V1 = 24;
+
 const forbiddenSearchValue = /(?:https?:\/\/|(?:^|[?&])(oc|token|key|target|nw|sort|display|page)=)/i;
 
 function normalizedSearchText(value: string): string {
@@ -15,6 +17,60 @@ function normalizedSearchText(value: string): string {
 
 function sortStrings(values: readonly string[]): string[] {
     return [...values].sort((left, right) => left.localeCompare(right, 'ko-KR'));
+}
+
+function normalizedSearchPhrase(value: string): string {
+    return value.normalize('NFKC').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * V1 wire compatibility keeps `issueQueries` as the planned raw issue terms.
+ * `executedBodyQueries` separately exposes the exact law/issue provider phrases.
+ */
+export function buildCaseSearchQueriesV1(caseQueries: readonly {
+    lawNames: readonly string[];
+    issueTerms: readonly string[];
+}[]): {
+    lawNameQueries: string[];
+    issueQueries: string[];
+    executedBodyQueries: string[];
+} {
+    const lawNameQueries: string[] = [];
+    const issueQueries: string[] = [];
+    const executedBodyQueries: string[] = [];
+    const seenLawNames = new Set<string>();
+    const seenIssueTerms = new Set<string>();
+    const seenCompositeQueries = new Set<string>();
+
+    for (const caseQuery of caseQueries) {
+        const normalizedIssueTerms = caseQuery.issueTerms.map(normalizedSearchPhrase);
+        for (const issueTerm of normalizedIssueTerms) {
+            if (!seenIssueTerms.has(issueTerm)) {
+                seenIssueTerms.add(issueTerm);
+                issueQueries.push(issueTerm);
+            }
+        }
+        for (const rawLawName of caseQuery.lawNames) {
+            const lawName = normalizedSearchPhrase(rawLawName);
+            if (!seenLawNames.has(lawName)) {
+                seenLawNames.add(lawName);
+                lawNameQueries.push(lawName);
+            }
+            for (const issueTerm of normalizedIssueTerms) {
+                const compositeQuery = normalizedSearchText(issueTerm).includes(
+                    normalizedSearchText(lawName)
+                )
+                    ? issueTerm
+                    : `${lawName} ${issueTerm}`;
+                if (!seenCompositeQueries.has(compositeQuery)) {
+                    seenCompositeQueries.add(compositeQuery);
+                    executedBodyQueries.push(compositeQuery);
+                }
+            }
+        }
+    }
+
+    return { lawNameQueries, issueQueries, executedBodyQueries };
 }
 
 export const LegalDateSchema = z
@@ -135,7 +191,13 @@ export const LegalResearchPlanV1Schema = z
                             .array(z.string().regex(ARTICLE_PATTERN))
                             .max(12)
                             .default([]),
-                        issueTerms: z.array(LegalSearchTermSchema).min(1).max(12),
+                        issueTerms: z
+                            .array(LegalSearchTermSchema)
+                            .min(1)
+                            .max(12)
+                            .describe(
+                                '각 검색어는 같은 caseQuery의 정확한 lawName과 결합한 `lawName issueTerm` 본문 검색에만 사용합니다. 단독 쟁점어 검색으로 완화하지 않습니다.'
+                            ),
                     })
                     .strict()
             )
@@ -246,16 +308,14 @@ export const LegalResearchPlanV1Schema = z
             }
         }
 
-        // 같은 문자열이어도 JO 법령명 stream과 본문 query stream은 별도 요청이다.
-        const caseStreamCount = new Set(
-            plan.caseQueries.flatMap((query) => query.lawNames)
-        ).size + new Set(
-            plan.caseQueries.flatMap((query) => query.issueTerms)
-        ).size;
-        if (caseStreamCount > 24) {
+        // 법령명+쟁점 복합 stream을 우선하고, 법령명-only 보완 stream도 함께 제한한다.
+        const caseSearchQueries = buildCaseSearchQueriesV1(plan.caseQueries);
+        const caseStreamCount = caseSearchQueries.executedBodyQueries.length
+            + caseSearchQueries.lawNameQueries.length;
+        if (caseStreamCount > MAX_CASE_QUERY_STREAMS_V1) {
             context.addIssue({
                 code: 'custom',
-                message: '판례 검색 stream은 중복 제거 후 최대 24개입니다.',
+                message: `판례 검색 stream은 법령명+쟁점 복합 검색과 법령명 보완 검색을 합쳐 중복 제거 후 최대 ${MAX_CASE_QUERY_STREAMS_V1}개입니다.`,
                 path: ['caseQueries'],
             });
         }

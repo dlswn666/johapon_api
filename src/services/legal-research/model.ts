@@ -9,9 +9,19 @@ import type { LegalResearchPlanV1 } from './research-plan';
 
 export const LEGAL_RESEARCH_PACKET_VERSION = 'LegalResearchPacketV1' as const;
 export const LEGAL_ANSWER_VERSION = 'LegalAnswerV1' as const;
-export const LEGAL_POLICY_VERSION = 'current-law-policy.v2' as const;
+export const LEGAL_POLICY_VERSION = 'current-law-policy.v4' as const;
+/** MCP packet/proof 전송 전 서버와 domain validator가 함께 적용하는 UTF-8 상한. */
+export const LEGAL_RESEARCH_PACKET_MAX_BYTES = 128 * 1024;
 /** 사용자가 요청한 "10건 초과" 목록을 제공하기 위한 운영 목표 상한. */
 export const MAX_RELEVANT_CASES = 12;
+/** 결론·동일 쟁점 근거와 격리해 표시하는 검색상 최신 판례 검토 후보 상한. */
+export const MAX_CASE_REVIEW_CANDIDATES = 12;
+/** UTF-8 128KiB 전송 예산을 지키기 위한 후보별 쟁점 증거 상한. */
+export const MAX_CASE_REVIEW_MATCHES_PER_CANDIDATE = 2;
+/** 결론 판례의 공식 판시사항·판결요지 또는 전문 발췌별 문자 상한. */
+export const MAX_CASE_SOURCE_TEXT_CHARS = 500;
+/** 검토 판례의 법령·쟁점 문맥 exact substring별 문자 상한. */
+export const MAX_CASE_REVIEW_EXCERPT_CHARS = 300;
 
 export const LEGAL_DISCLAIMER =
     '이 답변은 국가법령정보센터의 현행 법령·자치법규·판례를 바탕으로 근거와 형식을 검증해 정리한 일반 정보입니다. 이 검증은 LLM이 작성한 법률 해석의 타당성을 자동 보증하지 않으며, 구체적 사건에 대한 법률자문을 대신하지 않습니다.';
@@ -171,6 +181,8 @@ export interface CaseSourceV1 extends SourceBaseV1 {
     decisionDate: string;
     disposition?: string;
     holding: string;
+    /** holding이 공식 판시사항인지, 판결문에서 그대로 잘라낸 발췌인지 구분한다. */
+    holdingSource: 'official_holdings' | 'official_full_text_excerpt';
     reasoningSummary: string;
     referencedProvisions: string[];
     fullTextVerified: boolean;
@@ -178,6 +190,52 @@ export interface CaseSourceV1 extends SourceBaseV1 {
     relevance: CaseRelevanceV1;
     currentLawFit: CaseCurrentLawFitV1;
     useInConclusion: CaseUseInConclusionV1;
+}
+
+export type CaseReviewRelevanceBasisV1 =
+    | 'exact_law_and_strong_term'
+    | 'exact_law_target_article_and_issue_family';
+
+export interface CaseReviewMatchV1 {
+    issueId: string;
+    lawName: string;
+    issueTerm: string;
+    articleLabel?: string;
+    relevanceBasis: CaseReviewRelevanceBasisV1;
+    /** 정확한 현행 본법 명칭을 포함하는 짧은 판결문 exact substring. */
+    lawContextExcerpt: string;
+    /**
+     * strong-term 경로에서 쟁점어를 포함하는 별도의 exact substring.
+     * 법령명 문맥과 동일한 법률쟁점이라는 의미는 아니며 renderer가 이를 명시한다.
+     * 대상 조문+쟁점군 경로는 lawContextExcerpt 하나에 모든 anchor가 있어 생략한다.
+     */
+    issueContextExcerpt?: string;
+}
+
+/**
+ * 현행 규정 정합성을 통과하지 못해 결론에 쓸 수는 없지만,
+ * 정확한 법령명과 질문 쟁점의 이중 앵커를 전문에서 확인한 검토용 판례다.
+ * sourceId를 의도적으로 두지 않아 LegalSource/sourceIndex에 삽입할 수 없게 한다.
+ */
+export interface CaseReviewCandidateV1 {
+    reviewOnly: true;
+    official: true;
+    verificationStatus: 'verified';
+    caseSerialId: string;
+    caseName: string;
+    caseNumber: string;
+    court: string;
+    decisionDate: string;
+    officialUrl: string;
+    retrievedAt: string;
+    fullTextHash: string;
+    fullTextVerified: true;
+    listingIdentityVerified: true;
+    currentLawFit: 'changed_rule' | 'unknown';
+    useInConclusion: 'excluded';
+    issueIds: string[];
+    matches: CaseReviewMatchV1[];
+    excerptLabel: '판결문 발췌';
 }
 
 export type LegalSourceV1 = LawSourceV1 | OrdinanceSourceV1 | CaseSourceV1;
@@ -239,11 +297,32 @@ export interface CaseSearchAuditV1 {
     resultSort: 'decision_date_desc_case_serial_id_desc';
     lawNameQueries: string[];
     issueQueries: string[];
+    /** Additive V1 audit field containing exact provider body queries when case search ran. */
+    executedBodyQueries?: string[];
     relevancePolicyVersion: string;
     queryRelaxedToFill: boolean;
     upstreamComplete: boolean;
     shortfallReason: CaseShortfallReasonV1 | null;
     exclusions: CaseExclusionCountsV1;
+}
+
+export interface CaseReviewIssueAuditV1 {
+    issueId: string;
+    qualifiedCount: number;
+    returnedCount: number;
+}
+
+export interface CaseReviewAuditV1 {
+    requestedMax: typeof MAX_CASE_REVIEW_CANDIDATES;
+    candidatePoolCount: number;
+    qualifiedCount: number;
+    returnedCount: number;
+    resultSort: 'decision_date_desc_case_serial_id_desc';
+    upstreamComplete: boolean;
+    latestScope: 'planned_streams_verified' | 'reviewed_candidate_pool';
+    shortfallReason: 'official_results_exhausted' | 'upstream_incomplete' | null;
+    paddingApplied: false;
+    issues: CaseReviewIssueAuditV1[];
 }
 
 export interface LegalUnknownV1 {
@@ -269,10 +348,12 @@ export interface LegalResearchPacketV1 {
     laws: LawSourceV1[];
     ordinances: OrdinanceSourceV1[];
     cases: CaseSourceV1[];
+    caseReviewCandidates: CaseReviewCandidateV1[];
     lawSearchAudit: LawSearchAuditV1;
     ordinanceSearchAudit: OrdinanceSearchAuditV1;
     planCoverageAudit: PlanCoverageAuditV1;
     caseSearchAudit: CaseSearchAuditV1;
+    caseReviewAudit: CaseReviewAuditV1;
     unknowns: LegalUnknownV1[];
     provenance: LegalResearchProvenanceV1;
 }
@@ -306,7 +387,10 @@ export interface LegalOrdinanceAnalysisV1 {
 }
 
 export interface LegalCaseSynthesisV1 {
+    candidateCount: number;
+    qualifiedCount: number;
     returnedCount: number;
+    exclusions: CaseExclusionCountsV1;
     summary: string;
     sourceIds: string[];
     shortfallReason: CaseShortfallReasonV1 | null;
@@ -353,6 +437,8 @@ export interface LegalAnswerV1 {
     ruleClaims: LegalRuleClaimV1[];
     ordinanceAnalysis: LegalOrdinanceAnalysisV1[];
     caseSynthesis: LegalCaseSynthesisV1;
+    caseReviewCandidates: CaseReviewCandidateV1[];
+    caseReviewAudit: CaseReviewAuditV1;
     applications: LegalApplicationV1[];
     temporalReview: LegalTemporalReviewV1;
     unknowns: LegalUnknownV1[];

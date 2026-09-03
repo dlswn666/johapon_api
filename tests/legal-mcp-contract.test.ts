@@ -44,6 +44,17 @@ import {
     createLegalPacketProofV1,
     packetProofSubjectV1,
 } from '../src/services/legal-research/packet-proof';
+import {
+    LEGAL_ANSWER_DRAFT_MAX_BYTES,
+    LegalAnswerDraftV1Schema,
+} from '../src/services/legal-research/answer-draft';
+import {
+    LEGAL_RESEARCH_PACKET_MAX_BYTES,
+    MAX_CASE_REVIEW_CANDIDATES,
+    MAX_CASE_REVIEW_EXCERPT_CHARS,
+    MAX_CASE_REVIEW_MATCHES_PER_CANDIDATE,
+    MAX_CASE_SOURCE_TEXT_CHARS,
+} from '../src/services/legal-research/model';
 
 const PROTOCOL_VERSION = '2026-07-28';
 const RAW_TOKEN = 'legal-mcp-contract-token';
@@ -468,7 +479,7 @@ describe('법률 MCP 공개 계약', () => {
         assert.equal(LEGAL_POLICY_RESOURCE_URI, 'tonghari-law://policy/current-answer/v1');
         assert.equal(
             resources.body.result.resources[0].title,
-            '현행 정비사업 법률 답변 정책 v2'
+            '현행 정비사업 법률 답변 정책 v4'
         );
         assert.equal(
             resources.body.result.resources[0].annotations.lastModified,
@@ -484,7 +495,7 @@ describe('법률 MCP 공개 계약', () => {
         );
         assert.match(
             resource.body.result.contents[0].text,
-            /^# 현행 정비사업 법률 답변 정책 v2/
+            /^# 현행 정비사업 법률 답변 정책 v4/
         );
         assert.match(
             resource.body.result.contents[0].text,
@@ -723,6 +734,143 @@ describe('법률 MCP 공개 계약', () => {
                 (error: unknown) => error instanceof Error
                     && error.name === 'LegalMcpRouteConfigurationError'
             );
+        }
+    });
+
+    it('128KiB packet과 96KiB 이하 draft의 대표 최대 조합은 256kb HTTP parser를 통과한다', async () => {
+        const generatedMaxShapePacket = {
+            contractVersion: 'LegalResearchPacketV1',
+            packetId: 'packet-generated-max-shape',
+            status: 'partial',
+            scope: { asOfDate: '2026-08-31' },
+            provenance: { generatedAt: '2026-08-31T03:00:00.000Z' },
+            cases: Array.from({ length: 12 }, (_, index) => ({
+                caseSerialId: String(90_000 + index),
+                caseName: `결론근거판례${index}`,
+                caseNumber: `2026두${index}`,
+                court: '대법원',
+                holding: '가'.repeat(MAX_CASE_SOURCE_TEXT_CHARS),
+                reasoningSummary: '나'.repeat(MAX_CASE_SOURCE_TEXT_CHARS),
+            })),
+            caseReviewCandidates: Array.from(
+                { length: MAX_CASE_REVIEW_CANDIDATES },
+                (_, candidateIndex) => ({
+                    caseSerialId: String(80_000 + candidateIndex),
+                    caseName: `검토판례${candidateIndex}`,
+                    caseNumber: `2025누${candidateIndex}`,
+                    court: '서울고법',
+                    matches: Array.from(
+                        { length: MAX_CASE_REVIEW_MATCHES_PER_CANDIDATE },
+                        (_, matchIndex) => ({
+                            issueId: `ISSUE-${matchIndex + 1}`,
+                            lawName: '도시 및 주거환경정비법',
+                            issueTerm: '공동소유자',
+                            relevanceBasis: 'exact_law_and_strong_term',
+                            lawContextExcerpt: '다'.repeat(MAX_CASE_REVIEW_EXCERPT_CHARS),
+                            issueContextExcerpt: '라'.repeat(MAX_CASE_REVIEW_EXCERPT_CHARS),
+                        })
+                    ),
+                })
+            ),
+        };
+        assert.ok(
+            Buffer.byteLength(JSON.stringify(generatedMaxShapePacket), 'utf8')
+                < LEGAL_RESEARCH_PACKET_MAX_BYTES
+        );
+
+        const boundedPacket = {
+            contractVersion: 'LegalResearchPacketV1',
+            packetId: 'packet-1',
+            status: 'complete',
+            scope: { asOfDate: '2026-08-31' },
+            provenance: { generatedAt: '2026-08-31T03:00:00.000Z' },
+            payload: 'x'.repeat(120 * 1024),
+        };
+        const boundedDraft = {
+            ...VALID_ANSWER_DRAFT,
+            ruleClaims: Array.from({ length: 16 }, (_, index) => ({
+                claimId: `rule-${index + 1}`,
+                text: '가'.repeat(1_000),
+                sourceIds: ['law-1'],
+                evidenceQuotes: [{ sourceId: 'law-1', quote: '나'.repeat(300) }],
+            })),
+            warnings: Array.from({ length: 12 }, (_, index) => ({
+                code: `BOUND_${index + 1}`,
+                text: '다'.repeat(500),
+            })),
+        };
+        assert.equal(LegalAnswerDraftV1Schema.safeParse(boundedDraft).success, true);
+        assert.ok(
+            Buffer.byteLength(JSON.stringify(boundedPacket), 'utf8')
+                <= LEGAL_RESEARCH_PACKET_MAX_BYTES
+        );
+        assert.ok(
+            Buffer.byteLength(JSON.stringify(boundedDraft), 'utf8')
+                <= LEGAL_ANSWER_DRAFT_MAX_BYTES
+        );
+        const proof = createLegalPacketProofV1(
+            boundedPacket,
+            packetProofSubjectV1(LEGAL_MCP_CLIENT_ID, TOKEN_SHA256),
+            PACKET_SIGNING_KEY
+        );
+        const representativeEnvelope = {
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: {
+                name: LEGAL_RENDER_TOOL_NAME,
+                arguments: {
+                    packet: boundedPacket,
+                    packetProof: proof,
+                    answerDraft: boundedDraft,
+                },
+                _meta: REQUEST_META,
+            },
+        };
+        const emptyPayloadEnvelope = {
+            ...representativeEnvelope,
+            params: {
+                ...representativeEnvelope.params,
+                arguments: {
+                    packet: {},
+                    packetProof: proof,
+                    answerDraft: {},
+                },
+            },
+        };
+        const envelopeStructuralBytes = Buffer.byteLength(
+            JSON.stringify(emptyPayloadEnvelope),
+            'utf8'
+        ) - Buffer.byteLength('{}', 'utf8') * 2;
+        assert.ok(
+            LEGAL_RESEARCH_PACKET_MAX_BYTES
+                + LEGAL_ANSWER_DRAFT_MAX_BYTES
+                + envelopeStructuralBytes
+                < 256 * 1024
+        );
+        assert.ok(
+            Buffer.byteLength(JSON.stringify(representativeEnvelope), 'utf8')
+                < 256 * 1024
+        );
+
+        const boundedEndpoint = await startEndpoint(dependencies);
+        try {
+            const result = await mcpRequest(
+                boundedEndpoint.baseUrl,
+                'tools/call',
+                {
+                    name: LEGAL_RENDER_TOOL_NAME,
+                    arguments: {
+                        packet: boundedPacket,
+                        packetProof: proof,
+                        answerDraft: boundedDraft,
+                    },
+                }
+            );
+            assert.equal(result.response.status, 200);
+            assert.equal(result.body.result.isError, undefined);
+        } finally {
+            await boundedEndpoint.close();
         }
     });
 
