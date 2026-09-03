@@ -400,7 +400,7 @@ describe('LegalResearchOrchestratorV1', () => {
             && unknown.blocking));
     });
 
-    it('전문 관련성 gate 뒤 최신 판례 10건만 반환한다', async () => {
+    it('전문 관련성 gate 뒤 최신 판례 12건만 반환한다', async () => {
         const caseItems = Array.from({ length: 12 }, (_, index) =>
             makeCase(200 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
 
@@ -408,8 +408,8 @@ describe('LegalResearchOrchestratorV1', () => {
 
         assert.equal(packet.status, 'complete');
         assert.equal(packet.laws.length, 1);
-        assert.equal(packet.cases.length, 10);
-        assert.equal(packet.caseSearchAudit.requestedMax, 10);
+        assert.equal(packet.cases.length, 12);
+        assert.equal(packet.caseSearchAudit.requestedMax, 12);
         assert.equal(packet.caseSearchAudit.listSort, 'ddes');
         assert.equal(packet.caseSearchAudit.shortfallReason, null);
         assert.ok(packet.cases.every((legalCase) =>
@@ -437,6 +437,19 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.equal(packet.laws[0].mst, lawSummary.mst);
     });
 
+    it('현행법령 목록의 currentHistoryCode가 연혁이면 SCHEMA_DRIFT로 fail-closed 한다', async () => {
+        await assert.rejects(
+            () => buildOrchestrator([makeCase(214, '2026-08-20')], {
+                currentLawSummary: {
+                    ...lawSummary,
+                    currentHistoryCode: '연혁',
+                },
+            }).research(input),
+            (error: unknown) => error instanceof LegalOpenApiError
+                && error.code === 'SCHEMA_DRIFT'
+        );
+    });
+
     it('법령ID 조회 결과의 시행일이 검색 버전과 다르면 SOURCE_MISMATCH로 닫는다', async () => {
         const provider = new FakeProvider([makeCase(213, '2026-08-20')], {
             currentLawDetail: {
@@ -453,7 +466,7 @@ describe('LegalResearchOrchestratorV1', () => {
         );
     });
 
-    it('현행 규정 시행 전 판례로 10건을 채우지 않는다', async () => {
+    it('현행 규정 시행 전 판례로 12건을 채우지 않는다', async () => {
         const currentCases = Array.from({ length: 7 }, (_, index) =>
             makeCase(300 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
         const oldCases = [
@@ -632,7 +645,7 @@ describe('LegalResearchOrchestratorV1', () => {
             },
         }).research({
             ...input,
-            question: '조합 총회 전자투표 의결 방법은?',
+            question: '조합설립과 조합 총회 전자투표 의결 방법은?',
             researchPlan: {
                 ...input.researchPlan,
                 issues: [
@@ -653,12 +666,15 @@ describe('LegalResearchOrchestratorV1', () => {
                         issueTerms: ['전자투표'],
                     },
                 ],
-                caseQueries: [{
-                    issueIds: ['ISSUE-1', 'ISSUE-2'],
-                    lawNames: [lawSummary.name],
-                    articleLabels: ['제45조'],
-                    issueTerms: ['전자투표'],
-                }],
+                caseQueries: [
+                    input.researchPlan.caseQueries[0],
+                    {
+                        issueIds: ['ISSUE-2'],
+                        lawNames: [lawSummary.name],
+                        articleLabels: ['제45조'],
+                        issueTerms: ['전자투표'],
+                    },
+                ],
             },
         });
 
@@ -667,6 +683,73 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.deepEqual(packet.cases[0].relevance.matchedProvisions, [
             '도시 및 주거환경정비법 제45조',
         ]);
+        assert.deepEqual(packet.cases[0].relevance.matchedIssues, ['ISSUE-2']);
+    });
+
+    it('판례 query는 같은 issueId의 resolved law anchor만 근거로 사용한다', async () => {
+        const electronicVoteArticle: CurrentLawDetail['articles'][number] = {
+            articleNumber: '45',
+            title: '총회의 의결',
+            content: '제45조 총회의 전자투표와 의결 방법을 정한다.',
+            isArticle: true,
+            paragraphs: [],
+        };
+        const summary = makeCase(606, '2026-08-20');
+        const packet = await buildOrchestrator([summary], {
+            currentLawDetail: {
+                ...lawDetail,
+                articles: [...lawDetail.articles, electronicVoteArticle],
+            },
+            detailFactory(value) {
+                return {
+                    ...detailFor(value),
+                    holdings: '조합설립 절차가 문제된 사안',
+                    summary: '조합설립 절차에 관한 판결요지',
+                    referenceProvisions: '도시 및 주거환경정비법 제45조',
+                    fullText: '조합설립 절차에 관한 판례 전문 내용',
+                };
+            },
+        }).research({
+            ...input,
+            question: '조합설립과 총회 전자투표 절차는?',
+            researchPlan: {
+                ...input.researchPlan,
+                issues: [
+                    ...input.researchPlan.issues,
+                    {
+                        issueId: 'ISSUE-2',
+                        issue: '총회 전자투표 절차',
+                        requestedOutcome: 'procedure',
+                    },
+                ],
+                lawAnchors: [
+                    input.researchPlan.lawAnchors[0],
+                    {
+                        issueIds: ['ISSUE-2'],
+                        exactName: lawSummary.name,
+                        lawType: '법률',
+                        articleLabels: ['제45조'],
+                        issueTerms: ['전자투표'],
+                    },
+                ],
+                caseQueries: [
+                    {
+                        ...input.researchPlan.caseQueries[0],
+                        articleLabels: [],
+                    },
+                    {
+                        issueIds: ['ISSUE-2'],
+                        lawNames: [lawSummary.name],
+                        articleLabels: ['제45조'],
+                        issueTerms: ['전자투표'],
+                    },
+                ],
+            },
+        });
+
+        assert.equal(packet.laws.length, 2);
+        assert.deepEqual(packet.cases, []);
+        assert.equal(packet.caseSearchAudit.exclusions.irrelevant, 1);
     });
 
     it('법령 identity는 일치하지만 지정 조문이 없으면 tool 오류가 아닌 근거 부족 패킷으로 닫는다', async () => {
@@ -757,7 +840,7 @@ describe('LegalResearchOrchestratorV1', () => {
     });
 
     it('판례 상세 한 건 실패는 다른 최신 적격 판례를 폐기하지 않고 partial 감사로 남긴다', async () => {
-        const caseItems = Array.from({ length: 11 }, (_, index) =>
+        const caseItems = Array.from({ length: 13 }, (_, index) =>
             makeCase(700 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
         const failedId = caseItems[0].caseSerialId;
         const provider = new FakeProvider(caseItems, { failingDetailIds: [failedId] });
@@ -765,18 +848,18 @@ describe('LegalResearchOrchestratorV1', () => {
         const packet = await buildOrchestratorWithProvider(provider).research(input);
 
         assert.equal(packet.status, 'partial');
-        assert.equal(packet.cases.length, 10);
+        assert.equal(packet.cases.length, 12);
         assert.equal(packet.caseSearchAudit.upstreamComplete, false);
         assert.equal(packet.caseSearchAudit.exclusions.fullTextUnavailable, 1);
         assert.equal(packet.caseSearchAudit.shortfallReason, null);
-        assert.equal(provider.caseDetailIds.length, 11);
+        assert.equal(provider.caseDetailIds.length, 13);
     });
 
-    it('검색에는 있으나 상세가 없는 판례 2건을 제외하고 최신 적격 10건을 계속 찾는다', async () => {
+    it('검색에는 있으나 상세가 없는 판례 2건을 제외하고 최신 적격 12건을 계속 찾는다', async () => {
         const caseItems = [
             makeCase(622797, '2026-08-20'),
             makeCase(618379, '2026-08-19'),
-            ...Array.from({ length: 10 }, (_, index) =>
+            ...Array.from({ length: 12 }, (_, index) =>
                 makeCase(720 + index, `2026-08-${String(18 - index).padStart(2, '0')}`)),
         ];
         const provider = new FakeProvider(caseItems, {
@@ -787,14 +870,14 @@ describe('LegalResearchOrchestratorV1', () => {
         const packet = await buildOrchestratorWithProvider(provider).research(input);
 
         assert.equal(packet.status, 'partial');
-        assert.equal(packet.cases.length, 10);
+        assert.equal(packet.cases.length, 12);
         assert.equal(packet.caseSearchAudit.upstreamComplete, false);
         assert.equal(packet.caseSearchAudit.exclusions.fullTextUnavailable, 2);
         assert.equal(packet.caseSearchAudit.shortfallReason, null);
-        assert.equal(provider.caseDetailIds.length, 12);
+        assert.equal(provider.caseDetailIds.length, 14);
     });
 
-    it('상세 누락 뒤 적격 판례가 10건 미만이면 upstream_incomplete를 명시한다', async () => {
+    it('상세 누락 뒤 적격 판례가 12건 미만이면 upstream_incomplete를 명시한다', async () => {
         const caseItems = Array.from({ length: 5 }, (_, index) =>
             makeCase(760 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
         const provider = new FakeProvider(caseItems, {
@@ -884,7 +967,7 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.equal(provider.caseDetailIds.length, 4);
     });
 
-    it('10건 미만이면 totalCount 범위의 후속 페이지를 탐색하고 실제 적격 수만 반환한다', async () => {
+    it('12건 미만이면 totalCount 범위의 후속 페이지를 탐색하고 실제 적격 수만 반환한다', async () => {
         const caseItems = Array.from({ length: 12 }, (_, index) =>
             makeCase(800 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
         const firstPageIds = new Set(caseItems.slice(0, 4).map((item) => item.caseSerialId));
@@ -947,9 +1030,9 @@ describe('LegalResearchOrchestratorV1', () => {
             makeCase(2000 + index, '2026-08-20'));
         const hiddenLatest = Array.from({ length: 4 }, (_, index) =>
             makeCase(3000 + index, '2026-07-19'));
-        const issueEligible = Array.from({ length: 10 }, (_, index) =>
+        const issueEligible = Array.from({ length: 12 }, (_, index) =>
             makeCase(4000 + index, '2026-02-20'));
-        const issueIrrelevant = Array.from({ length: 90 }, (_, index) =>
+        const issueIrrelevant = Array.from({ length: 88 }, (_, index) =>
             makeCase(5000 + index, '2024-08-20'));
         const allCases = [
             ...lawFirstPage,
@@ -1000,7 +1083,7 @@ describe('LegalResearchOrchestratorV1', () => {
         const packet = await buildOrchestratorWithProvider(provider).research(input);
 
         assert.ok(calls.includes('law:2'));
-        assert.equal(packet.cases.length, 10);
+        assert.equal(packet.cases.length, 12);
         assert.deepEqual(
             packet.cases.slice(0, 4).map((legalCase) => legalCase.caseSerialId),
             [...hiddenLatest]
@@ -1139,10 +1222,10 @@ describe('LegalResearchOrchestratorV1', () => {
         assert.equal(packet.caseSearchAudit.upstreamComplete, false);
     });
 
-    it('120건 예산에서 쟁점어 후보를 법령명-only 후보보다 먼저 검증해 적격 10건을 보존한다', async () => {
+    it('120건 예산에서 쟁점어 후보를 법령명-only 후보보다 먼저 검증해 적격 12건을 보존한다', async () => {
         const lawOnly = Array.from({ length: 120 }, (_, index) =>
             makeCase(7000 + index, '2026-08-30'));
-        const issueCandidates = Array.from({ length: 10 }, (_, index) =>
+        const issueCandidates = Array.from({ length: 12 }, (_, index) =>
             makeCase(8000 + index, `2026-08-${String(20 - index).padStart(2, '0')}`));
         const allCases = [...lawOnly, ...issueCandidates];
         const detailIds: string[] = [];
@@ -1191,10 +1274,10 @@ describe('LegalResearchOrchestratorV1', () => {
 
         const packet = await buildOrchestratorWithProvider(provider).research(input);
 
-        assert.deepEqual(detailIds.slice(0, 10), issueCandidates.map((item) => item.caseSerialId));
+        assert.deepEqual(detailIds.slice(0, 12), issueCandidates.map((item) => item.caseSerialId));
         assert.ok(searchCalls.includes('law:2'));
         assert.equal(detailIds.length, 120);
-        assert.equal(packet.cases.length, 10);
+        assert.equal(packet.cases.length, 12);
         assert.deepEqual(
             packet.cases.map((legalCase) => legalCase.caseSerialId),
             issueCandidates.map((item) => item.caseSerialId)

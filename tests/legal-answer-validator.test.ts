@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT,
     LEGAL_ANSWER_VERSION,
     LEGAL_DISCLAIMER,
     LEGAL_POLICY_VERSION,
@@ -186,7 +187,7 @@ function makePacket(): LegalResearchPacketV1 {
             packetResearchPlan
         ),
         caseSearchAudit: {
-            requestedMax: 10,
+            requestedMax: 12,
             candidateCount: 2,
             qualifiedCount: 2,
             returnedCount: 2,
@@ -680,22 +681,63 @@ test('판례 후보만으로 확정 결론이나 사실 적용을 만들 수 없
     assert.ok(errorCodes(result).includes('CURRENT_RULE_SOURCE_REQUIRED'));
 });
 
-test('blocking unknown 또는 과거 법령 필요 상태에서는 supported 결론을 금지한다', () => {
+test('blocking unknown이 있으면 supported와 conditional을 모두 금지하고 cannot_conclude만 허용한다', () => {
     const packet = makePacket();
     packet.status = 'insufficient_evidence';
     packet.unknowns = [{
-        code: 'HISTORICAL_LAW_REQUIRED',
-        text: '사건 당시 법령이 필요하다.',
-        impact: '결론을 확정할 수 없다.',
+        code: 'MISSING_REPRESENTATIVE_DESIGNATION',
+        text: '공동소유자의 대표자 지정 여부가 확인되지 않았다.',
+        impact: '전자투표의 유효성을 확정할 수 없다.',
         blocking: true,
     }];
     const answer = makeAnswer(packet);
     answer.status = packet.status;
     answer.unknowns = structuredClone(packet.unknowns);
-    answer.temporalReview.historicalLawRequired = true;
     const result = validateLegalAnswerV1(answer, packet);
     assert.equal(result.ok, false);
-    assert.ok(errorCodes(result).includes('UNSUPPORTED_CONCLUSION'));
+    assert.ok(errorCodes(result).includes('BLOCKING_UNKNOWN_REQUIRES_CANNOT_CONCLUDE'));
+
+    answer.conclusion.kind = 'conditional';
+    const conditional = validateLegalAnswerV1(answer, packet);
+    assert.equal(conditional.ok, false);
+    assert.ok(errorCodes(conditional).includes('BLOCKING_UNKNOWN_REQUIRES_CANNOT_CONCLUDE'));
+
+    answer.conclusion.kind = 'cannot_conclude';
+    const hiddenAssertion = validateLegalAnswerV1(answer, packet);
+    assert.equal(hiddenAssertion.ok, false);
+    assert.ok(errorCodes(hiddenAssertion).includes('BLOCKING_UNKNOWN_CONCLUSION_NOT_SERVER_FIXED'));
+    assert.ok(errorCodes(hiddenAssertion).includes('BLOCKING_UNKNOWN_APPLICATIONS_FORBIDDEN'));
+
+    answer.conclusion = {
+        kind: 'cannot_conclude',
+        text: LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT,
+        sourceIds: [],
+        evidenceQuotes: [],
+    };
+    answer.applications = [];
+    const cannotConclude = validateLegalAnswerV1(answer, packet);
+    assert.equal(cannotConclude.ok, true, JSON.stringify(cannotConclude.errors, null, 2));
+});
+
+test('packet의 blocking unknown을 답변에서 숨겨도 서버 고정 결론 경계를 우회할 수 없다', () => {
+    const packet = makePacket();
+    packet.status = 'insufficient_evidence';
+    packet.unknowns = [{
+        code: 'MISSING_REPRESENTATIVE_DESIGNATION',
+        text: '공동소유자의 대표자 지정 여부가 확인되지 않았다.',
+        impact: '전자투표의 유효성을 확정할 수 없다.',
+        blocking: true,
+    }];
+    const answer = makeAnswer(packet);
+    answer.status = packet.status;
+    answer.unknowns = [];
+    answer.conclusion.kind = 'cannot_conclude';
+
+    const result = validateLegalAnswerV1(answer, packet);
+    assert.equal(result.ok, false);
+    assert.ok(errorCodes(result).includes('UNKNOWNS_PACKET_MISMATCH'));
+    assert.ok(errorCodes(result).includes('BLOCKING_UNKNOWN_CONCLUSION_NOT_SERVER_FIXED'));
+    assert.ok(errorCodes(result).includes('BLOCKING_UNKNOWN_APPLICATIONS_FORBIDDEN'));
 });
 
 test('temporal_scope_conflict 답변은 적용 판단을 current_rule_applies로 표시할 수 없다', () => {

@@ -1,6 +1,7 @@
 import * as z from 'zod/v4';
 import {
     LEGAL_ANSWER_VERSION,
+    LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT,
     LEGAL_DISCLAIMER,
     type LegalAnswerV1,
     type LegalResearchPacketV1,
@@ -92,13 +93,13 @@ const ConclusionSchema = z
     .object({
         kind: z
             .enum(['supported', 'conditional', 'cannot_conclude'])
-            .describe('complete이고 blocking 미확인 사항이 없을 때만 supported이며, partial 또는 blocking 상태에서는 conditional이나 cannot_conclude를 사용합니다.'),
+            .describe('complete이고 blocking 미확인 사항이 없을 때만 supported입니다. blocking 미확인 사항이 있으면 반드시 cannot_conclude를 사용하고, 차단 사유 없는 partial에만 conditional을 사용할 수 있습니다.'),
         text: z
             .string()
             .trim()
             .min(1)
             .max(LEGAL_ANSWER_DRAFT_LIMITS.conclusionTextLength)
-            .describe('검토 결과를 먼저 제시하는 간결한 결론 문장입니다.'),
+            .describe('검토 결과를 먼저 제시하는 간결한 결론 문장입니다. blocking 미확인 사항이 있으면 서버 고정 유보 문장으로 교체됩니다.'),
         sourceIds: SourceIdsSchema.describe('결론을 직접 뒷받침하는 packet sourceId 목록입니다.'),
         evidenceQuotes: EvidenceQuotesSchema.describe('결론을 직접 뒷받침하는 공식 원문 인용입니다.'),
     })
@@ -255,7 +256,7 @@ export const LegalAnswerDraftV1Schema = z
         applications: z
             .array(ApplicationSchema)
             .max(LEGAL_ANSWER_DRAFT_LIMITS.applicationCount)
-            .describe('packet factId와 sourceId를 연결한 사실 적용 판단 목록입니다.'),
+            .describe('packet factId와 sourceId를 연결한 사실 적용 판단 목록입니다. blocking 미확인 사항이 있으면 서버가 렌더링 전에 비웁니다.'),
         temporalReview: TemporalReviewSchema.describe('사건일과 시행일을 비교한 시점 검토입니다.'),
         warnings: z
             .array(WarningSchema)
@@ -284,11 +285,21 @@ export function buildLegalAnswerFromDraftV1(
     draftInput: unknown
 ): LegalAnswerV1 {
     const draft = LegalAnswerDraftV1Schema.parse(draftInput);
+    const hasBlockingUnknown = packet.unknowns.some((unknown) => unknown.blocking);
+    const useServerControlledDeferral = hasBlockingUnknown
+        && draft.conclusion.kind === 'cannot_conclude';
     const answer: LegalAnswerV1 = {
         contractVersion: LEGAL_ANSWER_VERSION,
         packetId: packet.packetId,
         status: packet.status,
-        conclusion: draft.conclusion,
+        conclusion: useServerControlledDeferral
+            ? {
+                kind: 'cannot_conclude',
+                text: LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT,
+                sourceIds: [],
+                evidenceQuotes: [],
+            }
+            : draft.conclusion,
         scope: structuredClone(packet.scope),
         facts: structuredClone(packet.facts),
         ruleClaims: draft.ruleClaims,
@@ -308,7 +319,7 @@ export function buildLegalAnswerFromDraftV1(
                 issueQueries: structuredClone(packet.caseSearchAudit.issueQueries),
             },
         },
-        applications: draft.applications,
+        applications: useServerControlledDeferral ? [] : draft.applications,
         temporalReview: draft.temporalReview,
         unknowns: structuredClone(packet.unknowns),
         warnings: draft.warnings,

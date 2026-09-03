@@ -1,6 +1,7 @@
 import {
     LEGAL_ANSWER_SECTION_HEADINGS,
     LEGAL_ANSWER_VERSION,
+    LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT,
     LEGAL_DISCLAIMER,
     LEGAL_RESEARCH_PACKET_VERSION,
     MAX_RELEVANT_CASES,
@@ -788,10 +789,10 @@ export function validateLegalResearchPacketV1(input: unknown): LegalValidationRe
             issue(issues, 'CASE_ORDER_INVALID', '$.caseSearchAudit.resultSort', '판례 정렬 계약이 올바르지 않습니다.');
         }
         if (audit.requestedMax !== MAX_RELEVANT_CASES) {
-            issue(issues, 'CASE_MAX_POLICY_INVALID', '$.caseSearchAudit.requestedMax', '최대 반환 수는 10으로 고정됩니다.');
+            issue(issues, 'CASE_MAX_POLICY_INVALID', '$.caseSearchAudit.requestedMax', `최대 반환 수는 ${MAX_RELEVANT_CASES}로 고정됩니다.`);
         }
         if (audit.queryRelaxedToFill !== false) {
-            issue(issues, 'CASE_PADDING_DETECTED', '$.caseSearchAudit.queryRelaxedToFill', '10건을 채우기 위한 검색 완화는 금지됩니다.');
+            issue(issues, 'CASE_PADDING_DETECTED', '$.caseSearchAudit.queryRelaxedToFill', `${MAX_RELEVANT_CASES}건을 채우기 위한 검색 완화는 금지됩니다.`);
         }
         if (auditedPlan) {
             const expectedLawQueries = [...new Set(
@@ -826,17 +827,17 @@ export function validateLegalResearchPacketV1(input: unknown): LegalValidationRe
                 issue(issues, 'CASE_RETURNED_COUNT_MISMATCH', '$.caseSearchAudit.returnedCount', 'returnedCount와 실제 판례 수가 다릅니다.');
             }
             if (audit.returnedCount !== Math.min(audit.qualifiedCount, MAX_RELEVANT_CASES)) {
-                issue(issues, 'CASE_PADDING_DETECTED', '$.caseSearchAudit', '적격 판례는 최대 10건까지 빠짐없이 반환해야 합니다.');
+                issue(issues, 'CASE_PADDING_DETECTED', '$.caseSearchAudit', `적격 판례는 최대 ${MAX_RELEVANT_CASES}건까지 빠짐없이 반환해야 합니다.`);
             }
         }
         if (cases.length > MAX_RELEVANT_CASES) {
-            issue(issues, 'CASE_LIMIT_EXCEEDED', '$.cases', '판례는 최대 10건만 반환할 수 있습니다.');
+            issue(issues, 'CASE_LIMIT_EXCEEDED', '$.cases', `판례는 최대 ${MAX_RELEVANT_CASES}건만 반환할 수 있습니다.`);
         }
         if (cases.length < MAX_RELEVANT_CASES && audit.shortfallReason === null) {
-            issue(issues, 'CASE_SHORTFALL_REASON_REQUIRED', '$.caseSearchAudit.shortfallReason', '10건 미만이면 부족 사유가 필요합니다.');
+            issue(issues, 'CASE_SHORTFALL_REASON_REQUIRED', '$.caseSearchAudit.shortfallReason', `${MAX_RELEVANT_CASES}건 미만이면 부족 사유가 필요합니다.`);
         }
         if (cases.length === MAX_RELEVANT_CASES && audit.shortfallReason !== null) {
-            issue(issues, 'CASE_SHORTFALL_REASON_INVALID', '$.caseSearchAudit.shortfallReason', '10건 반환 시 부족 사유가 없어야 합니다.');
+            issue(issues, 'CASE_SHORTFALL_REASON_INVALID', '$.caseSearchAudit.shortfallReason', `${MAX_RELEVANT_CASES}건 반환 시 부족 사유가 없어야 합니다.`);
         }
         if (
             !audit.upstreamComplete
@@ -1055,6 +1056,12 @@ export function validateLegalAnswerV1(
         return finish<LegalAnswerV1>(undefined, issues);
     }
     const answer = input as unknown as LegalAnswerV1;
+    const answerBlockingUnknown = Array.isArray(answer.unknowns)
+        && answer.unknowns.some((unknown) => isRecord(unknown) && unknown.blocking === true);
+    const packetBlockingUnknown = isRecord(packetInput)
+        && Array.isArray(packetInput.unknowns)
+        && packetInput.unknowns.some((unknown) => isRecord(unknown) && unknown.blocking === true);
+    const blockingUnknown = answerBlockingUnknown || packetBlockingUnknown;
     if (answer.contractVersion !== LEGAL_ANSWER_VERSION) {
         issue(issues, 'ANSWER_VERSION_INVALID', '$.contractVersion', '지원하지 않는 답변 버전입니다.');
     }
@@ -1243,7 +1250,7 @@ export function validateLegalAnswerV1(
             issue(issues, 'CASE_RETURNED_COUNT_MISMATCH', '$.caseSynthesis.returnedCount', '표시 판례 수와 sourceIds 수가 다릅니다.');
         }
         if (caseSourceIds.length > MAX_RELEVANT_CASES) {
-            issue(issues, 'CASE_LIMIT_EXCEEDED', '$.caseSynthesis.sourceIds', '판례는 최대 10건만 표시할 수 있습니다.');
+            issue(issues, 'CASE_LIMIT_EXCEEDED', '$.caseSynthesis.sourceIds', `판례는 최대 ${MAX_RELEVANT_CASES}건만 표시할 수 있습니다.`);
         }
         if (caseSourceIds.length === 0) {
             if (answer.caseSynthesis.returnedCount !== 0) {
@@ -1272,17 +1279,24 @@ export function validateLegalAnswerV1(
             { required: caseSourceIds.length > 0, allowedType: 'case', coverEverySource: true }
         );
         if (caseSourceIds.length < MAX_RELEVANT_CASES && answer.caseSynthesis.shortfallReason === null) {
-            issue(issues, 'CASE_SHORTFALL_REASON_REQUIRED', '$.caseSynthesis.shortfallReason', '10건 미만이면 부족 사유가 필요합니다.');
+            issue(issues, 'CASE_SHORTFALL_REASON_REQUIRED', '$.caseSynthesis.shortfallReason', `${MAX_RELEVANT_CASES}건 미만이면 부족 사유가 필요합니다.`);
         }
         if (caseSourceIds.length === MAX_RELEVANT_CASES && answer.caseSynthesis.shortfallReason !== null) {
-            issue(issues, 'CASE_SHORTFALL_REASON_INVALID', '$.caseSynthesis.shortfallReason', '10건이면 부족 사유가 없어야 합니다.');
+            issue(issues, 'CASE_SHORTFALL_REASON_INVALID', '$.caseSynthesis.shortfallReason', `${MAX_RELEVANT_CASES}건이면 부족 사유가 없어야 합니다.`);
         }
     }
 
     if (!Array.isArray(answer.applications)) {
         issue(issues, 'APPLICATIONS_ARRAY_REQUIRED', '$.applications', '적용 판단 목록이 필요합니다.');
     } else {
-        if (safeFacts.length > 0 && answer.applications.length === 0) {
+        if (blockingUnknown && answer.applications.length > 0) {
+            issue(
+                issues,
+                'BLOCKING_UNKNOWN_APPLICATIONS_FORBIDDEN',
+                '$.applications',
+                'blocking 미확인 사항이 있으면 사실 적용 판단을 렌더링할 수 없습니다.'
+            );
+        } else if (!blockingUnknown && safeFacts.length > 0 && answer.applications.length === 0) {
             issue(issues, 'APPLICATION_REQUIRED', '$.applications', '제공 사실이 있으면 적어도 하나의 근거 기반 적용 판단이 필요합니다.');
         }
         answer.applications.forEach((application, index) => {
@@ -1402,8 +1416,6 @@ export function validateLegalAnswerV1(
         issue(issues, 'DISCLAIMER_INVALID', '$.disclaimer', '고정 면책문구가 변경되었습니다.');
     }
 
-    const blockingUnknown = Array.isArray(answer.unknowns)
-        && answer.unknowns.some((unknown) => isRecord(unknown) && unknown.blocking === true);
     const historicalReviewRequired = isRecord(answer.temporalReview)
         && answer.temporalReview.historicalLawRequired === true;
     const historicalReviewActuallyRequired = answerEventDate !== null && sources.some((source) => {
@@ -1419,12 +1431,39 @@ export function validateLegalAnswerV1(
     ) {
         issue(issues, 'TEMPORAL_REVIEW_MISMATCH', '$.temporalReview.historicalLawRequired', '사건일과 근거 시행일의 비교 결과가 일치하지 않습니다.');
     }
+    if (isRecord(answer.conclusion) && blockingUnknown
+        && answer.conclusion.kind !== 'cannot_conclude') {
+        issue(
+            issues,
+            'BLOCKING_UNKNOWN_REQUIRES_CANNOT_CONCLUDE',
+            '$.conclusion.kind',
+            'blocking 미확인 사항이 있으면 cannot_conclude 결론만 사용할 수 있습니다.'
+        );
+    }
+    if (
+        isRecord(answer.conclusion)
+        && blockingUnknown
+        && answer.conclusion.kind === 'cannot_conclude'
+        && (
+            answer.conclusion.text !== LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT
+            || !Array.isArray(answer.conclusion.sourceIds)
+            || answer.conclusion.sourceIds.length !== 0
+            || !Array.isArray(answer.conclusion.evidenceQuotes)
+            || answer.conclusion.evidenceQuotes.length !== 0
+        )
+    ) {
+        issue(
+            issues,
+            'BLOCKING_UNKNOWN_CONCLUSION_NOT_SERVER_FIXED',
+            '$.conclusion',
+            'blocking 미확인 사항이 있으면 서버 고정 유보 결론만 렌더링할 수 있습니다.'
+        );
+    }
     if (
         isRecord(answer.conclusion)
         && answer.conclusion.kind === 'supported'
         && (
             answer.status !== 'complete'
-            || blockingUnknown
             || historicalReviewRequired
             || historicalReviewActuallyRequired
             || (Array.isArray(answer.applications) && answer.applications.some(
@@ -1433,7 +1472,7 @@ export function validateLegalAnswerV1(
             ))
         )
     ) {
-        issue(issues, 'UNSUPPORTED_CONCLUSION', '$.conclusion.kind', '차단 사유가 있으면 확정형 결론을 만들 수 없습니다.');
+        issue(issues, 'UNSUPPORTED_CONCLUSION', '$.conclusion.kind', '확정 조건을 충족하지 못하면 supported 결론을 만들 수 없습니다.');
     }
 
     if (packetInput !== undefined) {
@@ -1448,6 +1487,9 @@ export function validateLegalAnswerV1(
             }
             if (answer.status !== packet.status) {
                 issue(issues, 'STATUS_MISMATCH', '$.status', '답변과 근거 패킷의 상태가 다릅니다.');
+            }
+            if (JSON.stringify(answer.unknowns) !== JSON.stringify(packet.unknowns)) {
+                issue(issues, 'UNKNOWNS_PACKET_MISMATCH', '$.unknowns', '답변의 미확인 사항은 패킷과 정확히 일치해야 합니다.');
             }
             if (JSON.stringify(answer.scope) !== JSON.stringify(packet.scope)) {
                 issue(issues, 'SCOPE_MISMATCH', '$.scope', '답변과 근거 패킷의 범위가 다릅니다.');

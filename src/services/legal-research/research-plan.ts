@@ -119,8 +119,18 @@ export const LegalResearchPlanV1Schema = z
             .array(
                 z
                     .object({
-                        issueIds: z.array(IssueIdSchema).min(1).max(8),
-                        lawNames: z.array(LegalSearchTermSchema).min(1).max(4),
+                        issueIds: z
+                            .array(IssueIdSchema)
+                            .length(
+                                1,
+                                '각 판례 query는 정확히 하나의 issueId만 참조해야 합니다.'
+                            ),
+                        lawNames: z
+                            .array(LegalSearchTermSchema)
+                            .length(
+                                1,
+                                '각 판례 query는 조문 근거의 법령별 교차 차용을 막기 위해 정확히 하나의 법령만 참조해야 합니다.'
+                            ),
                         articleLabels: z
                             .array(z.string().regex(ARTICLE_PATTERN))
                             .max(12)
@@ -136,7 +146,6 @@ export const LegalResearchPlanV1Schema = z
     .superRefine((plan, context) => {
         const issueIds = plan.issues.map((issue) => issue.issueId);
         const knownIssueIds = new Set(issueIds);
-        const knownLawNames = new Set(plan.lawAnchors.map((anchor) => anchor.exactName));
 
         if (knownIssueIds.size !== issueIds.length) {
             context.addIssue({
@@ -189,12 +198,32 @@ export const LegalResearchPlanV1Schema = z
         }
 
         for (const [index, query] of plan.caseQueries.entries()) {
+            const issueId = query.issueIds[0];
+            if (!issueId) continue;
+            const issueLawAnchors = plan.lawAnchors.filter((anchor) =>
+                anchor.issueIds.includes(issueId));
+            const queryLawAnchors = issueLawAnchors.filter((anchor) =>
+                query.lawNames.includes(anchor.exactName));
+
             for (const lawName of query.lawNames) {
-                if (!knownLawNames.has(lawName)) {
+                if (!issueLawAnchors.some((anchor) => anchor.exactName === lawName)) {
                     context.addIssue({
                         code: 'custom',
-                        message: `판례 검색 법령은 먼저 현행 법령 anchor로 정의해야 합니다: ${lawName}`,
+                        message: `판례 검색 법령은 같은 issueId의 현행 법령 anchor로 정의해야 합니다: ${issueId} / ${lawName}`,
                         path: ['caseQueries', index, 'lawNames'],
+                    });
+                }
+            }
+
+            const anchoredArticleLabels = new Set(
+                queryLawAnchors.flatMap((anchor) => anchor.articleLabels)
+            );
+            for (const articleLabel of query.articleLabels) {
+                if (!anchoredArticleLabels.has(articleLabel)) {
+                    context.addIssue({
+                        code: 'custom',
+                        message: `판례 검색 조문은 같은 issueId·법령의 anchor에 먼저 정의해야 합니다: ${issueId} / ${articleLabel}`,
+                        path: ['caseQueries', index, 'articleLabels'],
                     });
                 }
             }

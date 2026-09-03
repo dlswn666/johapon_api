@@ -22,6 +22,17 @@ test('법령 목록은 단일 노드와 배열 노드를 동일한 배열로 정
     assert.deepEqual(multiple.items.map((item) => item.name), ['가법', '나법']);
 });
 
+test('현행법령 목록에 비현행 현행연혁코드가 존재하면 schema drift로 거부한다', () => {
+    assert.throws(
+        () => parseCurrentLawSearchXml(`<LawSearch><totalCnt>1</totalCnt><page>1</page><law>
+          <법령일련번호>10</법령일련번호><법령ID>20</법령ID><법령명한글>가법</법령명한글>
+          <현행연혁코드>연혁</현행연혁코드>
+        </law></LawSearch>`),
+        (error: unknown) => error instanceof LegalOpenApiError
+            && error.code === 'SCHEMA_DRIFT'
+    );
+});
+
 test('현행법 본문은 조·항·호·목, 부칙, 별표를 구조적으로 보존한다', () => {
     const parsed = parseCurrentLawDetailXml(`<법령>
       <기본정보>

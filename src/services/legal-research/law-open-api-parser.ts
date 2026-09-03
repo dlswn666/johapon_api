@@ -227,6 +227,12 @@ export function parseCurrentLawSearchXml(xml: string): ProviderSearchPage<Curren
         const lawId = pickText(record, '법령ID', 'LID', 'ID');
         const name = pickText(record, '법령명한글', '법령명_한글', '법령명');
         if (!mst || !lawId || !name) throw new LegalOpenApiError('SCHEMA_DRIFT');
+        const currentHistoryCode = pickText(record, '현행연혁코드') || undefined;
+        if (currentHistoryCode !== undefined && currentHistoryCode !== '현행') {
+            // 현행법령 전용 응답에 연혁 법령이 섞인 경우
+            // 조용히 필터링하지 않고 provider schema drift로 닫는다.
+            throw new LegalOpenApiError('SCHEMA_DRIFT');
+        }
         const officialUrl = preliminaryUrl
             ? sanitizeOptionalOfficialLawLink(preliminaryUrl, {
                 identifiers: [
@@ -246,7 +252,7 @@ export function parseCurrentLawSearchXml(xml: string): ProviderSearchPage<Curren
             promulgationNo: pickText(record, '공포번호') || undefined,
             effectiveDate: pickText(record, '시행일자') || undefined,
             revisionType: pickText(record, '제개정구분명', '제개정구분') || undefined,
-            currentHistoryCode: pickText(record, '현행연혁코드') || undefined,
+            currentHistoryCode,
             officialUrl,
         } satisfies CurrentLawSummary;
     });

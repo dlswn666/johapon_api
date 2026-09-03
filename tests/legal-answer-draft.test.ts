@@ -9,6 +9,7 @@ import {
 } from '../src/services/legal-research/answer-draft';
 import {
     LEGAL_ANSWER_VERSION,
+    LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT,
     LEGAL_DISCLAIMER,
     LEGAL_POLICY_VERSION,
     LEGAL_RESEARCH_PACKET_VERSION,
@@ -187,7 +188,7 @@ function makePacket(): LegalResearchPacketV1 {
             packetResearchPlan
         ),
         caseSearchAudit: {
-            requestedMax: 10,
+            requestedMax: 12,
             candidateCount: 1,
             qualifiedCount: 1,
             returnedCount: 1,
@@ -315,6 +316,7 @@ test('JSON Schema 설명은 MCP host에 packet 참조와 자동 채움 규칙을
     assert.match(String(properties.caseSummary.description), /최신순/);
     assert.match(String(properties.caseSummary.description), /서버가 자동/);
     assert.match(String(conclusionProperties.kind.description), /blocking/);
+    assert.match(String(conclusionProperties.kind.description), /cannot_conclude/);
     assert.match(String(conclusionProperties.sourceIds.description), /packet sourceId/);
     assert.match(String(applicationProperties.factIds.description), /packet의 facts/);
 });
@@ -404,7 +406,7 @@ test('builder 결과의 패킷 유래 배열과 객체는 원본 packet을 공�
     assert.equal(packet.facts[0].text, '사업지는 서울특별시 강남구이다.');
 });
 
-test('존재하지 않는 sourceId와 blocking 상태의 확정 결론은 근거·계약 validator가 차단한다', () => {
+test('존재하지 않는 sourceId와 blocking 상태의 supported·conditional 결론은 validator가 차단한다', () => {
     const badReference = makeDraft();
     badReference.conclusion.sourceIds = ['missing-law'];
     assert.throws(
@@ -424,4 +426,26 @@ test('존재하지 않는 sourceId와 blocking 상태의 확정 결론은 근거
         () => buildLegalAnswerFromDraftV1(blockedPacket, makeDraft()),
         LegalContractValidationError
     );
+
+    const conditionalDraft = makeDraft();
+    conditionalDraft.conclusion.kind = 'conditional';
+    assert.throws(
+        () => buildLegalAnswerFromDraftV1(blockedPacket, conditionalDraft),
+        LegalContractValidationError
+    );
+
+    const hiddenAssertionDraft = makeDraft();
+    hiddenAssertionDraft.conclusion.kind = 'cannot_conclude';
+    hiddenAssertionDraft.conclusion.text = '대표자 지정이 없어도 A의 찬성표는 유효하다.';
+    hiddenAssertionDraft.applications[0].result = 'A의 찬성표를 산입해야 한다.';
+    const deferredAnswer = buildLegalAnswerFromDraftV1(blockedPacket, hiddenAssertionDraft);
+
+    assert.deepEqual(deferredAnswer.conclusion, {
+        kind: 'cannot_conclude',
+        text: LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT,
+        sourceIds: [],
+        evidenceQuotes: [],
+    });
+    assert.deepEqual(deferredAnswer.applications, []);
+    assert.doesNotMatch(JSON.stringify(deferredAnswer), /A의 찬성표/);
 });

@@ -2,10 +2,10 @@
 
 ## 정본과 범위
 
-- 사용자 확정 요구사항(2026-08-31)
+- 사용자 확정 요구사항(2026-08-31, 판례 건수·결론 gate는 2026-09-03 갱신)
   - 답변 근거는 현재 시행 중인 법령만 사용한다.
-  - 질문에 적합한 판례를 선고일 최신순으로 최대 10건 제공한다.
-  - 관련 판례가 10건 미만이면 무관한 판례나 구법 판례로 채우지 않는다.
+  - 질문에 적합한 판례를 선고일 최신순으로 10건을 초과해 제공하도록 목표 상한을 12건으로 둔다.
+  - 관련 판례가 12건 미만이면 실제 건수와 부족 사유를 밝히고 무관한 판례나 구법 판례로 채우지 않는다.
   - 적용 조례와 판례의 국가법령정보센터 공식 링크를 답변에 포함한다.
 - Obsidian 정본
   - `Projects/도시정비법-분석-MCP.md`
@@ -18,6 +18,8 @@
   - MCP 2026-07-28 사양과 TypeScript SDK v2
 
 이 변경은 법률자문을 자동 확정하는 기능이 아니라, 현행 법령·조례·판례의 검증 가능한 근거 패킷과 정형 답변을 제공하는 내부 운영 기능이다.
+MCP 전송 계약과 도구명은 V1을 유지하고, 갱신된 판정 규칙은 packet provenance의
+`current-law-policy.v2`로 구분한다.
 
 ## 역할별 관점
 
@@ -53,6 +55,9 @@
 존재하는지 검사한다. 정규화한 전체 plan, SHA-256 hash와 issue별 coverage를
 `planCoverageAudit`에 보존한다. 이는 질문-쟁점의 법률적 의미가 올바르다는
 자동 판정이 아니라, 엉뚱한 계획을 기계적으로 걸러내고 사후 감사하기 위한 gate다.
+한 판례 query는 정확히 하나의 issueId와 정확히 하나의 lawName만 참조한다.
+그 법령과 조문은 같은 issueId의 lawAnchor에 연결되어야 하며, 다른 쟁점이나
+다른 법령 anchor의 조문을 한 검색 결과에 교차 차용하지 않는다.
 
 API 서버 자체에는 LLM이 없으므로 질의 원문을 법적 쟁점으로 임의 변환하지
 않는다. MCP의 `instructions`, 버전형 정책 resource, prompt가 host LLM의
@@ -63,7 +68,7 @@ API 서버 자체에는 LLM이 없으므로 질의 원문을 법적 쟁점으로
 
 - 법령: `target=eflaw`, `nw=3`
 - 자치법규: `target=ordin`, `nw=1`
-- 판례: `target=prec`, `sort=ddes`, 최대 반환 수 10
+- 판례: `target=prec`, `sort=ddes`, 최대 반환 수 12
 - 기준일: 서버 수신 시점의 `Asia/Seoul` 날짜
 - 공식 링크 허용 origin: HTTPS `law.go.kr` 계열
 
@@ -80,7 +85,7 @@ API 서버 자체에는 LLM이 없으므로 질의 원문을 법적 쟁점으로
 7. 현행 조문과 판례가 해석한 규정의 동일성 또는 실질적 동등성을 검증한다.
    공식 판례 데이터에 적용 규정 버전 ID가 없으면 동일성을 단정하지 않고
    `current_rule_candidate` 유추 근거로만 표시한다.
-8. 관련성 gate를 통과한 판례만 선고일 내림차순으로 최대 10건 반환한다.
+8. 관련성 gate를 통과한 판례만 선고일 내림차순으로 최대 12건 반환한다.
 9. 근거 패킷을 근거·계약 validator로 검사하고 같은 객체에서 Markdown을 결정적으로 렌더링한다.
    각 서술에는 공식 원문에 exact substring으로 존재하는 `evidenceQuotes`를 요구한다.
    이 검사는 서술이 인용문에서 논리적으로 도출되는지까지 자동 보증하지 않는다.
@@ -119,10 +124,10 @@ API 서버 자체에는 LLM이 없으므로 질의 원문을 법적 쟁점으로
 - [x] 목록 또는 본문의 선고일이 조회 기준일보다 미래이면 `SCHEMA_DRIFT`로 fail-closed 한다.
 - [x] 판례 전문의 참조조문과 판시사항/판결요지/판례내용에서 관련성을 검증한다.
 - [x] 동일 규정이 입증된 판례만 direct로 쓰며, 버전 ID가 없는 후보는 analogical로만 표시한다.
-- [x] 실질 개정된 구법 판례는 최대 10건 목록에 포함하지 않는다.
+- [x] 실질 개정된 구법 판례는 최대 12건 목록에 포함하지 않는다.
 - [x] 중복 제거 후 선고일 내림차순, 동률은 판례일련번호 내림차순으로 안정 정렬한다.
-- [x] 최대 10건만 반환한다.
-- [x] 적격 판례가 10건 미만이면 실제 N건과 부족 사유를 반환하고 padding하지 않는다.
+- [x] 목표 상한 12건만 반환한다.
+- [x] 적격 판례가 12건 미만이면 실제 N건과 부족 사유를 반환하고 padding하지 않는다.
 - [x] 공식 결과 소진과 upstream 미완료를 서로 다른 상태로 표현한다.
 - [x] 최종 Markdown에 packet 상태와 **계획된 법령명·쟁점 검색 stream 내** 최신순
   완결성 검증/미완료, 정규화 plan hash와 실제 stream을 서버 소유 값으로 표시한다.
@@ -145,13 +150,15 @@ API 서버 자체에는 LLM이 없으므로 질의 원문을 법적 쟁점으로
 - [x] prompt는 host LLM이 `researchPlan`을 만들고 조사 도구를 호출하는 순서를 명시한다.
 - [x] 서버는 `researchPlan`의 controlled taxonomy, 질문 exact 검색어, 쟁점별 법령·판례
   coverage와 exact 법령명·관할·전문 쟁점 anchor를 기계적으로 검증한다.
+- [x] 각 `caseQuery`는 정확히 하나의 issue와 하나의 법령만 참조하며, 법령·조문은
+  같은 issue의 `lawAnchor`에 연결되어 다른 쟁점·법령 anchor를 교차 차용할 수 없다.
 - [x] `LegalResearchPacketV1`은 정규화 plan/hash/coverage, 법령, 조례, 판례, 검색 감사,
   미확인 사항, provenance를 포함한다.
 - [x] 모든 법률 명제와 적용 판단은 존재하는 source ID를 참조한다.
 - [x] 결론·법률 명제·조례 분석·판례 종합·적용 판단은 참조한 모든 sourceId마다
   해당 공식 원문의 exact substring `evidenceQuotes`를 포함한다.
 - [x] `supported` 결론은 법률 명제 1건 이상, facts가 있으면 적용 판단 1건 이상을 요구한다.
-- [x] blocking 미확인 사항이 있으면 확정형 결론을 만들지 않는다.
+- [x] blocking 미확인 사항이 있으면 `supported`·`conditional`을 모두 거부하고 `cannot_conclude`만 허용한다.
 - [x] application의 사건일·참조 조문 시행일을 대조하고 미확인 사실의 high confidence를 거부한다.
 - [x] renderer는 검증된 패킷과 서술 draft에서 서버 소유 필드를 조립해 고정 순서 Markdown을 생성한다.
 - [x] 최종 Markdown에 현행 법령, 조례, 판례 링크가 클릭 가능한 형태로 포함된다.
@@ -179,7 +186,7 @@ validator 통과는 이 사람 검토를 대체하지 않으며, 승인 전 결�
 - 도메인 상태: `complete`, `partial`, `clarification_required`, `temporal_scope_conflict`, `insufficient_evidence`
 - 판례 부족 사유: `official_results_exhausted`, `upstream_incomplete`, `full_text_unavailable`, `current_law_misaligned`
 
-판례가 10건 미만인 것은 tool execution error가 아니라 구조화된 정상 불완전 결과다. 상류 응답 자체를 신뢰할 수 없는 경우에만 MCP `isError`를 사용한다.
+판례가 12건 미만인 것은 tool execution error가 아니라 구조화된 정상 불완전 결과다. 상류 응답 자체를 신뢰할 수 없는 경우에만 MCP `isError`를 사용한다.
 
 ## 검증 순서
 

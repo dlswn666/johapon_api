@@ -578,7 +578,7 @@ IDE extension은 MCP 설정을 공유한다. 반면 **ChatGPT web은 로컬 Code
       "type": "http",
       "url": "https://api.tonghari.kr/mcp",
       "headers": {
-        "Authorization": "Bearer ${TONGHARI_LEGAL_MCP_TOKEN}"
+        "Authorization": "Bearer ${TONGHARI_LEGAL_MCP_BEARER}"
       }
     }
   }
@@ -586,8 +586,28 @@ IDE extension은 MCP 설정을 공유한다. 반면 **ChatGPT web은 로컬 Code
 ```
 
 환경변수 header 확장은 Claude Code 공식 MCP 설정 형식이다. project scope 설정을
-공유하더라도 raw 값은 각 사용자가 따로 주입한다. 근거:
+공유하더라도 raw 값은 각 사용자가 따로 주입한다. 이 구성은
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`을 함께 사용할 때 현재 Claude Code가
+이름에 `TOKEN`이 들어간 환경변수를 header 치환 전에 비우는 동작을 피하기 위해
+Claude 전용 변수명을 `TONGHARI_LEGAL_MCP_BEARER`로 고정한다. raw bearer 자체를
+바꾸거나 두 변수에 중복 저장하는 것은 아니다. 근거:
 [Claude Code MCP 환경변수 header](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcpjson).
+
+macOS Keychain에서 매 실행 시 주입하는 예시는 다음과 같다. `<client-id>`는 발급한
+client ID로 바꾸고 raw bearer를 명령행 인자나 파일에 직접 적지 않는다.
+
+```zsh
+tonghari_mcp_secret="$(
+  /usr/bin/security find-generic-password \
+    -a '<client-id>' \
+    -s 'kr.tonghari.legal-mcp' \
+    -w
+)" || exit 1
+TONGHARI_LEGAL_MCP_BEARER="$tonghari_mcp_secret" \
+CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
+claude
+unset tonghari_mcp_secret
+```
 
 ### VS Code
 
@@ -635,6 +655,9 @@ redirect = "error"
 1. prompt를 읽고 사용자 질의를 `question`, 관할, 사업 유형·단계, 사실,
    사건일과 구조화 `researchPlan`으로 만든다.
    - 모든 issue를 적어도 한 개의 lawAnchor와 caseQuery에 각각 연결한다.
+   - 각 caseQuery는 정확히 하나의 issueId와 정확히 하나의 lawName만 참조한다.
+   - caseQuery의 법령·조문은 같은 issueId의 lawAnchor에 연결하고, 다른 issue나
+     다른 법령 anchor의 조문을 교차 차용하지 않는다.
    - issue별 연결 검색어 중 적어도 하나는 질문 원문에 exact로 존재해야 한다.
    - 관할 조례가 결론에 필요하면 `ordinanceRequirement=required`로 둔다.
    - required인데 관할이 없으면 관할을 추정하지 않고 `ordinanceAnchors=[]`로 호출해
@@ -651,8 +674,9 @@ redirect = "error"
    `answerDraft`의 결론·법률 명제·조례 분석·판례 종합·사실 적용·시점 검토·경고만
    작성한다. 각 문장은 packet의 정확한 조문·판시사항·판결요지 범위를 넘지 않고
    사용한 모든 sourceId와 해당 source 원문에 exact substring으로 존재하는 짧은
-   `evidenceQuotes`를 연결한다. `supported` 결론에는 법률 명제 1건 이상, packet에
-   facts가 있으면 적용 판단 1건 이상이 필요하다.
+   `evidenceQuotes`를 연결한다. `supported` 결론에는 법률 명제 1건 이상이 필요하다.
+   blocking unknown이 없고 packet에 facts가 있으면 적용 판단 1건 이상이 필요하며,
+   blocking unknown이 있으면 서버가 결론을 고정 유보문으로 바꾸고 적용 판단을 비운다.
 5. `render_legal_answer_v1`을 호출한다. 서버가 packetId, 상태, 사실, 미확인
    사항, 출처 색인, 판례 건수·최신순·부족 사유·검색 stream 범위·정규화 plan hash·
    상류 완결성과 고정 면책문구를 자동 조립한다.
@@ -674,11 +698,11 @@ redirect = "error"
 - 자치법규 목록: `target=ordin`, `nw=1`(현행), 요청 관할 코드·명칭 exact match
 - 판례 목록: `target=prec`, `sort=ddes`, 한 page 최대 100건
 - 판례 선정: 공식 전문과 목록 식별자 재검증 → exact 법령·조문 및 쟁점 관련성
-  → 현행 규정 정합성 gate → 선고일 내림차순 → 최대 10건
+  → 현행 규정 정합성 gate → 선고일 내림차순 → 최대 12건
 - 선고일 안전: 조회 기준일 뒤 선고일이 목록·본문에 있으면 schema drift로 전체 요청을 닫음
 - 최신성 범위: `planCoverageAudit`의 정규화 plan/hash와 실제 법령명·쟁점 query stream
   안에서만 최신순 완결성을 주장하며 전체 판례 universe의 최신성을 주장하지 않음
-- 10건 미만: 검색 조건을 완화하거나 구법·무관 판례로 채우지 않고 실제 건수와
+- 12건 미만: 검색 조건을 완화하거나 구법·무관 판례로 채우지 않고 실제 건수와
   `shortfallReason`을 반환
 - 공개 링크: HTTPS 국가법령정보센터의 레코드별 공개 상세 URL만 허용; API OC와
   인증 query는 반환 금지

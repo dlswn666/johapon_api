@@ -9,11 +9,16 @@ import type { LegalResearchPlanV1 } from './research-plan';
 
 export const LEGAL_RESEARCH_PACKET_VERSION = 'LegalResearchPacketV1' as const;
 export const LEGAL_ANSWER_VERSION = 'LegalAnswerV1' as const;
-export const LEGAL_POLICY_VERSION = 'current-law-policy.v1' as const;
-export const MAX_RELEVANT_CASES = 10;
+export const LEGAL_POLICY_VERSION = 'current-law-policy.v2' as const;
+/** 사용자가 요청한 "10건 초과" 목록을 제공하기 위한 운영 목표 상한. */
+export const MAX_RELEVANT_CASES = 12;
 
 export const LEGAL_DISCLAIMER =
     '이 답변은 국가법령정보센터의 현행 법령·자치법규·판례를 바탕으로 근거와 형식을 검증해 정리한 일반 정보입니다. 이 검증은 LLM이 작성한 법률 해석의 타당성을 자동 보증하지 않으며, 구체적 사건에 대한 법률자문을 대신하지 않습니다.';
+
+/** blocking 미확인 사항이 남은 답변에는 host 서술 대신 이 문장만 사용한다. */
+export const LEGAL_BLOCKING_UNKNOWN_CONCLUSION_TEXT =
+    '필수 미확인 사항이 해결되지 않아 이 질문의 결론을 확정할 수 없습니다. 미확인 사항을 확인한 뒤 다시 검토해야 합니다.';
 
 export const LEGAL_ANSWER_SECTION_HEADINGS = [
     '## 1. 검토 결론',
