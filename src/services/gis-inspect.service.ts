@@ -25,6 +25,15 @@ const VWORLD_BOUNDARY_WFS_URL = 'https://api.vworld.kr/ned/wfs/getCtnlgsSpceWFS'
 // 넓히지 않으려면 여기서 base URL 만 재사용하는 편이 맞다. HTTPS 는 그대로 보장된다.
 const BLDRGST_FLOOR_OUTLINE_URL = `${BUILDING_HUB_BASE_URL}/getBrFlrOulnInfo`;
 
+/**
+ * 건축물대장 허브는 numOfRows 를 무시하고 **한 페이지에 100행**만 준다
+ * (2026-09-03 실측: 미아동 1357 삼각산아이원 전유부 totalCount 1,344 → 100행,
+ *  층별개요 449 → 100행). pageNo 를 올려가며 전 행을 모은다.
+ */
+const BLDRGST_SERVER_PAGE_SIZE = 100;
+/** 폭주 방지 상한. 100행 × 40 = 4,000행이면 이 구역 최대(1,344)의 3배다. */
+const BLDRGST_MAX_PAGES = 40;
+
 const REQUEST_TIMEOUT_MS = 15000;
 
 /** 응답 steps 배열의 고정 순서 */
@@ -172,6 +181,104 @@ export class GisInspectService {
             status: 'ERROR',
             error: 'VWorld 경계 API가 오류 응답을 반환했습니다.',
         };
+    }
+
+    /** 건축물대장 응답에서 items.item 배열을 꺼낸다 (단건이면 배열로 감싼다) */
+    private extractBldRgstItems(raw: unknown): unknown[] {
+        const body = (raw as { response?: { body?: { items?: unknown } } })?.response?.body;
+        const items = (body as { items?: unknown } | undefined)?.items;
+        if (!items || typeof items !== 'object') return [];
+        const item = (items as { item?: unknown }).item;
+        if (item === undefined || item === null) return [];
+        return Array.isArray(item) ? item : [item];
+    }
+
+    /** 건축물대장 응답의 totalCount (숫자가 아니면 null) */
+    private extractBldRgstTotalCount(raw: unknown): number | null {
+        const total = (raw as { response?: { body?: { totalCount?: unknown } } })?.response?.body?.totalCount;
+        const n = Number(total);
+        return Number.isInteger(n) && n >= 0 ? n : null;
+    }
+
+    /**
+     * 건축물대장 스텝 — totalCount 를 다 채울 때까지 pageNo 를 올려가며 모은다.
+     *
+     * 한 페이지로 끝나는 건물은 페이지1 응답을 **그대로** 돌려준다(기존 동작 유지).
+     * 두 페이지 이상일 때만 items.item 을 합친 envelope 로 바꾸고, 무엇을 했는지
+     * requestParams 에 남긴다. 중간 페이지가 실패하면 부분 데이터를 성공으로
+     * 보여주지 않는다 — ERROR 로 내리고 모은 행 수를 함께 알린다.
+     */
+    private async callBldRgstStep(
+        id: string,
+        endpoint: string,
+        baseParams: Record<string, unknown>
+    ): Promise<InspectStep> {
+        const startedAt = Date.now();
+        const first = await this.callStep(id, endpoint, { ...baseParams, pageNo: 1 });
+        if (first.status !== 'SUCCESS') return first;
+
+        const totalCount = this.extractBldRgstTotalCount(first.rawJson);
+        const collected = this.extractBldRgstItems(first.rawJson);
+        if (totalCount === null || collected.length >= totalCount) return first;
+
+        const neededPages = Math.ceil(totalCount / BLDRGST_SERVER_PAGE_SIZE);
+        const lastPage = Math.min(neededPages, BLDRGST_MAX_PAGES);
+        let failedPage: { pageNo: number; error?: string } | null = null;
+
+        for (let pageNo = 2; pageNo <= lastPage; pageNo++) {
+            const page = await this.callStep(id, endpoint, { ...baseParams, pageNo });
+            if (page.status !== 'SUCCESS') {
+                failedPage = { pageNo, error: page.error };
+                break;
+            }
+            const rows = this.extractBldRgstItems(page.rawJson);
+            if (rows.length === 0) break;
+            collected.push(...rows);
+        }
+
+        const truncatedByCap = neededPages > BLDRGST_MAX_PAGES;
+        const merged = {
+            ...(first.rawJson as Record<string, unknown>),
+            response: {
+                ...((first.rawJson as { response?: Record<string, unknown> })?.response ?? {}),
+                body: {
+                    ...((first.rawJson as { response?: { body?: Record<string, unknown> } })?.response?.body ?? {}),
+                    items: { item: collected },
+                    numOfRows: collected.length,
+                    pageNo: 1,
+                },
+            },
+        };
+
+        const step: InspectStep = {
+            ...first,
+            durationMs: Date.now() - startedAt,
+            rawJson: merged,
+            requestParams: {
+                ...first.requestParams,
+                pageNo: `1~${lastPage} 병합`,
+                serverPageSize: BLDRGST_SERVER_PAGE_SIZE,
+                mergedRows: collected.length,
+                totalCount,
+            },
+        };
+
+        if (failedPage) {
+            return {
+                ...step,
+                status: 'ERROR',
+                error: `${failedPage.pageNo}페이지 조회 실패로 전체 ${totalCount}행 중 ${collected.length}행만 모았습니다.`
+                    + (failedPage.error ? ` (${failedPage.error})` : ''),
+            };
+        }
+        if (truncatedByCap) {
+            return {
+                ...step,
+                status: 'ERROR',
+                error: `전체 ${totalCount}행이 페이지 상한(${BLDRGST_MAX_PAGES}페이지)을 넘어 ${collected.length}행까지만 모았습니다.`,
+            };
+        }
+        return step;
     }
 
     private skippedStep(id: string, endpoint: string, reason: string): InspectStep {
@@ -327,14 +434,16 @@ export class GisInspectService {
                 _type: 'json',
             };
 
-            // data.go.kr 건축물대장 3종은 병렬 (레이트리밋 없음)
+            // data.go.kr 건축물대장 3종은 병렬 (레이트리밋 없음).
+            // 세 스텝 모두 페이지네이션한다 — 서버가 100행에서 자르기 때문에
+            // 대단지는 표제부만 온전하고 전유부·층별개요가 조용히 잘려 있었다.
             const dataPortalPromise = Promise.all([
-                this.callStep(
+                this.callBldRgstStep(
                     'building_title',
                     GIS_SHARED_ENDPOINTS.getBrTitleInfo,
                     { ...bldRgstParams }
                 ),
-                this.callStep(
+                this.callBldRgstStep(
                     'building_units',
                     GIS_SHARED_ENDPOINTS.getBrExposInfo,
                     { ...bldRgstParams }
@@ -344,7 +453,7 @@ export class GisInspectService {
                 // 그 표시가 areaExctYn 에 안 들어오는 경우가 많다(2026-09-03 미아동 실측:
                 // 층 128개 중 areaExctYn 이 채워진 것은 23개뿐, 명백한 제외 6개 층이 공백).
                 // 판단은 etcPurps 텍스트와 "층별 area 합 − 제외분 = totArea" 산식으로 한다.
-                this.callStep(
+                this.callBldRgstStep(
                     'building_floors',
                     BLDRGST_FLOOR_OUTLINE_URL,
                     { ...bldRgstParams }

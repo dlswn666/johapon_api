@@ -75,6 +75,8 @@ test('maskSecretParams: key/serviceKey만 마스킹하고 나머지는 유지', 
 function createStubHttpGet(overrides?: {
     failUrls?: string[];
     geocodeFail?: boolean;
+    /** 건축물대장 허브 에뮬레이션 — numOfRows 를 무시하고 100행씩 준다 */
+    bldRgst?: { totalCount: number; failPage?: number };
 }) {
     const calls: Array<{ url: string; params: Record<string, unknown> }> = [];
     const httpGet = async (url: string, config: { params: Record<string, unknown> }) => {
@@ -124,6 +126,27 @@ function createStubHttpGet(overrides?: {
         }
         if (url.includes('getIndvdHousingPriceAttr')) {
             return { data: { indvdHousingPrices: { field: [{ housePc: '300000000' }] } } };
+        }
+        if (overrides?.bldRgst && /getBr(TitleInfo|ExposInfo|FlrOulnInfo)/.test(url)) {
+            const { totalCount, failPage } = overrides.bldRgst;
+            const pageNo = Number(config.params.pageNo);
+            if (failPage && pageNo === failPage) throw new Error('stub page error');
+            // 서버는 numOfRows 를 무시하고 100행 고정으로 준다
+            const start = (pageNo - 1) * 100;
+            const rows = Math.max(0, Math.min(100, totalCount - start));
+            return {
+                data: {
+                    response: {
+                        header: { resultCode: '00', resultMsg: 'NORMAL SERVICE' },
+                        body: {
+                            items: { item: Array.from({ length: rows }, (_, i) => ({ rnum: start + i + 1 })) },
+                            numOfRows: 100,
+                            pageNo,
+                            totalCount,
+                        },
+                    },
+                },
+            };
         }
         // 나머지 (경계·토지대장·건축물대장·대지권)
         return { data: { stub: url } };
@@ -397,4 +420,86 @@ test('inspect: 공동주택가격은 빈 연도를 건너뛰고 이전 연도로
     // 두 연도 이상 호출됨
     const apartCalls = calls.filter((c) => c.url.includes('getApartHousingPriceAttr'));
     assert.ok(apartCalls.length >= 2);
+});
+
+
+// ── 건축물대장 페이지네이션 ────────────────────────────────────────
+// 2026-09-03 실측: 허브는 numOfRows 를 무시하고 100행씩만 준다.
+// 미아동 1357 삼각산아이원 전유부 totalCount 1,344 → 100행, 층별개요 449 → 100행.
+
+function bldRgstStep(steps: Array<{ id: string }>, id: string) {
+    return steps.find((s) => s.id === id) as unknown as {
+        id: string; status: string; error?: string;
+        requestParams: Record<string, unknown>; rawJson: unknown;
+    };
+}
+function rowCount(raw: unknown): number {
+    const item = (raw as { response?: { body?: { items?: { item?: unknown } } } })?.response?.body?.items?.item;
+    return Array.isArray(item) ? item.length : 0;
+}
+
+test('inspect: 건축물대장 100행 초과는 pageNo 를 올려가며 전 행을 모은다', async () => {
+    const { GisInspectService } = await serviceModule;
+    const { httpGet, calls } = createStubHttpGet({ bldRgst: { totalCount: 1344 } });
+    const result = await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
+
+    for (const id of ['building_title', 'building_units', 'building_floors']) {
+        const step = bldRgstStep(result.steps, id);
+        assert.equal(step.status, 'SUCCESS', id);
+        assert.equal(rowCount(step.rawJson), 1344, `${id} 병합 행 수`);
+        assert.equal(step.requestParams.mergedRows, 1344, `${id} mergedRows`);
+        assert.equal(step.requestParams.totalCount, 1344, `${id} totalCount`);
+        assert.equal(step.requestParams.pageNo, '1~14 병합', `${id} pageNo 표기`);
+    }
+    // 1,344행 = 14페이지 × 3스텝
+    const exposCalls = calls.filter((c) => c.url.includes('getBrExposInfo'));
+    assert.equal(exposCalls.length, 14);
+    assert.deepEqual(exposCalls.map((c) => c.params.pageNo), Array.from({ length: 14 }, (_, i) => i + 1));
+});
+
+test('inspect: 한 페이지로 끝나면 응답을 그대로 두고 병합 표시를 붙이지 않는다', async () => {
+    const { GisInspectService } = await serviceModule;
+    const { httpGet, calls } = createStubHttpGet({ bldRgst: { totalCount: 13 } });
+    const result = await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
+
+    const step = bldRgstStep(result.steps, 'building_floors');
+    assert.equal(step.status, 'SUCCESS');
+    assert.equal(rowCount(step.rawJson), 13);
+    assert.equal(step.requestParams.pageNo, 1, '단일 페이지는 pageNo 가 숫자 1 그대로');
+    assert.equal(step.requestParams.mergedRows, undefined);
+    assert.equal(calls.filter((c) => c.url.includes('getBrFlrOulnInfo')).length, 1);
+});
+
+test('inspect: 정확히 100행이면 추가 페이지를 부르지 않는다', async () => {
+    const { GisInspectService } = await serviceModule;
+    const { httpGet, calls } = createStubHttpGet({ bldRgst: { totalCount: 100 } });
+    const result = await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
+
+    assert.equal(bldRgstStep(result.steps, 'building_units').status, 'SUCCESS');
+    assert.equal(calls.filter((c) => c.url.includes('getBrExposInfo')).length, 1);
+});
+
+test('inspect: 중간 페이지가 실패하면 부분 데이터를 성공으로 보여주지 않는다', async () => {
+    const { GisInspectService } = await serviceModule;
+    const { httpGet } = createStubHttpGet({ bldRgst: { totalCount: 449, failPage: 3 } });
+    const result = await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
+
+    const step = bldRgstStep(result.steps, 'building_floors');
+    assert.equal(step.status, 'ERROR');
+    assert.match(step.error ?? '', /3페이지 조회 실패/);
+    assert.match(step.error ?? '', /449행 중 200행/);
+    // 실패해도 그때까지 모은 행은 그대로 보여준다
+    assert.equal(rowCount(step.rawJson), 200);
+});
+
+test('inspect: 페이지 상한을 넘으면 ERROR 로 알리고 상한까지만 모은다', async () => {
+    const { GisInspectService } = await serviceModule;
+    const { httpGet, calls } = createStubHttpGet({ bldRgst: { totalCount: 100000 } });
+    const result = await new GisInspectService(httpGet).inspect(VALID_ADDRESS);
+
+    const step = bldRgstStep(result.steps, 'building_units');
+    assert.equal(step.status, 'ERROR');
+    assert.match(step.error ?? '', /페이지 상한\(40페이지\)/);
+    assert.equal(rowCount(step.rawJson), 4000);
+    assert.equal(calls.filter((c) => c.url.includes('getBrExposInfo')).length, 40);
 });
