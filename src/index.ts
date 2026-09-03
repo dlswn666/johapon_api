@@ -12,13 +12,17 @@ import {
 import { createLegalMcpRuntimeDependenciesV1 } from './services/legal-research/mcp-runtime';
 import { getLegalMcpConfigurationStateV1 } from './services/legal-research/mcp-config';
 import { createLegalMcpTokenRegistryFileProviderV1 } from './middleware/legal-mcp-token-registry-file';
-import { setLegalMcpHealthTokenRegistryFileProviderV1 } from './routes/health';
+import {
+    setGisMcpHealthTokenRegistryFileProviderV1,
+    setLegalMcpHealthTokenRegistryFileProviderV1,
+} from './routes/health';
 import {
     createGisMcpRoute,
     type GisMcpRouteHandle,
 } from './routes/gis-mcp';
 import { createPublicDataMcpRuntimeDependenciesV1 } from './services/public-data-mcp/runtime';
 import { getGisMcpConfigurationStateV1 } from './services/public-data-mcp/mcp-config';
+import { createGisMcpTokenRegistryFileProviderV1 } from './middleware/gis-mcp-token-registry-file';
 import { closeServerAndMcpWithHardTimeoutV1 } from './utils/graceful-shutdown';
 
 // Express 앱 생성
@@ -51,6 +55,7 @@ const gisMcpConfiguration = getGisMcpConfigurationStateV1({
     dataPortalApiKey: env.DATA_PORTAL_API_KEY,
     tokenSha256: env.GIS_MCP_TOKEN_SHA256,
     tokenRegistryJson: env.GIS_MCP_TOKEN_REGISTRY_JSON,
+    tokenRegistryFile: env.GIS_MCP_TOKEN_REGISTRY_FILE,
     proxyTokenSha256: env.GIS_MCP_PROXY_TOKEN_SHA256,
     allowedHosts: env.GIS_MCP_ALLOWED_HOSTS,
     allowedOrigins: env.GIS_MCP_ALLOWED_ORIGINS,
@@ -61,6 +66,17 @@ const gisMcpConfiguration = getGisMcpConfigurationStateV1({
     maxQueue: env.GIS_MCP_MAX_QUEUE,
 });
 const gisMcpConfigured = gisMcpConfiguration.configured;
+const gisMcpTokenRegistryFileProvider =
+    gisMcpConfigured
+        && gisMcpConfiguration.authSource === 'file_registry'
+        ? createGisMcpTokenRegistryFileProviderV1(
+            env.GIS_MCP_TOKEN_REGISTRY_FILE
+        )
+        : undefined;
+setGisMcpHealthTokenRegistryFileProviderV1(
+    gisMcpTokenRegistryFileProvider,
+    gisMcpConfiguration
+);
 
 let legalMcp: LegalMcpRouteHandle | null = null;
 let gisMcp: GisMcpRouteHandle | null = null;
@@ -113,6 +129,10 @@ if (gisMcpConfigured) {
         }),
         tokenSha256: env.GIS_MCP_TOKEN_SHA256,
         tokenRegistryJson: env.GIS_MCP_TOKEN_REGISTRY_JSON,
+        tokenRegistryFile: gisMcpTokenRegistryFileProvider
+            ? ''
+            : env.GIS_MCP_TOKEN_REGISTRY_FILE,
+        tokenRegistryFileProvider: gisMcpTokenRegistryFileProvider,
         proxyTokenSha256: env.GIS_MCP_PROXY_TOKEN_SHA256,
         allowedHosts: env.GIS_MCP_ALLOWED_HOSTS,
         allowedOrigins: env.GIS_MCP_ALLOWED_ORIGINS,

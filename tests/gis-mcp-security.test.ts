@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import {
+    chmodSync,
+    mkdtempSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
+import { OAuthError, OAuthErrorCode } from '@modelcontextprotocol/server';
 import type { NextFunction, Request, Response } from 'express';
 import {
     createGisMcpTokenVerifier,
@@ -17,6 +28,7 @@ import {
     parseGisMcpTokenRegistryJson,
 } from '../src/middleware/gis-mcp-token-registry';
 import { GIS_MCP_REQUIRED_SCOPE } from '../src/services/public-data-mcp/policy';
+import { createGisMcpTokenRegistryFileProviderV1 } from '../src/middleware/gis-mcp-token-registry-file';
 
 function sha256(value: string): string {
     return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -71,6 +83,118 @@ describe('GIS MCP 보안 계약', () => {
             }),
             GisMcpAuthConfigurationError
         );
+    });
+
+    it('보호 파일 atomic 교체를 다음 인증에서 읽고 구 bearer를 즉시 폐기한다', async () => {
+        const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'gis-mcp-auth-')));
+        chmodSync(root, 0o700);
+        const filePath = path.join(root, 'clients.json');
+        const firstToken = 'gis-file-client-first-token';
+        const secondToken = 'gis-file-client-second-token';
+        const writeRegistry = (token: string, target = filePath) => {
+            writeFileSync(target, JSON.stringify({
+                version: 1,
+                clients: [{
+                    clientId: 'gis-file-client',
+                    tokenSha256: sha256(token),
+                }],
+            }), { encoding: 'utf8', mode: 0o600 });
+            chmodSync(target, 0o600);
+        };
+
+        try {
+            writeRegistry(firstToken);
+            const provider = createGisMcpTokenRegistryFileProviderV1(filePath);
+            const verifier = createGisMcpTokenVerifier({
+                tokenRegistryFile: '',
+                tokenRegistryFileProvider: provider,
+            });
+            assert.equal(
+                (await verifier.verifyAccessToken(firstToken)).clientId,
+                'gis-file-client'
+            );
+
+            const nextPath = path.join(root, 'clients.next.json');
+            writeRegistry(secondToken, nextPath);
+            renameSync(nextPath, filePath);
+
+            assert.equal(
+                (await verifier.verifyAccessToken(secondToken)).clientId,
+                'gis-file-client'
+            );
+            await assert.rejects(verifier.verifyAccessToken(firstToken));
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('교체 전 inspection이 멈춰 있어도 교체 뒤 요청은 새 세대로 인증한다', async () => {
+        const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'gis-mcp-order-')));
+        chmodSync(root, 0o700);
+        const filePath = path.join(root, 'clients.json');
+        const oldToken = 'gis-ordering-old-token';
+        const newToken = 'gis-ordering-new-token';
+        const writeAtomic = (clientId: string, token: string): void => {
+            const temporaryPath = path.join(root, 'clients.next.json');
+            writeFileSync(temporaryPath, JSON.stringify({
+                version: 1,
+                clients: [{ clientId, tokenSha256: sha256(token) }],
+            }), { encoding: 'utf8', mode: 0o600 });
+            chmodSync(temporaryPath, 0o600);
+            renameSync(temporaryPath, filePath);
+        };
+        let announcePaused!: () => void;
+        const paused = new Promise<void>((resolve) => {
+            announcePaused = resolve;
+        });
+        let releaseInspection!: () => void;
+        const inspectionReleased = new Promise<void>((resolve) => {
+            releaseInspection = resolve;
+        });
+        let completedInspections = 0;
+        let requestBeforeReplace: Promise<unknown> | null = null;
+
+        try {
+            writeAtomic('gis-ordering-old', oldToken);
+            const provider = createGisMcpTokenRegistryFileProviderV1(filePath, {
+                onRuntimeInspectionComplete: async () => {
+                    completedInspections += 1;
+                    if (completedInspections === 1) {
+                        announcePaused();
+                        await inspectionReleased;
+                    }
+                },
+            });
+            const verifier = createGisMcpTokenVerifier({
+                tokenRegistryFile: '',
+                tokenRegistryFileProvider: provider,
+            });
+
+            requestBeforeReplace = verifier.verifyAccessToken(oldToken);
+            await paused;
+            writeAtomic('gis-ordering-new', newToken);
+
+            await assert.rejects(
+                verifier.verifyAccessToken(oldToken),
+                (error: unknown) => error instanceof OAuthError
+                    && error.code === OAuthErrorCode.InvalidToken
+            );
+            assert.equal(
+                (await verifier.verifyAccessToken(newToken)).clientId,
+                'gis-ordering-new'
+            );
+
+            releaseInspection();
+            await assert.rejects(
+                requestBeforeReplace,
+                (error: unknown) => error instanceof OAuthError
+                    && error.code === OAuthErrorCode.InvalidToken
+            );
+        } finally {
+            releaseInspection();
+            await requestBeforeReplace?.catch(() => undefined);
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 
     it('proxy HTTPS 증명은 GIS 전용 header와 no-store를 요구한다', () => {

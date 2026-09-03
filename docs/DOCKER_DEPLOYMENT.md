@@ -8,10 +8,11 @@ Tonghari API는 `.github/workflows/docker-build.yml`을 통한 자동 배포만 
 - 배포 대상은 `latest`가 아니라 Git SHA 태그와 `sha256` digest로 고정한다.
 - EC2에서는 이미지를 빌드하지 않고 검증된 digest를 pull해 실행한다.
 - 런타임 비밀값은 GitHub에 복제하지 않고 EC2의 `/home/ubuntu/alimtalk-proxy/.env`와
-  보호된 `.legal-mcp-secrets/clients.json`만 사용한다.
+  활성화된 MCP의 보호 file registry만 사용한다. 경로는
+  `.legal-mcp-secrets/clients.json`, `.gis-mcp-secrets/clients.json`로 분리한다.
 - 후보 컨테이너를 `127.0.0.1:13100`에서 검증한 후 공개 포트 `3100`을 교체한다.
 - 성공 후 직전 컨테이너를 `alimtalk-proxy-rollback`이라는 정지 상태 컨테이너로 1세대 보존한다.
-  단, 법률 MCP file registry 최초 전환에서는 구 env digest를 복원하지 않기 위해
+  단, 법률 또는 GIS MCP file registry 최초 전환에서는 구 env digest를 복원하지 않기 위해
   file-mode 최종 health 통과 후 기존 rollback container를 제거한다.
 
 기존 `scripts/build-and-push.sh`와 `scripts/deploy-to-ec2.sh`의 Docker Hub/`latest` 방식은 사용하지 않는다.
@@ -86,6 +87,40 @@ point 전에는 next env를 정리하고 기존 container를 복구하지만, co
 프로세스 강제 종료 등으로 `.env.legal-mcp.next.*`가 남았거나 current container가
 없는 상태에서 rollback만 남으면 다음 배포도 자동 진행·자동 재기동하지 않고
 operator review를 요구한다.
+
+### GIS MCP file registry
+
+GIS MCP 소수 초대 client는 법률 MCP와 경로·marker·operation evidence를
+공유하지 않는다.
+
+```text
+/home/ubuntu/alimtalk-proxy/.gis-mcp-secrets              uid/gid 1001:1001, mode 700
+/home/ubuntu/alimtalk-proxy/.gis-mcp-secrets/clients.json uid 1001, mode 600
+/run/secrets/tonghari-gis-mcp/clients.json                container file
+```
+
+container에는 `.gis-mcp-secrets` directory 전체를
+`/run/secrets/tonghari-gis-mcp`에 read-only bind mount하고 `.env`에는
+다음 경로만 둔다.
+
+```text
+GIS_MCP_TOKEN_REGISTRY_FILE=/run/secrets/tonghari-gis-mcp/clients.json
+```
+
+`GIS_MCP_TOKEN_REGISTRY_JSON`, `GIS_MCP_TOKEN_SHA256`는 최초 이전 후
+`.env`에 남기지 않는다. workflow는 EC2 내부에서만 JSON→file을
+초기화하고 semantic equality, file schema/count, candidate/final의 file-only env,
+read-only mount를 모두 검증한다. final health 통과가 commit point며 이후
+구 env-mode rollback을 재기동하지 않는다. `.env.gis-mcp.next.*`가 남거나
+current container 부재·rollback-only 상태면 자동 복구하지 않고 수동 검토를
+요구한다.
+
+`GIS_MCP_TOKEN_REGISTRY_FILE`, `GIS_MCP_TOKEN_REGISTRY_JSON`,
+`GIS_MCP_TOKEN_SHA256` 중 둘 이상이 설정되면 fail-closed한다. GitHub의 보호
+environment `gis-mcp-registry`에는 required reviewer와 `main` 분기 제한을
+둔다. `add`의 digest를 1회 전달할 때만
+`GIS_MCP_REGISTRY_PENDING_SHA256`를 임시로 설정하고 완료 즉시 삭제한다.
+raw bearer를 GitHub secret로 저장하지 않는다.
 
 개발 DB 분기를 위한 필수 항목은 다음 세 개다.
 
@@ -216,14 +251,22 @@ done
 6. 법률 MCP registry directory/file의 소유자·모드·schema를 검증한다. 최초
    전환이면 EC2 내부에서만 JSON registry를 file로 초기화하고 file-only next
    env를 만든다.
-7. 후보 컨테이너를 `127.0.0.1:13100`에 띄워 SHA, build time, image tag,
+7. GIS 인증 source가 완전히 미설정이면 기존 disabled 배포를 그대로
+   유지하고 GIS registry directory·mount·health 강제를 생략한다. non-empty
+   `GIS_MCP_TOKEN_REGISTRY_JSON`이 생기면 바로 JSON→file 초기화, semantic
+   equality, file-only next env를 강제한다. 빈 key·혼합 source·legacy-only는 거부한다.
+8. 후보 컨테이너를 `127.0.0.1:13100`에 띄워 SHA, build time, image tag,
    LAND_AREA_SYNC enabled/count/digest와 법률 MCP valid/mode/source/client count를 검증한다.
-8. 후보가 통과한 경우에만 기존 `3100` 컨테이너를 rollback 이름으로 보존하고 새 컨테이너로 교체한다.
-9. 최종 `3100` health 검증에 실패하면 직전 컨테이너를 복구한다. 이미 file
+   GIS registry가 활성화된 배포에서만 GIS directory를 read-only mount하고
+   `gisMcpConfigurationValid=true`, `client_registry`, `file_registry`, provider mode,
+   client/token count를 추가 검증한다.
+9. 후보가 통과한 경우에만 기존 `3100` 컨테이너를 rollback 이름으로 보존하고 새 컨테이너로 교체한다.
+10. 최종 `3100` health 검증에 실패하면 직전 컨테이너를 복구한다. 이미 file
    migration marker가 있다면 rollback container의 file-only env와 동일 read-only
-   mount를 먼저 검증하며, 불일치하면 구 digest를 살리지 않고 fail-closed한다.
-10. 최초 전환의 final health가 통과하면 구 rollback을 제거하고 file-only
-    `.env`와 migration marker를 원자적으로 확정한다.
+   mount를 먼저 검증하며, 법률·GIS 어느 쪽이든 불일치하면 구 digest를
+   살리지 않고 fail-closed한다.
+11. 최초 전환의 final health가 통과하면 구 rollback을 제거하고 file-only
+    `.env`와 각 MCP의 전용 migration marker를 원자적으로 확정한다.
 
 별도 `Land Area Sync Runtime Allowlist` workflow도 migration marker, file-only
 `.env`, UID/GID `1001:1001` mode `700` registry directory와 CLI validate count를
@@ -296,12 +339,111 @@ registry_validation="$(
 [[ "${registry_validation}" =~ ^clientCount=([1-9][0-9]*)$ ]]
 expected_client_count="${BASH_REMATCH[1]}"
 
+gis_registry_auth_source=disabled
+expected_gis_client_count=""
+if test -e .gis-mcp-file-registry-v1 \
+  || test -L .gis-mcp-file-registry-v1; then
+  test -f .gis-mcp-file-registry-v1
+  test ! -L .gis-mcp-file-registry-v1
+  test "$(stat -c '%u' .gis-mcp-file-registry-v1)" = "$(id -u)"
+  test "$(stat -c '%a' .gis-mcp-file-registry-v1)" = 600
+  test "$(<.gis-mcp-file-registry-v1)" = 'version=1'
+  gis_registry_auth_source=file_registry
+  test "$(grep -Fxc \
+    'GIS_MCP_TOKEN_REGISTRY_FILE=/run/secrets/tonghari-gis-mcp/clients.json' \
+    <<< "${rollback_env}" || true)" = 1
+  test "$(grep -Ec '^GIS_MCP_TOKEN_REGISTRY_JSON=' \
+    <<< "${rollback_env}" || true)" = 0
+  test "$(grep -Ec '^GIS_MCP_TOKEN_SHA256=' \
+    <<< "${rollback_env}" || true)" = 0
+
+  gis_rollback_mount="$(
+    docker container inspect --format \
+      '{{range .Mounts}}{{if eq .Destination "/run/secrets/tonghari-gis-mcp"}}{{.Type}}|{{.RW}}|{{.Source}}{{println}}{{end}}{{end}}' \
+      alimtalk-proxy-rollback
+  )"
+  test "${gis_rollback_mount}" = \
+    'bind|false|/home/ubuntu/alimtalk-proxy/.gis-mcp-secrets'
+
+  gis_registry_validation="$(
+    docker run --rm \
+      --network none --read-only --cap-drop ALL \
+      --security-opt no-new-privileges \
+      --mount \
+        type=bind,src=/home/ubuntu/alimtalk-proxy/.gis-mcp-secrets,dst=/run/secrets/tonghari-gis-mcp,readonly \
+      "${rollback_image}" \
+      node dist/cli/gis-mcp-registry.js validate \
+        --path /run/secrets/tonghari-gis-mcp/clients.json
+  )"
+  [[ "${gis_registry_validation}" =~ ^clientCount=([1-9][0-9]*)$ ]]
+  expected_gis_client_count="${BASH_REMATCH[1]}"
+else
+  gis_file_definition_count="$(grep -Ec '^GIS_MCP_TOKEN_REGISTRY_FILE=' \
+    <<< "${rollback_env}" || true)"
+  gis_json_definition_count="$(grep -Ec '^GIS_MCP_TOKEN_REGISTRY_JSON=' \
+    <<< "${rollback_env}" || true)"
+  gis_json_nonempty_count="$(grep -Ec '^GIS_MCP_TOKEN_REGISTRY_JSON=.+' \
+    <<< "${rollback_env}" || true)"
+  gis_legacy_definition_count="$(grep -Ec '^GIS_MCP_TOKEN_SHA256=' \
+    <<< "${rollback_env}" || true)"
+
+  if test "${gis_file_definition_count}" = 0 \
+    && test "${gis_json_definition_count}" = 0 \
+    && test "${gis_legacy_definition_count}" = 0; then
+    # GIS MCP를 전혀 활성화하지 않았던 rollback container다.
+    gis_registry_auth_source=disabled
+  elif test "${gis_file_definition_count}" = 0 \
+    && test "${gis_json_definition_count}" = 1 \
+    && test "${gis_json_nonempty_count}" = 1 \
+    && test "${gis_legacy_definition_count}" = 0; then
+    # 최초 JSON -> file migration의 commit point 전 rollback container다.
+    gis_registry_auth_source=json_registry
+    gis_registry_json=""
+    while IFS= read -r env_line; do
+      case "${env_line}" in
+        GIS_MCP_TOKEN_REGISTRY_JSON=*)
+          gis_registry_json="${env_line#GIS_MCP_TOKEN_REGISTRY_JSON=}"
+          ;;
+      esac
+    done <<< "${rollback_env}"
+    gis_registry_validation="$(
+      printf '%s' "${gis_registry_json}" \
+        | docker run --rm -i \
+            --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges \
+            "${rollback_image}" \
+            node -e '
+              const { parseGisMcpTokenRegistryJson } = require("./dist/middleware/gis-mcp-token-registry");
+              let body = "";
+              process.stdin.setEncoding("utf8");
+              process.stdin.on("data", chunk => { body += chunk; });
+              process.stdin.on("end", () => {
+                try {
+                  const registry = parseGisMcpTokenRegistryJson(body);
+                  process.stdout.write(`clientCount=${registry.clients.length}`);
+                } catch {
+                  process.exit(1);
+                }
+              });
+            '
+    )"
+    unset gis_registry_json
+    [[ "${gis_registry_validation}" =~ ^clientCount=([1-9][0-9]*)$ ]]
+    expected_gis_client_count="${BASH_REMATCH[1]}"
+  else
+    echo 'rollback container의 GIS 인증 source를 안전하게 판정할 수 없습니다.'
+    false
+  fi
+fi
+
 docker rm -f alimtalk-proxy
 docker rename alimtalk-proxy-rollback alimtalk-proxy
 docker start alimtalk-proxy
 curl -fsS http://127.0.0.1:3100/health \
   | docker exec -i \
       -e EXPECTED_LEGAL_MCP_CLIENT_COUNT="${expected_client_count}" \
+      -e EXPECTED_GIS_MCP_AUTH_SOURCE="${gis_registry_auth_source}" \
+      -e EXPECTED_GIS_MCP_CLIENT_COUNT="${expected_gis_client_count}" \
       alimtalk-proxy \
       node -e '
         let body = "";
@@ -310,6 +452,48 @@ curl -fsS http://127.0.0.1:3100/health \
         process.stdin.on("end", () => {
           try {
             const health = JSON.parse(body);
+            const expectedGisAuthSource = process.env.EXPECTED_GIS_MCP_AUTH_SOURCE;
+            const reportedGisAuthSource = health.features?.gisMcpAuthSource;
+            // 최초 배포 직전의 구 이미지는 authSource 필드 자체가 없었다.
+            // 위에서 exact env와 registry schema로 JSON/disabled source를 이미 증명한
+            // 경우에만 그 필드 부재를 하위 호환으로 인정한다. file mode는 인정하지 않는다.
+            const gisAuthSourceValid = reportedGisAuthSource === expectedGisAuthSource
+              || (
+                typeof reportedGisAuthSource === "undefined"
+                && (
+                  expectedGisAuthSource === "json_registry"
+                  || expectedGisAuthSource === "disabled"
+                )
+              );
+            const gisRegistryValid = process.env.EXPECTED_GIS_MCP_AUTH_SOURCE === "file_registry"
+              ? (
+                health.features?.gisMcpConfigurationValid === true
+                && health.features?.gisMcpAuthMode === "client_registry"
+                && gisAuthSourceValid
+                && health.features?.gisMcpProviderMode === "vworld_and_data_portal"
+                && String(health.features?.gisMcpRegisteredClientCount)
+                  === process.env.EXPECTED_GIS_MCP_CLIENT_COUNT
+                && String(health.features?.gisMcpRegisteredTokenCount)
+                  === process.env.EXPECTED_GIS_MCP_CLIENT_COUNT
+              )
+              : process.env.EXPECTED_GIS_MCP_AUTH_SOURCE === "json_registry"
+                ? (
+                  health.features?.gisMcpConfigurationValid === true
+                  && health.features?.gisMcpAuthMode === "client_registry"
+                  && gisAuthSourceValid
+                  && health.features?.gisMcpProviderMode === "vworld_and_data_portal"
+                  && String(health.features?.gisMcpRegisteredClientCount)
+                    === process.env.EXPECTED_GIS_MCP_CLIENT_COUNT
+                  && String(health.features?.gisMcpRegisteredTokenCount)
+                    === process.env.EXPECTED_GIS_MCP_CLIENT_COUNT
+                )
+                : process.env.EXPECTED_GIS_MCP_AUTH_SOURCE === "disabled"
+                  && health.features?.gisMcpConfigurationValid === false
+                  && health.features?.gisMcpAuthMode === "disabled"
+                  && gisAuthSourceValid
+                  && health.features?.gisMcpProviderMode === "disabled"
+                  && String(health.features?.gisMcpRegisteredClientCount) === "0"
+                  && String(health.features?.gisMcpRegisteredTokenCount) === "0";
             const valid = health.status === "ok"
               && health.features?.legalMcpConfigurationValid === true
               && health.features?.legalMcpAuthMode === "client_registry"
@@ -317,7 +501,8 @@ curl -fsS http://127.0.0.1:3100/health \
               && String(health.features?.legalMcpRegisteredClientCount)
                 === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT
               && String(health.features?.legalMcpRegisteredTokenCount)
-                === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT;
+                === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT
+              && gisRegistryValid;
             process.exit(valid ? 0 : 1);
           } catch {
             process.exit(1);
@@ -332,12 +517,24 @@ curl -fsS http://127.0.0.1:3100/health \
 현재 `clients.json`의 검증 count와 일치하지 않으면 롤백 성공으로 판정하지 않는다.
 폐기된 legal token이 포함된 env-mode rollback은 서비스 중단을 감수하고라도
 시작하지 않는다.
+GIS migration marker가 있는 경우도 동일하게 GIS file-only env, read-only
+mount, `gisMcpConfigurationValid=true`, `client_registry`, `file_registry`, provider
+mode, client/token count까지 일치해야 한다. 이 계약을 만족하지 못한
+경우 롤백 성공으로 판정하지 않는다. GIS registry를 아직 활성화하지 않은
+호스트는 반대로 configuration/auth source/provider가 모두 disabled이고 두
+count가 0인지 정확히 확인해야 한다. 최초 JSON -> file 전환의 commit point 전
+rollback은 유일한 예외로, 원문을 출력하지 않고 JSON registry를 검증한 뒤
+`json_registry`와 정확한 두 count를 요구한다. 그 외 GIS env-mode rollback은
+시작하지 않는다. 이 기능을 처음 배포하기 직전의 구 이미지는 health에
+`gisMcpAuthSource` 필드가 없으므로, 위에서 exact env와 registry schema로
+`json_registry` 또는 `disabled`를 이미 증명한 경우에만 필드 부재를 허용한다.
+`file_registry` rollback은 항상 새 필드의 정확한 값을 요구한다.
 
 ## 주의사항
 
 - `.env`를 수정해도 실행 중인 컨테이너에는 반영되지 않는다. `docker restart`도 환경변수를
-  다시 읽지 않으므로 새 컨테이너 배포가 필요하다. 단, legal MCP
-  `clients.json`은 directory bind mount와 request-time reload를 사용하므로 원자적
+  다시 읽지 않으므로 새 컨테이너 배포가 필요하다. 단, legal/GIS MCP
+  `clients.json`은 각 전용 directory bind mount와 request-time reload를 사용하므로 원자적
   add/revoke 후 재배포·재시작이 필요 없다.
 - Vercel 환경변수도 새 배포부터 적용된다. 공유 JWT를 교체한 경우 API와 `johapon-dev`를 연속으로 재배포한다.
 - 공개 HTTP `3100`은 HTTPS 전환 전 합성 개발 GIS 검증에만 제한한다. 운영 bearer token 검증에 사용하지 않는다.

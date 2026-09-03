@@ -258,6 +258,19 @@ jobs:
             legal_registry_finalization_required=0
             legal_registry_needs_next_env=0
             legal_registry_json_source_at_start=0
+            gis_registry_host_dir="${HOME}/alimtalk-proxy/.gis-mcp-secrets"
+            gis_registry_container_dir="/run/secrets/tonghari-gis-mcp"
+            gis_registry_container_file="${gis_registry_container_dir}/clients.json"
+            gis_registry_marker="${HOME}/alimtalk-proxy/.gis-mcp-file-registry-v1"
+            gis_registry_env_next=""
+            gis_registry_runtime_env="${HOME}/alimtalk-proxy/.env"
+            gis_registry_client_count=""
+            gis_registry_active_for_deployment=0
+            gis_registry_required_at_start=0
+            gis_registry_finalization_required=0
+            gis_registry_needs_next_env=0
+            gis_registry_json_source_at_start=0
+            deployment_runtime_env="${HOME}/alimtalk-proxy/.env"
             deployment_phase="precommit"
 
             for variable_name in \
@@ -374,6 +387,106 @@ jobs:
             shopt -u nullglob
             if (( ${#legal_registry_orphan_next_envs[@]} > 0 )); then
               echo "CLEANUP_FAILED: orphan legal MCP next env requires manual review."
+              false
+            fi
+
+            gis_registry_file_definition_count="$(
+              grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_FILE[[:space:]]*=' \
+                .env || true
+            )"
+            gis_registry_json_definition_count="$(
+              grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=' \
+                .env || true
+            )"
+            gis_registry_legacy_definition_count="$(
+              grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_SHA256[[:space:]]*=' \
+                .env || true
+            )"
+            for definition_count in \
+              "${gis_registry_file_definition_count}" \
+              "${gis_registry_json_definition_count}" \
+              "${gis_registry_legacy_definition_count}"
+            do
+              if [[ "${definition_count}" -gt 1 ]]; then
+                echo "Runtime .env has duplicate GIS MCP authentication keys."
+                false
+              fi
+            done
+
+            gis_registry_file_exact_count="$(
+              grep -Fxc \
+                "GIS_MCP_TOKEN_REGISTRY_FILE=${gis_registry_container_file}" \
+                .env || true
+            )"
+            gis_registry_file_nonempty_count="$(
+              grep -Ec '^GIS_MCP_TOKEN_REGISTRY_FILE=.+$' .env || true
+            )"
+            gis_registry_json_nonempty_count="$(
+              grep -Ec '^GIS_MCP_TOKEN_REGISTRY_JSON=.+$' .env || true
+            )"
+            gis_registry_legacy_nonempty_count="$(
+              grep -Ec '^GIS_MCP_TOKEN_SHA256=.+$' .env || true
+            )"
+
+            gis_registry_marker_present=0
+            if [[ -e "${gis_registry_marker}" || -L "${gis_registry_marker}" ]]; then
+              if [[ ! -f "${gis_registry_marker}" || -L "${gis_registry_marker}" ]] \
+                || [[ "$(stat -c '%u' "${gis_registry_marker}")" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${gis_registry_marker}")" != "600" ]] \
+                || [[ "$(<"${gis_registry_marker}")" != "version=1" ]]; then
+                echo "GIS MCP file-registry marker is invalid."
+                false
+              fi
+              gis_registry_marker_present=1
+              gis_registry_active_for_deployment=1
+              gis_registry_required_at_start=1
+              if [[ "${gis_registry_file_definition_count}" != "1" ]] \
+                || [[ "${gis_registry_file_exact_count}" != "1" ]] \
+                || [[ "${gis_registry_json_definition_count}" != "0" ]] \
+                || [[ "${gis_registry_legacy_definition_count}" != "0" ]]; then
+                echo "Migrated runtime .env must use only the fixed GIS MCP registry file."
+                false
+              fi
+            else
+              if [[ "${gis_registry_file_exact_count}" == "1" ]] \
+                && [[ "${gis_registry_json_nonempty_count}" == "0" ]] \
+                && [[ "${gis_registry_legacy_nonempty_count}" == "0" ]]; then
+                # final health 통과 후 cleanup이 끊긴 경우를 안전하게 마감한다.
+                gis_registry_active_for_deployment=1
+                gis_registry_finalization_required=1
+                gis_registry_required_at_start=1
+                if [[ "${gis_registry_json_definition_count}" != "0" ]] \
+                  || [[ "${gis_registry_legacy_definition_count}" != "0" ]]; then
+                  gis_registry_needs_next_env=1
+                fi
+              elif [[ "${gis_registry_json_definition_count}" == "1" ]] \
+                && [[ "${gis_registry_json_nonempty_count}" == "1" ]] \
+                && [[ "${gis_registry_file_nonempty_count}" == "0" ]] \
+                && [[ "${gis_registry_legacy_nonempty_count}" == "0" ]]; then
+                # 최초 1회만 EC2의 기존 JSON registry를 file로 이전한다.
+                gis_registry_active_for_deployment=1
+                gis_registry_finalization_required=1
+                gis_registry_needs_next_env=1
+                gis_registry_json_source_at_start=1
+              elif [[ "${gis_registry_file_definition_count}" == "0" ]] \
+                && [[ "${gis_registry_json_definition_count}" == "0" ]] \
+                && [[ "${gis_registry_legacy_definition_count}" == "0" ]]; then
+                # GIS MCP가 아직 활성화되지 않은 기존 운영 배포를 유지한다.
+                # JSON bootstrap이 추가되면 위 분기가 file migration을 강제한다.
+                gis_registry_active_for_deployment=0
+              else
+                echo "GIS MCP authentication must be fully unset or use one supported registry source."
+                false
+              fi
+            fi
+
+            shopt -s nullglob
+            gis_registry_orphan_next_envs=(
+              "${HOME}/alimtalk-proxy"/.env.gis-mcp.next.*
+            )
+            shopt -u nullglob
+            if (( ${#gis_registry_orphan_next_envs[@]} > 0 )); then
+              echo "CLEANUP_FAILED: orphan GIS MCP next env requires manual review."
               false
             fi
             if ! docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1 \
@@ -557,6 +670,62 @@ jobs:
                     ' >/dev/null 2>&1
             }
 
+            verify_gis_file_registry_container_contract() {
+              local container_name="$1"
+              local configured_environment=""
+              local registry_mount=""
+
+              configured_environment="$(
+                docker container inspect \
+                  --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                  "${container_name}"
+              )" || return 1
+              if [[ "$(grep -Fxc "GIS_MCP_TOKEN_REGISTRY_FILE=${gis_registry_container_file}" <<< "${configured_environment}" || true)" != "1" ]] \
+                || [[ "$(grep -Ec '^GIS_MCP_TOKEN_REGISTRY_JSON=' <<< "${configured_environment}" || true)" != "0" ]] \
+                || [[ "$(grep -Ec '^GIS_MCP_TOKEN_SHA256=' <<< "${configured_environment}" || true)" != "0" ]]; then
+                return 1
+              fi
+
+              registry_mount="$(
+                docker container inspect --format \
+                  '{{range .Mounts}}{{if eq .Destination "/run/secrets/tonghari-gis-mcp"}}{{.Type}}|{{.RW}}|{{.Source}}{{println}}{{end}}{{end}}' \
+                  "${container_name}"
+              )" || return 1
+              [[ "${registry_mount}" == "bind|false|${gis_registry_host_dir}" ]]
+            }
+
+            verify_gis_registry_health() {
+              local container_name="$1"
+              local port="$2"
+
+              curl -fsS --connect-timeout 2 --max-time 5 \
+                "http://127.0.0.1:${port}/health" \
+                | docker exec -i \
+                    -e EXPECTED_GIS_MCP_CLIENT_COUNT="${gis_registry_client_count}" \
+                    "${container_name}" \
+                    node -e '
+                      let body = "";
+                      process.stdin.setEncoding("utf8");
+                      process.stdin.on("data", (chunk) => { body += chunk; });
+                      process.stdin.on("end", () => {
+                        try {
+                          const health = JSON.parse(body);
+                          const valid = health.features?.gisMcpConfigurationValid === true
+                            && health.features?.gisMcpAuthMode === "client_registry"
+                            && health.features?.gisMcpAuthSource === "file_registry"
+                            && health.features?.gisMcpProviderMode === "vworld_and_data_portal"
+                            && String(health.features?.gisMcpRegisteredClientCount)
+                              === process.env.EXPECTED_GIS_MCP_CLIENT_COUNT
+                            && String(health.features?.gisMcpRegisteredTokenCount)
+                              === process.env.EXPECTED_GIS_MCP_CLIENT_COUNT;
+                          process.exit(valid ? 0 : 1);
+                        } catch {
+                          process.exit(1);
+                        }
+                      });
+                    ' >/dev/null 2>&1
+            }
+
             rollback() {
               local exit_code="$1"
               rollback_cleanup_failed=0
@@ -583,6 +752,26 @@ jobs:
                   rollback_cleanup_failed=1
                 fi
                 legal_registry_env_next=""
+              fi
+
+              if [[ -n "${gis_registry_env_next}" ]]; then
+                gis_registry_env_next_path_valid=0
+                case "${gis_registry_env_next}" in
+                  "${HOME}/alimtalk-proxy/".env.gis-mcp.next.*)
+                    gis_registry_env_next_path_valid=1
+                    ;;
+                esac
+                if [[ "${gis_registry_env_next_path_valid}" -ne 1 ]] \
+                  || [[ ! -f "${gis_registry_env_next}" ]] \
+                  || [[ -L "${gis_registry_env_next}" ]] \
+                  || [[ "$(stat -c '%u' "${gis_registry_env_next}" 2>/dev/null)" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' "${gis_registry_env_next}" 2>/dev/null)" != "600" ]] \
+                  || ! rm -f -- "${gis_registry_env_next}" \
+                  || [[ -e "${gis_registry_env_next}" || -L "${gis_registry_env_next}" ]]; then
+                  echo "ROLLBACK_FAILED: GIS MCP next env cleanup failed."
+                  rollback_cleanup_failed=1
+                fi
+                gis_registry_env_next=""
               fi
 
               if [[ "${candidate_started}" -eq 1 ]] \
@@ -636,6 +825,10 @@ jobs:
                     && ! verify_file_registry_container_contract "${restore_source}"; then
                     echo "ROLLBACK_FAILED: previous container could revive an environment registry."
                     service_recovery_failed=1
+                  elif [[ "${gis_registry_required_at_start}" -eq 1 ]] \
+                    && ! verify_gis_file_registry_container_contract "${restore_source}"; then
+                    echo "ROLLBACK_FAILED: previous container could revive a GIS environment registry."
+                    service_recovery_failed=1
                   elif ! docker start "${restore_source}" >/dev/null; then
                     echo "ROLLBACK_FAILED: previous container could not be started."
                     service_recovery_failed=1
@@ -648,6 +841,10 @@ jobs:
                   elif [[ "${legal_registry_required_at_start}" -eq 1 ]] \
                     && ! verify_legal_registry_health "${restore_source}" 3100; then
                     echo "ROLLBACK_FAILED: restored legal MCP registry health check failed."
+                    service_recovery_failed=1
+                  elif [[ "${gis_registry_required_at_start}" -eq 1 ]] \
+                    && ! verify_gis_registry_health "${restore_source}" 3100; then
+                    echo "ROLLBACK_FAILED: restored GIS MCP registry health check failed."
                     service_recovery_failed=1
                   else
                     echo "Previous container restored and health-checked successfully."
@@ -673,11 +870,13 @@ jobs:
               set +e
               logout_registry
 
-              if [[ "${legal_registry_finalization_required}" -eq 1 ]] \
+              if [[ "${legal_registry_finalization_required}" -eq 1 \
+                || "${gis_registry_finalization_required}" -eq 1 ]] \
                 && docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
                 docker rm -f "${ROLLBACK_CONTAINER}" >/dev/null 2>&1 || cleanup_failed=1
               fi
-              if [[ "${legal_registry_finalization_required}" -eq 1 ]] \
+              if [[ "${legal_registry_finalization_required}" -eq 1 \
+                || "${gis_registry_finalization_required}" -eq 1 ]] \
                 && docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
                 cleanup_failed=1
               fi
@@ -698,6 +897,25 @@ jobs:
                   cleanup_failed=1
                 fi
                 legal_registry_env_next=""
+              fi
+
+              next_env_path_valid=0
+              if [[ -n "${gis_registry_env_next}" ]]; then
+                case "${gis_registry_env_next}" in
+                  "${HOME}/alimtalk-proxy/".env.gis-mcp.next.*)
+                    next_env_path_valid=1
+                    ;;
+                esac
+                if [[ "${next_env_path_valid}" -ne 1 ]] \
+                  || [[ ! -f "${gis_registry_env_next}" ]] \
+                  || [[ -L "${gis_registry_env_next}" ]] \
+                  || [[ "$(stat -c '%u' "${gis_registry_env_next}" 2>/dev/null)" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' "${gis_registry_env_next}" 2>/dev/null)" != "600" ]] \
+                  || ! rm -f -- "${gis_registry_env_next}" \
+                  || [[ -e "${gis_registry_env_next}" || -L "${gis_registry_env_next}" ]]; then
+                  cleanup_failed=1
+                fi
+                gis_registry_env_next=""
               fi
 
               if [[ "${cleanup_failed}" -ne 0 ]]; then
@@ -890,10 +1108,178 @@ jobs:
               legal_registry_runtime_env="${legal_registry_env_next}"
             fi
 
+            deployment_runtime_env="${legal_registry_runtime_env}"
+
+            if [[ "${gis_registry_active_for_deployment}" -eq 1 ]]; then
+              if [[ -e "${gis_registry_host_dir}" || -L "${gis_registry_host_dir}" ]]; then
+              if [[ ! -d "${gis_registry_host_dir}" || -L "${gis_registry_host_dir}" ]] \
+                || [[ "$(stat -c '%u' "${gis_registry_host_dir}")" != "1001" ]] \
+                || [[ "$(stat -c '%g' "${gis_registry_host_dir}")" != "1001" ]] \
+                || [[ "$(stat -c '%a' "${gis_registry_host_dir}")" != "700" ]]; then
+                echo "GIS MCP registry directory must be a UID/GID 1001 mode 700 directory."
+                false
+              fi
+            else
+              mkdir -m 700 -- "${gis_registry_host_dir}"
+              if [[ ! -d "${gis_registry_host_dir}" || -L "${gis_registry_host_dir}" ]] \
+                || [[ "$(stat -c '%u' "${gis_registry_host_dir}")" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${gis_registry_host_dir}")" != "700" ]]; then
+                echo "New GIS MCP registry directory failed its host ownership check."
+                false
+              fi
+              docker run --rm \
+                --user 0:0 \
+                --network none \
+                --read-only \
+                --cap-drop ALL \
+                --cap-add CHOWN \
+                --cap-add FOWNER \
+                --security-opt no-new-privileges \
+                --mount \
+                  "type=bind,src=${gis_registry_host_dir},dst=/registry" \
+                "${IMAGE}" \
+                sh -eu -c 'chown 1001:1001 /registry && chmod 700 /registry'
+              if [[ "$(stat -c '%u' "${gis_registry_host_dir}")" != "1001" ]] \
+                || [[ "$(stat -c '%g' "${gis_registry_host_dir}")" != "1001" ]] \
+                || [[ "$(stat -c '%a' "${gis_registry_host_dir}")" != "700" ]]; then
+                echo "GIS MCP registry directory ownership initialization failed."
+                false
+              fi
+            fi
+
+            gis_registry_validation=""
+            if gis_registry_validation="$(
+              docker run --rm \
+                --network none \
+                --read-only \
+                --cap-drop ALL \
+                --security-opt no-new-privileges \
+                --mount \
+                  "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir},readonly" \
+                "${IMAGE}" \
+                node dist/cli/gis-mcp-registry.js validate \
+                  --path "${gis_registry_container_file}"
+            )"; then
+              :
+            else
+              if [[ "${gis_registry_marker_present}" -eq 1 ]] \
+                || [[ "${gis_registry_required_at_start}" -eq 1 ]]; then
+                echo "Configured GIS MCP file registry failed validation."
+                false
+              fi
+
+              gis_registry_initialization="$(
+                docker run --rm \
+                  --user 1001:1001 \
+                  --network none \
+                  --read-only \
+                  --cap-drop ALL \
+                  --security-opt no-new-privileges \
+                  --env-file .env \
+                  --mount \
+                    "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir}" \
+                  "${IMAGE}" \
+                  node dist/cli/gis-mcp-registry.js init-from-env \
+                    --path "${gis_registry_container_file}"
+              )"
+              if [[ ! "${gis_registry_initialization}" =~ ^action=init-from-env[[:space:]]clientCount=([1-9][0-9]*)$ ]]; then
+                echo "GIS MCP registry initialization returned an invalid attestation."
+                false
+              fi
+              gis_registry_validation="$(
+                docker run --rm \
+                  --network none \
+                  --read-only \
+                  --cap-drop ALL \
+                  --security-opt no-new-privileges \
+                  --mount \
+                    "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir},readonly" \
+                  "${IMAGE}" \
+                  node dist/cli/gis-mcp-registry.js validate \
+                    --path "${gis_registry_container_file}"
+              )"
+            fi
+
+            if [[ ! "${gis_registry_validation}" =~ ^clientCount=([1-9][0-9]*)$ ]]; then
+              echo "GIS MCP registry validation returned an invalid attestation."
+              false
+            fi
+            gis_registry_client_count="${BASH_REMATCH[1]}"
+            if (( gis_registry_client_count < 1 || gis_registry_client_count > 32 )); then
+              echo "GIS MCP registry client count is outside the supported range."
+              false
+            fi
+
+            if [[ "${gis_registry_json_source_at_start}" -eq 1 ]]; then
+              gis_registry_env_match="$(
+                docker run --rm \
+                  --network none \
+                  --read-only \
+                  --cap-drop ALL \
+                  --security-opt no-new-privileges \
+                  --env-file .env \
+                  --mount \
+                    "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir},readonly" \
+                  "${IMAGE}" \
+                  node dist/cli/gis-mcp-registry.js matches-env \
+                    --path "${gis_registry_container_file}"
+              )"
+              if [[ ! "${gis_registry_env_match}" =~ ^clientCount=([1-9][0-9]*)$ ]] \
+                || [[ "${BASH_REMATCH[1]:-}" != "${gis_registry_client_count}" ]]; then
+                echo "GIS MCP file registry does not match the current EC2 JSON registry."
+                false
+              fi
+            fi
+
+            if [[ "${gis_registry_needs_next_env}" -eq 1 ]]; then
+              gis_registry_env_next="$(
+                mktemp "${HOME}/alimtalk-proxy/.env.gis-mcp.next.XXXXXX"
+              )"
+              chmod 600 "${gis_registry_env_next}"
+              export GIS_REGISTRY_CONTAINER_FILE="${gis_registry_container_file}"
+              awk '
+                /^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_FILE[[:space:]]*=/ { next }
+                /^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=/ { next }
+                /^[[:space:]]*GIS_MCP_TOKEN_SHA256[[:space:]]*=/ { next }
+                { print }
+                END {
+                  print "GIS_MCP_TOKEN_REGISTRY_FILE=" \
+                    ENVIRON["GIS_REGISTRY_CONTAINER_FILE"]
+                }
+              ' "${legal_registry_runtime_env}" > "${gis_registry_env_next}"
+              unset GIS_REGISTRY_CONTAINER_FILE
+              if [[ ! -f "${gis_registry_env_next}" || -L "${gis_registry_env_next}" ]] \
+                || [[ "$(stat -c '%u' "${gis_registry_env_next}")" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${gis_registry_env_next}")" != "600" ]] \
+                || [[ "$(grep -Fxc "GIS_MCP_TOKEN_REGISTRY_FILE=${gis_registry_container_file}" "${gis_registry_env_next}" || true)" != "1" ]] \
+                || [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=' "${gis_registry_env_next}" || true)" != "0" ]] \
+                || [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_SHA256[[:space:]]*=' "${gis_registry_env_next}" || true)" != "0" ]]; then
+                echo "Next runtime .env did not establish an exclusive GIS MCP file registry."
+                false
+              fi
+              gis_registry_runtime_env="${gis_registry_env_next}"
+              deployment_runtime_env="${gis_registry_runtime_env}"
+              fi
+            fi
+
+            gis_registry_mount_args=()
+            if [[ "${gis_registry_active_for_deployment}" -eq 1 ]]; then
+              gis_registry_mount_args=(
+                --mount
+                "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir},readonly"
+              )
+            fi
+
             if [[ "${legal_registry_required_at_start}" -eq 1 ]] \
               && docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1 \
               && ! verify_file_registry_container_contract "${CONTAINER_NAME}"; then
               echo "Running container does not satisfy the committed legal MCP file-registry contract."
+              false
+            fi
+            if [[ "${gis_registry_required_at_start}" -eq 1 ]] \
+              && docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1 \
+              && ! verify_gis_file_registry_container_contract "${CONTAINER_NAME}"; then
+              echo "Running container does not satisfy the committed GIS MCP file-registry contract."
               false
             fi
 
@@ -938,6 +1324,8 @@ jobs:
                       -e EXPECTED_ALLOWLIST_COUNT="${actual_allowlist_count}" \
                       -e EXPECTED_ALLOWLIST_DIGEST="${actual_allowlist_digest}" \
                       -e EXPECTED_LEGAL_MCP_CLIENT_COUNT="${legal_registry_client_count}" \
+                      -e EXPECTED_GIS_MCP_REGISTRY_ACTIVE="${gis_registry_active_for_deployment}" \
+                      -e EXPECTED_GIS_MCP_CLIENT_COUNT="${gis_registry_client_count}" \
                       "${container_name}" \
                       node -e '
                         let body = "";
@@ -946,6 +1334,24 @@ jobs:
                         process.stdin.on("end", () => {
                           try {
                             const health = JSON.parse(body);
+                            const gisRegistryValid = process.env.EXPECTED_GIS_MCP_REGISTRY_ACTIVE === "1"
+                              ? (
+                                health.features?.gisMcpConfigurationValid === true
+                                && health.features?.gisMcpAuthMode === "client_registry"
+                                && health.features?.gisMcpAuthSource === "file_registry"
+                                && health.features?.gisMcpProviderMode === "vworld_and_data_portal"
+                                && String(health.features?.gisMcpRegisteredClientCount)
+                                  === process.env.EXPECTED_GIS_MCP_CLIENT_COUNT
+                                && String(health.features?.gisMcpRegisteredTokenCount)
+                                  === process.env.EXPECTED_GIS_MCP_CLIENT_COUNT
+                              )
+                              : process.env.EXPECTED_GIS_MCP_REGISTRY_ACTIVE === "0"
+                                && health.features?.gisMcpConfigurationValid === false
+                                && health.features?.gisMcpAuthMode === "disabled"
+                                && health.features?.gisMcpAuthSource === "disabled"
+                                && health.features?.gisMcpProviderMode === "disabled"
+                                && String(health.features?.gisMcpRegisteredClientCount) === "0"
+                                && String(health.features?.gisMcpRegisteredTokenCount) === "0";
                             const valid = health.status === "ok"
                               && health.gitSha === process.env.EXPECTED_GIT_SHA
                               && health.buildTime === process.env.EXPECTED_BUILD_TIME
@@ -962,7 +1368,8 @@ jobs:
                               && String(health.features?.legalMcpRegisteredClientCount)
                                 === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT
                               && String(health.features?.legalMcpRegisteredTokenCount)
-                                === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT;
+                                === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT
+                              && gisRegistryValid;
                             process.exit(valid ? 0 : 1);
                           } catch {
                             process.exit(1);
@@ -984,9 +1391,10 @@ jobs:
               --name "${CANDIDATE_CONTAINER}" \
               --restart no \
               -p 127.0.0.1:13100:3100 \
-              --env-file "${legal_registry_runtime_env}" \
+              --env-file "${deployment_runtime_env}" \
               --mount \
                 "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
+              "${gis_registry_mount_args[@]}" \
               --memory=800m \
               --memory-swap=1600m \
               "${IMAGE}"
@@ -1004,6 +1412,11 @@ jobs:
             fi
             if ! verify_file_registry_container_contract "${CANDIDATE_CONTAINER}"; then
               echo "Candidate did not preserve the legal MCP file-registry contract."
+              false
+            fi
+            if [[ "${gis_registry_active_for_deployment}" -eq 1 ]] \
+              && ! verify_gis_file_registry_container_contract "${CANDIDATE_CONTAINER}"; then
+              echo "Candidate did not preserve the GIS MCP file-registry contract."
               false
             fi
 
@@ -1025,9 +1438,10 @@ jobs:
               --name "${CONTAINER_NAME}" \
               --restart unless-stopped \
               -p 127.0.0.1:3100:3100 \
-              --env-file "${legal_registry_runtime_env}" \
+              --env-file "${deployment_runtime_env}" \
               --mount \
                 "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
+              "${gis_registry_mount_args[@]}" \
               -v "$(pwd)/logs:/app/logs" \
               --memory=800m \
               --memory-swap=1600m \
@@ -1045,6 +1459,11 @@ jobs:
             fi
             if ! verify_file_registry_container_contract "${CONTAINER_NAME}"; then
               echo "Running container did not preserve the legal MCP file-registry contract."
+              false
+            fi
+            if [[ "${gis_registry_active_for_deployment}" -eq 1 ]] \
+              && ! verify_gis_file_registry_container_contract "${CONTAINER_NAME}"; then
+              echo "Running container did not preserve the GIS MCP file-registry contract."
               false
             fi
 
@@ -1128,7 +1547,91 @@ jobs:
                 exit 71
               fi
               echo "Legal MCP file-registry migration committed and legacy rollback removed."
-            elif [[ "${had_previous}" -eq 1 ]]; then
+            fi
+
+            if [[ "${gis_registry_finalization_required}" -eq 1 ]]; then
+              gis_registry_cleanup_failed=0
+
+              if docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                if ! docker rm -f "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                  gis_registry_cleanup_failed=1
+                fi
+              fi
+              if docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                echo "CLEANUP_FAILED: legacy rollback container still exists."
+                gis_registry_cleanup_failed=1
+              else
+                had_previous=0
+              fi
+
+              if [[ "${gis_registry_cleanup_failed}" -eq 0 ]] \
+                && [[ -n "${gis_registry_env_next}" ]]; then
+                if mv -f -- "${gis_registry_env_next}" .env; then
+                  gis_registry_env_next=""
+                  gis_registry_runtime_env="${HOME}/alimtalk-proxy/.env"
+                  deployment_runtime_env="${HOME}/alimtalk-proxy/.env"
+                else
+                  gis_registry_cleanup_failed=1
+                fi
+              fi
+
+              if [[ "${gis_registry_cleanup_failed}" -eq 0 ]]; then
+                if [[ ! -f .env || -L .env ]] \
+                  || [[ "$(stat -c '%u' .env)" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' .env)" != "600" ]] \
+                  || [[ "$(grep -Fxc "GIS_MCP_TOKEN_REGISTRY_FILE=${gis_registry_container_file}" .env || true)" != "1" ]] \
+                  || [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=' .env || true)" != "0" ]] \
+                  || [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_SHA256[[:space:]]*=' .env || true)" != "0" ]]; then
+                  echo "CLEANUP_FAILED: GIS file-only runtime .env validation failed."
+                  gis_registry_cleanup_failed=1
+                fi
+              fi
+
+              gis_registry_marker_next=""
+              if [[ "${gis_registry_cleanup_failed}" -eq 0 ]]; then
+                if gis_registry_marker_next="$(
+                  mktemp "${HOME}/alimtalk-proxy/.gis-mcp-file-registry-v1.next.XXXXXX"
+                )" \
+                  && chmod 600 "${gis_registry_marker_next}" \
+                  && printf 'version=1\n' > "${gis_registry_marker_next}" \
+                  && mv -f -- "${gis_registry_marker_next}" "${gis_registry_marker}"; then
+                  gis_registry_marker_next=""
+                else
+                  echo "CLEANUP_FAILED: GIS MCP migration marker installation failed."
+                  gis_registry_cleanup_failed=1
+                fi
+              fi
+              if [[ "${gis_registry_cleanup_failed}" -eq 0 ]] \
+                && { [[ ! -f "${gis_registry_marker}" ]] \
+                  || [[ -L "${gis_registry_marker}" ]] \
+                  || [[ "$(stat -c '%u' "${gis_registry_marker}")" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' "${gis_registry_marker}")" != "600" ]] \
+                  || [[ "$(<"${gis_registry_marker}")" != "version=1" ]]; }; then
+                echo "CLEANUP_FAILED: GIS MCP migration marker validation failed."
+                gis_registry_cleanup_failed=1
+              fi
+
+              if [[ -n "${gis_registry_marker_next}" ]]; then
+                rm -f -- "${gis_registry_marker_next}" >/dev/null 2>&1 || true
+              fi
+              if [[ -n "${gis_registry_env_next}" ]]; then
+                if ! rm -f -- "${gis_registry_env_next}" >/dev/null 2>&1 \
+                  || [[ -e "${gis_registry_env_next}" || -L "${gis_registry_env_next}" ]]; then
+                  gis_registry_cleanup_failed=1
+                fi
+                gis_registry_env_next=""
+              fi
+
+              if [[ "${gis_registry_cleanup_failed}" -ne 0 ]]; then
+                echo "CLEANUP_FAILED: GIS file-mode container remains active; migration finalization requires review."
+                exit 71
+              fi
+              echo "GIS MCP file-registry migration committed and legacy rollback removed."
+            fi
+
+            if [[ "${legal_registry_finalization_required}" -ne 1 ]] \
+              && [[ "${gis_registry_finalization_required}" -ne 1 ]] \
+              && [[ "${had_previous}" -eq 1 ]]; then
               echo "Previous container preserved as ${ROLLBACK_CONTAINER} for rollback."
             fi
             docker image prune -f || true
