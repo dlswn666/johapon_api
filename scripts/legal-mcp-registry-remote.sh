@@ -793,8 +793,11 @@ parse_list() {
     client="${BASH_REMATCH[1]}"
     [[ "${#client}" -le 64 && -z "${seen[${client}]+x}" ]] || fail "List client ID is duplicated."
     seen["${client}"]=1
-    [[ -n "${target}" && "${client}" == "${target}" ]] && parsed_target=1
+    if [[ -n "${target}" && "${client}" == "${target}" ]]; then
+      parsed_target=1
+    fi
   done
+  return 0
 }
 
 verify_health() {

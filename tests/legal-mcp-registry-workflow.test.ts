@@ -164,6 +164,60 @@ test('mutation은 absent/present와 count 전이를 검증하고 재시도를 �
     assert.doesNotMatch(workflow, /gh run rerun|retry-[a-z]|for attempt|while.*retry/i);
 });
 
+test('list parser는 target 불일치를 오류 상태로 반환하지 않는다', (t) => {
+    const parseListStart = remoteOperator.indexOf('parse_list() {');
+    const parseListEnd = remoteOperator.indexOf('\n\nverify_health() {', parseListStart);
+    assert.ok(parseListStart >= 0 && parseListEnd > parseListStart);
+    const parseListFunction = remoteOperator.slice(parseListStart, parseListEnd);
+
+    assert.match(
+        parseListFunction,
+        /if \[\[ -n "\$\{target\}" && "\$\{client\}" == "\$\{target\}" \]\]; then[\s\S]*?parsed_target=1[\s\S]*?fi/
+    );
+    assert.match(parseListFunction, /\n  return 0\n\}$/);
+    assert.doesNotMatch(
+        parseListFunction,
+        /\]\] && parsed_target=1/
+    );
+
+    const bashMajorResult = spawnSync('bash', ['-c', 'printf "%s" "${BASH_VERSINFO[0]}"'], {
+        encoding: 'utf8',
+    });
+    const bashMajor = Number.parseInt(bashMajorResult.stdout, 10);
+    if (bashMajorResult.status !== 0 || !Number.isInteger(bashMajor) || bashMajor < 4) {
+        t.skip('associative array를 지원하는 Bash 4+ behavior test');
+        return;
+    }
+
+    const harness = [
+        'set -Eeuo pipefail',
+        'fail() { printf "%s\\n" "$1" >&2; exit "${2:-64}"; }',
+        parseListFunction,
+        'parse_list "$1" "$2"',
+        'printf "count=%s target=%s\\n" "${parsed_count}" "${parsed_target}"',
+        '',
+    ].join('\n');
+    const listOutput = [
+        'action=list clientCount=2',
+        'clientId=client-a',
+        'clientId=client-b',
+    ].join('\n');
+    const cases = [
+        { target: '', expected: 'count=2 target=0' },
+        { target: 'client-missing', expected: 'count=2 target=0' },
+        { target: 'client-a', expected: 'count=2 target=1' },
+    ];
+
+    for (const current of cases) {
+        const result = spawnSync('bash', ['-s', '--', listOutput, current.target], {
+            input: harness,
+            encoding: 'utf8',
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout.trim(), current.expected);
+    }
+});
+
 test('known precommit과 commit-state-unknown은 별도 상태로 전달된다', () => {
     assert.match(remoteOperator, /exit "\$\{2:-64\}"/);
     assert.match(remoteOperator, /known-precommit-failure/);
