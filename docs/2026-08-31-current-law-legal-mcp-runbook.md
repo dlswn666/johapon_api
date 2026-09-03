@@ -61,9 +61,15 @@ container file  /run/secrets/tonghari-legal-mcp/clients.json
 ```
 
 host directory는 숫자 UID/GID `1001:1001`, mode `700`, `clients.json`은
-`1001:1001`, mode `600`을 유지한다. 이미지의 `nodejs` process가 UID 1001이므로
-`ubuntu:ubuntu 600`은 읽을 수 없다. 메인 container에는 파일 하나가 아니라
-상위 directory를 다음과 같이 read-only bind mount한다.
+UID `1001`, mode `600`을 유지한다. file GID는 canonical `1001` 또는 기존 이미지가
+최초 생성한 legacy `65533`만 허용한다. legacy file도 group permission이 없고 상위
+directory가 `1001:1001`, mode `700`이므로 다른 group에 읽기 권한을 주지 않는다.
+이미지는 `nodejs`의 UID/GID가 정확히 `1001:1001`인지 build 중 검증한다. 새 배포의
+`init-from-env`와 registry updater도 모두 명시적으로 `1001:1001`로 실행하고, 성공한
+mutation postcondition은 file GID `1001`을 강제해 새 file과 첫 atomic 갱신부터
+canonical GID로 수렴했음을 증명한다. 이미지의 `nodejs` process가 UID 1001이므로
+`ubuntu:ubuntu 600`은 읽을 수 없다. 메인 container에는 파일 하나가 아니라 상위
+directory를 다음과 같이 read-only bind mount한다.
 
 ```text
 type=bind,src=/home/ubuntu/alimtalk-proxy/.legal-mcp-secrets,dst=/run/secrets/tonghari-legal-mcp,readonly
@@ -274,6 +280,7 @@ host registry directory는 UID/GID `1001:1001`, mode `700`이라 일반 SSH depl
 user가 내부 file을 직접 `stat`/`find`할 수 없다. operator는 host 경로 접근 실패를
 "lock/temp 없음"으로 해석하지 않는다. 검증된 현재 app container의 read-only bind
 mount 안에서 UID/GID 1001 helper를 실행해 directory/file의 lstat·realpath·mode와
+file GID가 canonical `1001` 또는 legacy `65533`인지,
 `clients.json.lock`/`.clients.json.*.tmp` 부재를 증명하며, Docker 열거 또는 helper
 실행이 실패하면 0건으로 간주하지 않고 fail-closed한다.
 

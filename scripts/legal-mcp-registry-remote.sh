@@ -470,23 +470,30 @@ registry_mount="$(docker container inspect --format \
 
 registry_fs_attest() {
   local require_clean="$1"
+  local require_canonical_gid="${2:-0}"
   [[ "${require_clean}" =~ ^[01]$ ]] || return 1
+  [[ "${require_canonical_gid}" =~ ^[01]$ ]] || return 1
   docker exec -i --user 1001:1001 \
     -e REGISTRY_DIRECTORY="${container_registry_dir}" \
     -e REGISTRY_FILE="${container_registry_file}" \
-    -e REQUIRE_CLEAN="${require_clean}" "${container_name}" node -e '
+    -e REQUIRE_CLEAN="${require_clean}" \
+    -e REQUIRE_CANONICAL_GID="${require_canonical_gid}" \
+    "${container_name}" node -e '
       const fs = require("node:fs");
       try {
         const dir = process.env.REGISTRY_DIRECTORY;
         const file = process.env.REGISTRY_FILE;
         const dirStat = fs.lstatSync(dir);
         const fileStat = fs.lstatSync(file);
+        const fileGidAllowed = process.env.REQUIRE_CANONICAL_GID === "1"
+          ? fileStat.gid === 1001
+          : fileStat.gid === 1001 || fileStat.gid === 65533;
         const valid = dirStat.isDirectory() && !dirStat.isSymbolicLink()
           && dirStat.uid === 1001 && dirStat.gid === 1001
           && (dirStat.mode & 0o7777) === 0o700
           && fs.realpathSync(dir) === dir
           && fileStat.isFile() && !fileStat.isSymbolicLink()
-          && fileStat.uid === 1001 && fileStat.gid === 1001
+          && fileStat.uid === 1001 && fileGidAllowed
           && (fileStat.mode & 0o7777) === 0o600
           && fs.realpathSync(file) === file;
         if (!valid) process.exit(1);
@@ -1330,7 +1337,8 @@ elif [[ "${REGISTRY_OPERATION}" == "recover" ]]; then
 fi
 
 if [[ "${mutation}" -eq 1 ]]; then
-  check_registry
+  registry_fs_attest 1 1 \
+    || fail "Mutation postcondition did not converge the registry file to canonical GID 1001."
   post_output="$(readonly_cli "${post_name}" list)"
   parse_list "${post_output}" "${REGISTRY_CLIENT_ID}"
   final_count="${parsed_count}"

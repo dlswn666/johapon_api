@@ -800,6 +800,7 @@ jobs:
 
               legal_registry_initialization="$(
                 docker run --rm \
+                  --user 1001:1001 \
                   --network none \
                   --read-only \
                   --cap-drop ALL \

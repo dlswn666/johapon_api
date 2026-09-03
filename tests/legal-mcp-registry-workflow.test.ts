@@ -16,6 +16,11 @@ const workflow = readFileSync(
     join(process.cwd(), '.github/workflows/legal-mcp-client-registry.yml'),
     'utf8'
 );
+const dockerBuildWorkflow = readFileSync(
+    join(process.cwd(), '.github/workflows/docker-build.yml'),
+    'utf8'
+);
+const dockerfile = readFileSync(join(process.cwd(), 'Dockerfile'), 'utf8');
 const remoteOperatorPath = join(
     process.cwd(),
     'scripts/legal-mcp-registry-remote.sh'
@@ -87,7 +92,11 @@ test('remote operator는 production flock과 file registry 보안 계약을 유�
     assert.match(remoteOperator, /\/proc\/\$\$\/fd\/9/);
     assert.match(remoteOperator, /dirStat\.uid === 1001 && dirStat\.gid === 1001/);
     assert.match(remoteOperator, /dirStat\.mode & 0o7777.*0o700/);
-    assert.match(remoteOperator, /fileStat\.uid === 1001 && fileStat\.gid === 1001/);
+    assert.match(
+        remoteOperator,
+        /const fileGidAllowed = process\.env\.REQUIRE_CANONICAL_GID === "1"[\s\S]*?\? fileStat\.gid === 1001[\s\S]*?: fileStat\.gid === 1001 \|\| fileStat\.gid === 65533;/
+    );
+    assert.match(remoteOperator, /fileStat\.uid === 1001 && fileGidAllowed/);
     assert.match(remoteOperator, /fileStat\.mode & 0o7777.*0o600/);
     assert.match(remoteOperator, /\.legal-mcp-file-registry-v1/);
     assert.match(remoteOperator, /\.legal-mcp-registry-commit-unknown/);
@@ -96,8 +105,24 @@ test('remote operator는 production flock과 file registry 보안 계약을 유�
     assert.match(remoteOperator, /fs\.lstatSync\(dir\)/);
     assert.match(remoteOperator, /fs\.readdirSync\(dir\)/);
     assert.match(remoteOperator, /names\.includes\("clients\.json\.lock"\)/);
+    assert.match(remoteOperator, /registry_fs_attest 1 1[\s\S]*?Mutation postcondition did not converge/);
     assert.doesNotMatch(remoteOperator, /find "\$\{registry_dir\}"/);
     assert.doesNotMatch(remoteOperator, /-e "\$\{registry_lock\}"/);
+});
+
+test('배포 초기 registry writer는 canonical UID/GID로 파일을 생성한다', () => {
+    const initialization = dockerBuildWorkflow.match(
+        /legal_registry_initialization="\$\([\s\S]*?node dist\/cli\/legal-mcp-registry\.js init-from-env[\s\S]*?\n\s*\)"/
+    )?.[0] ?? '';
+
+    assert.notEqual(initialization, '');
+    assert.match(initialization, /docker run --rm \\\n\s+--user 1001:1001 \\/);
+    assert.match(dockerfile, /RUN addgroup -g 1001 -S nodejs/);
+    assert.match(dockerfile, /RUN adduser -S nodejs -u 1001 -G nodejs/);
+    assert.match(
+        dockerfile,
+        /RUN test "\$\(id -u nodejs\):\$\(id -g nodejs\)" = "1001:1001"/
+    );
 });
 
 test('updater는 현재 immutable image와 최소 권한만 사용한다', () => {

@@ -61,7 +61,8 @@ COPY --from=age-tool /age /usr/local/bin/age
 
 # 비특권 사용자로 실행
 RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nodejs -u 1001
+RUN adduser -S nodejs -u 1001 -G nodejs
+RUN test "$(id -u nodejs):$(id -g nodejs)" = "1001:1001"
 RUN test "$(age --version)" = "v1.3.1"
 RUN mkdir -p logs .phase0-land-area .development-land-area-sync \
       .development-land-area-evidence-capture \
