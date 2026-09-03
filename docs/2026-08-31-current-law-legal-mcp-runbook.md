@@ -117,6 +117,196 @@ CI log에 붙이지 말고, raw bearer만 승인된 보안 전달 수단으로 c
 `clientId`와 `tokenSha256`만 file registry에 추가한다. `client-digest`와 smoke
 명령은 TTY에서 raw bearer를 표시하지 않고 입력받는다.
 
+### GitHub Actions 수동 레지스트리 워크플로
+
+`.github/workflows/legal-mcp-client-registry.yml`은 보호 environment
+`legal-mcp-registry`에서만 수동 실행한다. 소수 초대 사용자의 정상 운영 경로는 이
+workflow이며, 아래 직접 SSH 절차는 workflow를 사용할 수 없을 때의 break-glass
+절차로만 남긴다. 지원 action은 registry mutation인 `add`, `revoke`, read-only인
+`list`, `validate`, 불확실 상태의 증거만 정리하는 `recover` 다섯 가지다.
+workflow 전체에는 `legal-mcp-client-registry-production` concurrency group과
+`cancel-in-progress: false`가 적용되어 원격 prepare부터 동시에 두 작업이 실행되지
+않는다. 대기 순서를 승인 순서로 간주하지 말고 각 dispatch의 input을 독립 검토한다.
+`operation_id`와 `client_id`는 사람 이름, 이메일, 장비명,
+token 또는 digest를 유추할 수 없는 opaque 값으로 만든다.
+`operation_id`는 mutation마다 새로 만들고 재사용하지 않으며, 회전할 때도 새 세대
+`client_id`를 발급한다.
+
+`add`에서만 environment secret `LEGAL_MCP_REGISTRY_PENDING_SHA256`에 로컬에서 만든
+64자리 `tokenSha256`을 임시 저장한다. raw bearer와 digest는 반드시 감사된 로컬
+`npm run legal:mcp:token -- client-generate ...` 또는 `client-digest ...`로 만들고,
+raw bearer는 Keychain 등 client secret store와 client 소유자에게만 남긴다.
+workflow input `pending_digest_commitment`는 다음 객체의 필드 순서를 그대로 사용한
+`JSON.stringify` 결과에 대한 SHA-256이다.
+
+```text
+SHA-256(JSON.stringify({
+  version: 1,
+  operationId: "<opaque-operation-id>",
+  action: "add",
+  clientId: "<opaque-client-id>",
+  tokenSha256: "<64-hex-token-digest>"
+}))
+```
+
+운영 순서는 **environment secret 설정 → 대응하는 ID·commitment로 dispatch 1회 →
+최종 상태까지 대기 → environment secret 삭제**다. mutation을 겹쳐 실행하거나
+`add`, `revoke`, `recover`에 GitHub의 re-run을 사용하지 않는다. digest 전달은
+runner shell → SSH stdin만
+사용하고, 원격 environment, argv, 임시·전달용 file 또는 log에 넣지 않는다.
+성공한 updater가 canonical `clients.json` entry로 저장하는 digest 외에 별도 사본을
+남기지 않는다. raw bearer도 workflow에 입력하지 않는다.
+
+`add`/`revoke`는 원격 operator 실행과 runner 확인을 분리한 **2단계
+`operate → ACK` protocol**을 사용한다. 현재 호환 경로명은
+`.legal-mcp-registry-commit-unknown`이지만, 이 file은 unknown 전용이 아닌
+**미해결 operation marker**다. `version=3`은 run key, operation, operation ID,
+client ID, 예상 pre/post client count·target state와 outcome만 보존하며 raw
+bearer나 token digest를 포함하지 않는다.
+
+1. operator는 read-only precheck로 현재 count와 target의 `present|absent`를 고정하고
+   exact updater container를 `docker create`로 준비한다.
+2. `docker start -a`를 호출하기 **전** `outcome=intent`인 v3 marker를 mode `600`
+   regular file로 생성하고 file과 parent directory를 sync한다. 이 durable intent를
+   쓸 수 없거나 다시 읽어 동일성을 증명할 수 없으면 updater를 시작하지 않는다.
+3. operator는 attach rc가 아닌 exact container의 `.State.Status=exited`와
+   `.State.ExitCode`를 authoritative result로 쓴다. 이후 marker를 같은
+   identity의 terminal outcome으로 atomic replace·sync한다.
+
+| marker outcome | 의미 | 후속 동작 |
+|---|---|---|
+| `verified` | updater exit 0, 예상 post count/state, loopback health, app container 동일성을 모두 재검증함 | runner가 독립 ACK |
+| `known-precommit` | mutation precondition 불일치이거나, updater exit 1/64 뒤 writer residue 부재와 exact pre count/state를 재검증해 canonical registry가 변경되지 않음을 증명함 | runner가 독립 ACK한 뒤 원인을 고치고 새 operation ID로 dispatch |
+| `unknown` | exit·container·writer residue·postcondition 중 하나라도 증명할 수 없음 | 재시도 금지, read-only 조사 후 guarded `recover` |
+
+`intent`, `verified`, `known-precommit`, `unknown` 중 어느 상태든 marker가 남아
+있으면 후속 `add`/`revoke`를 모두 차단한다. 다만 판정을 위한 read-only
+`list`와 `validate`는 허용한다. runner는 operate SSH에서 `verified` 또는
+`known-precommit`을 수신해도 완료로 간주하지 않고, 독립된 두 번째 SSH로
+ACK를 실행한다. ACK는 workflow에 노출된 여섯 번째 action이 아니라
+동일 dispatch 내부의 protocol phase다. 후속 mutation gate는 이 **pending marker의
+존재**로 미해결 operation을 차단한다. 정상 terminal receipt 자체는 새 mutation을
+차단하지 않지만, ledger 전체의 형식과 terminal outcome을 먼저 검증하므로
+unknown/mismatch/임시 receipt는 fail-closed한다.
+
+ACK는 production flock 안에서 v3 marker의 run key·operation·operation ID·client
+ID·pre/post count/state·terminal outcome이 runner가 수신한 exact identity/state와 모두
+같은지, 그리고 현재 registry·health·app container가 그 outcome과 일치하는지
+다시 확인한다. 모두 맞을 때만 deploy-user 소유 mode `700`의 symlink가
+아닌 `.legal-mcp-registry-receipts/` directory를 확인·생성하고, pending marker와
+동일한 내용을 같은 filesystem의 `${runKey}` mode `600` regular file로 atomic
+publish·sync한 뒤 pending marker를 제거한다. 따라서 ACK는 marker의 증거를
+폐기하는 것이 아니라 해결된 **영구 receipt**로 보존하며, registry entry는 변경하지 않는다.
+receipt는 marker와 같이 raw bearer나 token digest를 포함하지 않는 감사 증거다.
+workflow outer cleanup과 `recover`는 이미 publish된 durable receipt를
+삭제·덮어쓰기·이동하지 않는다. `recover`가 다루는 이동은 exact하게 검증된 receipt
+임시 file을 그 durable 경로로 publish하는 경우뿐이다.
+ACK는 pending marker를 바로 rename하지 않는다. receipt 임시 file을 먼저 mode
+`600`으로 기록·검증·sync하고, 이를 receipt 경로에 atomic publish한 뒤 receipt
+directory까지 sync한다. 그 다음에만 pending marker를 제거하고 application
+directory를 sync한다. 따라서 중단 시 pending marker, durable receipt, 또는 둘 다가
+남아 판정 근거가 사라지지 않는다. 최초 ACK가 nonzero이면 workflow는 mutation을
+재실행하지 않고 동일 identity/outcome의 ACK를 한 번 더 멱등 호출한다. 이 호출은
+pending marker와 exact하게 같은 SHA-256·identity·terminal outcome을 가진 durable
+receipt가 이미 있으면 registry count/target, health, app container를 다시 검증한 뒤
+receipt는 보존하고 marker만 retire한다. exact receipt 임시 file만 있으면 file을
+다시 검증·sync하고 receipt 경로에 atomic publish한 뒤 directory를 sync하고 marker를
+retire한다. durable receipt와 임시 file이 동시에 있거나 어느 하나라도 owner, mode,
+형식, identity, outcome, hash가 다르면 어떤 증거도 지우지 않고 fail-closed한다.
+
+ACK SSH/transport 응답이 유실되면 runner는 mutation을 재실행하지 않고 원격
+pending/receipt를 확인한다. pending marker가 없고 `${runKey}` receipt가 exact
+identity/state/outcome과 mode를 모두 만족하면 ACK는 완료된 것이다. terminal pending
+marker와 그 marker에 exact하게 묶인 receipt 또는 receipt 임시 file이 함께 남아 있으면
+위 ACK resume 또는 동일 `client_id`와 승인 count/state를 사용하는 guarded `recover`가
+수렴시킬 수 있다. marker만 남은 경우도 현재 상태를 `list`/`validate`로 확인한 뒤
+guarded `recover`로 넘어간다. receipt-only `unknown`, identity/hash가 다른 receipt,
+durable receipt와 임시 file의 동시 존재, 또는 exact 판정을 할 수 없는 상태는
+fail-closed로 보존하고 break-glass 수동 조사로 넘어간다.
+
+`recover`는 새 dispatch에 미해결 marker의 동일 `client_id`, 운영자가 직접
+확인한 현재 정수 count인 `expected_client_count`, 해당 ID의 현재 상태인
+`expected_client_state=present|absent`를 함께 입력한다. production flock 안에서
+다음을 모두 다시 증명한다.
+
+- marker와, 남아 있다면 marker가 가리키는 stale run directory,
+  `operator.sh`, 선택적 `active`가 deploy user 소유의 예상 mode인 실제
+  file/directory이며 symlink가 아니다.
+- 현재 recovery run과 marker가 가리키는 stale run(있을 때) 외의 operation residue가 없다.
+- registry updater container, `clients.json.lock`, `.clients.json.*.tmp`가 없다.
+- read-only registry `list`의 target state/count가 승인 input과 정확히 같고,
+  loopback health와 실행 중 app container ID/image가 검사 시작 시점부터 변하지 않았다.
+- terminal marker와 receipt가 함께 있으면 둘은 동일 owner/mode의 regular file이고
+  내용 hash, run key, operation, operation ID, client ID, pre/post state, outcome이
+  exact하게 같다. receipt 임시 file인 경우도 같은 조건이며 durable receipt와 동시에
+  존재해서는 안 된다.
+
+marker가 `verified`면 현재 상태는 기록된 post count/state와, `known-precommit`이면
+기록된 pre count/state와 같아야 한다. `intent`/`unknown`이면 기록된 pre와
+post 중 정확히 한 쪽과만 일치해야 한다. 어느 쪽인지 추측하거나 두 상태가
+구분되지 않으면 recover를 거부한다.
+
+`active`는 run key와 PID만이 아니라 kernel boot ID와 `/proc/<pid>/stat` start
+time을 함께 기록한다. recover와 workflow outer cleanup은 현재 boot ID·PID·start
+time이 모두 같은 process가 살아 있으면 해당 run residue를 절대 정리하지
+않는다. PID 숫자만으로 종료를 판정하지 않고, process identity를
+정확히 읽지 못하거나 liveness가 모호하면 모든 증거를 보존한다.
+
+stale run directory 정리는 삭제 순서 자체도 멱등 상태기계로 다룬다. 정상 삭제
+순서 `active → operator.sh → run directory`에서 중단될 수 있으므로 recover는
+exact하게 attested된 `{active+operator}`, `{operator}`, `{empty directory}`와 이미
+directory가 사라진 marker-only 상태만 허용한다. 각 상태에서 실제로 남은 file과
+directory의 inode·owner·mode·content hash를 다시 고정하고 남은 단계부터 이어간다.
+`{active only}`는 이 삭제 순서에서 도달할 수 없으므로, unexpected entry와 함께
+fail-closed한다. run directory 제거 뒤에는 run parent directory를 반드시 sync한
+다음 pending marker를 retire한다.
+
+모든 guard가 맞을 때만 recover가 exact receipt 임시 file을 durable receipt로
+publish할 필요가 있으면 file과 directory를 먼저 sync하고, 기존 durable receipt는
+그대로 보존한 채 stale run residue와 v3 marker만 정리한다. filesystem sync 뒤에는
+list/target/count, loopback health, 동일 app container를 다시 검증한다. recover는
+`clients.json` entry를 추가·삭제·복원하지 않고 registry lock/temp를 force cleanup하지
+않으며, 영구 receipt를 삭제·덮어쓰기하지 않는다. 조건이 하나라도
+다르면 marker와 residue를 그대로 둔 채 닫는다. 실패한 recover 자체가
+새 marker를 만들거나 기존 marker를 덮어쓰지 않는다.
+
+host registry directory는 UID/GID `1001:1001`, mode `700`이라 일반 SSH deploy
+user가 내부 file을 직접 `stat`/`find`할 수 없다. operator는 host 경로 접근 실패를
+"lock/temp 없음"으로 해석하지 않는다. 검증된 현재 app container의 read-only bind
+mount 안에서 UID/GID 1001 helper를 실행해 directory/file의 lstat·realpath·mode와
+`clients.json.lock`/`.clients.json.*.tmp` 부재를 증명하며, Docker 열거 또는 helper
+실행이 실패하면 0건으로 간주하지 않고 fail-closed한다.
+
+`version=1`·`version=2` 등 legacy operation marker, 읽을 수 없는 v3 필드, identity/state
+불일치, 예상하지 않은 residue, 살아 있거나 liveness를 증명할 수 없는
+process는 자동 ACK/recover 대상이 아니다. marker를 v3로 임의 변환하거나
+삭제하지 말고, production lock 아래에서 증거를 보존한 채 break-glass
+수동 조사로 넘어간다.
+
+새 `add`/`revoke`는 pending marker뿐 아니라 receipt ledger 전체도 검사한다. receipt
+directory와 각 entry가 예상 owner/mode의 non-symlink regular file이고, filename과
+run key가 같으며, outcome이 `verified|known-precommit`이고 operation 전이가 유효해야
+한다. receipt 임시 file, `intent|unknown` receipt, 잘못된 identity/transition/file
+contract가 하나라도 있으면 새 mutation을 시작하지 않는다. `list`/`validate`는
+이 증거를 조사할 수 있도록 계속 허용한다.
+
+ACK 또는 nonmutation operator의 자체 cleanup도 `operator.sh` unlink와 run directory
+제거 사이에서 중단될 수 있다. 다음 `add`/`revoke`는 production flock을 획득하고
+pending marker, registry writer lock/temp, updater container가 없음을 확인한 뒤에만
+현재 run 이외의 markerless residue를 수렴시킨다. 허용 상태는 같은 삭제 순서의
+`{active+operator}`, `{operator}`, `{empty directory}`뿐이며, active가 있으면
+boot ID·PID·start time으로 process가 살아 있지 않음을 증명한다. terminal receipt가
+있는 old run은 ledger 검증에 더해 receipt inode/hash가 cleanup 동안 동일한지도
+재검증하고 receipt 자체는 보존한다. markerless pre-intent/nonmutation residue도 같은
+file contract와 liveness를 만족할 때만 정리한다. `{active only}`, unknown entry,
+identity 변경, ambiguous liveness는 새 mutation을 시작하지 않고 모든 residue를
+보존한다. 마지막에는 run parent directory를 sync하므로 이전 시도의 `rmdir → sync`
+중단점도 다음 mutation이 안전하게 수렴시킨다.
+
+회전은 새 opaque ID `add` → 새 raw bearer로 `tools/list` HTTP 200 → 구 ID
+`revoke` → 구 raw bearer HTTP 401 순서다. 이 file hot reload는 DB, API 재배포
+또는 container 재시작이 필요 없다.
+
 운영 갱신은 배포와 같은 `.tonghari-api-production.lock`을 획득한 뒤 현재
 container의 immutable image를 one-shot updater로 사용한다. `add`의 digest는
 argv·environment가 아닌 hidden TTY/stdin으로만 넘긴다.
@@ -202,15 +392,23 @@ count를 확인한 뒤 client 장비의 hidden raw token으로 `tools/list` smok
   포함되므로 제거·회전한 token의 기존 proof를 재사용하지 않는다.
 - registry나 token 원문을 health, 응답, access log, 오류 추적 시스템에 기록하지 않는다.
 
-mutation 명령이 exit `75`(`LEGAL_MCP_REGISTRY_COMMIT_STATE_UNKNOWN`)로 끝났거나
-SSH가 명령 도중 끊기면 add/revoke를 바로 재실행하지 않는다. atomic rename이 이미
-게시되었을 수 있으므로 같은 production lock 아래에서 먼저 `validate`와 `list`를
-실행해 count와 client ID만 확인하고, 목표 상태인지 판정한 뒤 다음 동작을 정한다.
+mutation의 operate가 exit `75`, SSH `255`, signal 종료, stdin/SSH 전송 불명으로
+끝나거나 v3 pending marker가 여전히 보이면 add/revoke를 바로 재실행하지
+않는다. workflow의 read-only `validate`와 `list`로 count·client ID를 확인하고
+목표 상태를 운영자가 판정한 뒤, 승인한 count/state로 guarded `recover`를
+실행해 pending operation 증거만 정리한다. ACK 응답만 유실된 경우는
+먼저 exact `${runKey}` receipt를 확인한다. pending marker가 없고 유효한 receipt만
+있으면 ACK 완료이므로 recover를 실행하지 않는다. 같은 terminal marker가 함께
+남아 있거나 exact receipt 임시 file이 함께 남아 있으면 ACK 중단 상태이므로 동일
+client의 승인 count/state로 recover를 실행해 receipt를 보존·완성하고 marker만
+retire할 수 있다.
 digest나 raw token을 확인 명령의 argv·environment·출력에 넣지 않는다.
 
-CLI가 비정상 종료되어 `clients.json.lock` directory만 남은 경우에도 곧바로
-삭제하지 않는다. 모든 updater가 같은 global flock을 사용한다는 전제에서 다음
-복구는 production lock을 획득하고, updater container가 없으며, lock directory가
+CLI가 비정상 종료되어 `clients.json.lock` directory나 registry temp가 남았거나,
+operation marker가 legacy/unverifiable하면 workflow `recover`는 이를 삭제·변환하지
+않고 실패한다. 다음 절차는 자동화된 recover와 분리한 break-glass 수동
+조사 절차다. 모든 updater가 같은 global flock을 사용한다는
+전제에서 production lock을 획득하고, updater container가 없으며, lock directory가
 UID 1001 소유 mode `700`인 빈 실제 directory일 때만 `rmdir`한다. 이후 registry를
 다시 validate한다.
 
@@ -286,6 +484,8 @@ UID 1001 소유 mode `700`인 빈 실제 directory일 때만 `rmdir`한다. 이�
 
 lock이 symlink·파일이거나, owner/mode가 다르거나, 내부가 비어 있지 않거나,
 updater 존재 여부가 불명확하면 자동 정리하지 말고 보존한 채 원인을 조사한다.
+legacy/unverifiable marker도 같은 원칙으로 수동 판정하며, raw bearer나 token
+digest를 조사 로그에 출력하지 않는다.
 
 이 방식은 신뢰된 service client에 사전 공유한 **정적 bearer 인증**이며 OAuth가
 아니다. 사용자 로그인, 동적 client 등록, consent, scope, refresh token, 짧은 수명의
