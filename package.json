@@ -10,6 +10,7 @@
     "phase0-s:gate": "tsx scripts/phase0-s-gate.ts",
     "phase0-land-area:capture": "tsx scripts/phase0-land-area-capture.ts",
     "legal:mcp:token": "tsx src/cli/legal-mcp-token.ts",
+    "legal:mcp:registry": "tsx src/cli/legal-mcp-registry.ts",
     "legal:mcp:smoke": "tsx src/cli/legal-mcp-smoke.ts",
     "gis:mcp:token": "tsx src/cli/gis-mcp-token.ts",
     "gis:mcp:smoke": "tsx src/cli/gis-mcp-smoke.ts",

@@ -10,6 +10,7 @@
 - 정책 resource: `tonghari-law://policy/current-answer/v1`
 - health: `GET /health` 또는 `GET /health/detailed`의
   `features.legalMcpConfigurationValid`, `features.legalMcpAuthMode`,
+  `features.legalMcpAuthSource`,
   `features.legalMcpRegisteredClientCount`, `features.legalMcpRegisteredTokenCount`
 
 MCP 경로는 기존 Express 전역 JSON parser보다 먼저 mount되며, 전용 요청
@@ -26,8 +27,9 @@ MCP 경로는 기존 Express 전역 JSON parser보다 먼저 mount되며, 전용
 | 변수 | 의미 | 저장 규칙 |
 |---|---|---|
 | `LAW_API_OC` | 고정 IP가 등록된 국가법령정보 공동활용 인증값 | secret, 로그 금지 |
-| `LEGAL_MCP_TOKEN_REGISTRY_JSON` | 권장 다중 client registry. `{"version":1,"clients":[{"clientId":"<lowercase-slug>","tokenSha256":"<sha256-hex>"}]}` | 1~32 client, raw bearer 금지 |
-| `LEGAL_MCP_TOKEN_SHA256` | 단일 client용 legacy bearer digest | registry와 동시 설정 금지; 신규 운영에는 사용하지 않음 |
+| `LEGAL_MCP_TOKEN_REGISTRY_FILE` | 운영 권장 client registry JSON의 container 절대 경로 | regular non-symlink, app UID 1001 소유, mode `600` |
+| `LEGAL_MCP_TOKEN_REGISTRY_JSON` | 최초 file 이전·로컬 개발용 registry. `{"version":1,"clients":[{"clientId":"<lowercase-slug>","tokenSha256":"<sha256-hex>"}]}` | 1~32 client, raw bearer 금지 |
+| `LEGAL_MCP_TOKEN_SHA256` | 단일 client용 legacy bearer digest | 하위 호환용; 신규 운영에는 사용하지 않음 |
 | `LEGAL_MCP_PROXY_TOKEN_SHA256` | Caddy 전용 raw proxy secret의 SHA-256 hex | API에는 digest만 저장 |
 | `LEGAL_MCP_PACKET_SIGNING_KEY` | 조사 패킷 HMAC용 256-bit 이상 hex | bearer와 별도 생성 |
 | `LEGAL_MCP_ALLOWED_HOSTS` | 요청 Host 허용 hostname | scheme·port·path·wildcard 금지 |
@@ -38,13 +40,60 @@ MCP 경로는 기존 Express 전역 JSON parser보다 먼저 mount되며, 전용
 | `LEGAL_MCP_RESEARCH_MAX_CONCURRENCY` | 프로세스 전역 동시 조사 상한 | 기본 2 |
 | `LEGAL_MCP_RESEARCH_MAX_QUEUE` | 프로세스 전역 조사 대기 상한 | 기본 4 |
 
-`LEGAL_MCP_TOKEN_REGISTRY_JSON`과 `LEGAL_MCP_TOKEN_SHA256`을 둘 다 설정하면
+`LEGAL_MCP_TOKEN_REGISTRY_FILE`, `LEGAL_MCP_TOKEN_REGISTRY_JSON`,
+`LEGAL_MCP_TOKEN_SHA256` 중 둘 이상을 동시에 설정하면 우선순위나 병합 없이
 잘못된 구성으로 판정해 `/mcp`를 503으로 닫는다. legacy 단일 digest는 기존 client
-호환용일 뿐이며, 외부 client가 둘 이상이면 registry만 사용한다. 운영 bearer 원문은
+호환용일 뿐이며, 운영에서는 file registry만 사용한다. 운영 bearer 원문은
 발급 시 한 번만 전달하고 호출 측 OS·client secret store에만 둔다. 서버에는 그 원문의
 SHA-256 digest만 저장한다. proxy raw secret은 Caddy owner-only secret에만, 그
 digest는 API에만 둔다. client bearer, proxy secret, packet signing key를 서로
 재사용하지 않고 `.env`나 저장소에 원문을 커밋하지 않는다.
+
+## EC2 file registry와 hot reload
+
+소수 초대 client 운영은 DB 대신 다음 단일 EC2 registry를 사용한다.
+
+```text
+host directory  /home/ubuntu/alimtalk-proxy/.legal-mcp-secrets
+host file       /home/ubuntu/alimtalk-proxy/.legal-mcp-secrets/clients.json
+container dir   /run/secrets/tonghari-legal-mcp
+container file  /run/secrets/tonghari-legal-mcp/clients.json
+```
+
+host directory는 숫자 UID/GID `1001:1001`, mode `700`, `clients.json`은
+`1001:1001`, mode `600`을 유지한다. 이미지의 `nodejs` process가 UID 1001이므로
+`ubuntu:ubuntu 600`은 읽을 수 없다. 메인 container에는 파일 하나가 아니라
+상위 directory를 다음과 같이 read-only bind mount한다.
+
+```text
+type=bind,src=/home/ubuntu/alimtalk-proxy/.legal-mcp-secrets,dst=/run/secrets/tonghari-legal-mcp,readonly
+```
+
+file 자체를 bind mount하면 host의 atomic rename 후에도 container가 구 inode를
+볼 수 있으므로 금지한다. 서버는 각 auth·health 요청에서 변경 fingerprint를
+확인하고 변경된 file을 재검증한다. 누락, symlink, 권한 오류, schema 오류가
+발생하면 기존 snapshot을 계속 사용하지 않고 즉시 fail-closed한다.
+
+최초 배포는 새 이미지의 no-network one-shot helper가 EC2 `.env`의
+`LEGAL_MCP_TOKEN_REGISTRY_JSON`을 직접 읽어 file을 초기화한다. GitHub input,
+step environment, stdout으로 registry를 옮기지 않는다. 원본 `.env`는 유지한 채
+file-only mode `600` next env로 candidate와 final을 검증한다. final health가
+통과한 시점이 commit point이다. 그 전 실패는 기존 env container로 복구하고,
+그 후에는 새 file-mode container를 유지하며 다음 순서로 마감한다.
+
+1. 구 env-mode rollback container 제거와 부재 확인
+2. next env를 `.env`로 atomic install하고 JSON·legacy key 부재 확인
+3. deploy-user 소유 mode `600` migration marker 생성
+
+commit point 후 cleanup이 실패하면 구 token을 복원하지 않고 새 container를
+유지한 채 배포를 실패 처리한다. marker 생성 후의 rollback은 동일 host
+directory를 동일 container directory에 read-only mount하고 file-only env를 쓰는
+container만 허용한다. 구 env digest container는 서비스 중단을 감수하고라도
+자동으로 살리지 않는다.
+
+이 1회 작업은 기존 client ID와 digest를 저장 위치만 바꾸는 **migration**이며
+token **rotation**이 아니다. 기존 token을 폐기하려면 migration 완료 후 아래의
+별도 add → 새 token smoke → revoke 절차를 수행한다.
 
 ## Bearer 발급·폐기·회전
 
@@ -64,16 +113,179 @@ npm run legal:mcp:token -- proxy-generate
 
 `client-generate`는 raw bearer를 딱 한 번 stdout에 표시한다. 전체 출력을 티켓·메신저·
 CI log에 붙이지 말고, raw bearer만 승인된 보안 전달 수단으로 client 소유자에게
-전달한 뒤 client secret store에 저장한다. 서버 설정에는 `registryEntry`의
-`clientId`와 `tokenSha256`만 합쳐 `LEGAL_MCP_TOKEN_REGISTRY_JSON`을 만든다.
-`client-digest`와 smoke 명령은 TTY에서 raw bearer를 표시하지 않고 입력받는다.
+전달한 뒤 client secret store에 저장한다. 서버에는 `registryEntry`의
+`clientId`와 `tokenSha256`만 file registry에 추가한다. `client-digest`와 smoke
+명령은 TTY에서 raw bearer를 표시하지 않고 입력받는다.
 
-- 폐기: 해당 registry entry를 제거하고 새 runtime 설정으로 컨테이너를 교체한다.
-- 무중단 회전: 새 세대 ID(예: 월 suffix)로 새 entry를 추가해 client 전환과 smoke를
-  마친 뒤 구 entry를 제거한다. 동일 `clientId` 또는 동일 digest의 중복 entry는 금지된다.
+운영 갱신은 배포와 같은 `.tonghari-api-production.lock`을 획득한 뒤 현재
+container의 immutable image를 one-shot updater로 사용한다. `add`의 digest는
+argv·environment가 아닌 hidden TTY/stdin으로만 넘긴다.
+
+```bash
+# 추가: 프롬프트에 tokenSha256 64자를 숨김 입력한다.
+(
+  set -Eeuo pipefail
+  cd /home/ubuntu/alimtalk-proxy
+  production_lock_path="$(pwd -P)/.tonghari-api-production.lock"
+  if [[ ! -e "${production_lock_path}" && ! -L "${production_lock_path}" ]]; then
+    (umask 077; set -o noclobber; : > "${production_lock_path}") \
+      2>/dev/null || true
+  fi
+  if [[ ! -f "${production_lock_path}" || -L "${production_lock_path}" ]] \
+    || [[ "$(stat -c %u "${production_lock_path}")" != "$(id -u)" ]] \
+    || [[ "$(stat -c %a "${production_lock_path}")" != 600 ]]; then
+    echo 'production lock이 안전한 mode 600 regular file이 아닙니다.' >&2
+    exit 1
+  fi
+  exec 9>>"${production_lock_path}"
+  flock -w 30 9 || exit 1
+  test "$(<.legal-mcp-file-registry-v1)" = 'version=1'
+  registry_image="$(docker container inspect --format '{{.Image}}' alimtalk-proxy)"
+  docker run --rm -it \
+    --name tonghari-legal-mcp-registry-updater \
+    --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --mount type=bind,src="$(pwd)/.legal-mcp-secrets",dst=/registry \
+    "${registry_image}" \
+    node dist/cli/legal-mcp-registry.js add \
+      --path /registry/clients.json --client-id claude-mac-202609
+)
+
+# 폐기: 원문과 digest를 입력하지 않는다.
+(
+  set -Eeuo pipefail
+  cd /home/ubuntu/alimtalk-proxy
+  production_lock_path="$(pwd -P)/.tonghari-api-production.lock"
+  if [[ ! -e "${production_lock_path}" && ! -L "${production_lock_path}" ]]; then
+    (umask 077; set -o noclobber; : > "${production_lock_path}") \
+      2>/dev/null || true
+  fi
+  if [[ ! -f "${production_lock_path}" || -L "${production_lock_path}" ]] \
+    || [[ "$(stat -c %u "${production_lock_path}")" != "$(id -u)" ]] \
+    || [[ "$(stat -c %a "${production_lock_path}")" != 600 ]]; then
+    echo 'production lock이 안전한 mode 600 regular file이 아닙니다.' >&2
+    exit 1
+  fi
+  exec 9>>"${production_lock_path}"
+  flock -w 30 9 || exit 1
+  test "$(<.legal-mcp-file-registry-v1)" = 'version=1'
+  registry_image="$(docker container inspect --format '{{.Image}}' alimtalk-proxy)"
+  docker run --rm \
+    --name tonghari-legal-mcp-registry-updater \
+    --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --mount type=bind,src="$(pwd)/.legal-mcp-secrets",dst=/registry \
+    "${registry_image}" \
+    node dist/cli/legal-mcp-registry.js revoke \
+      --path /registry/clients.json --client-id old-client-202608
+)
+```
+
+updater는 같은 directory의 mode `600` 임시 file을 검증·fsync한 뒤 atomic
+rename한다. 실행 중 container는 다음 auth 또는 health 요청에서 새 inode를
+읽으므로 재배포·재시작·signal이 필요 없다.
+변경 후 `curl -fsS http://127.0.0.1:3100/health`에서 valid, source와 예상
+count를 확인한 뒤 client 장비의 hidden raw token으로 `tools/list` smoke를
+실행한다. health는 token 자체가 아닌 file 형식과 개수만 증명한다.
+
+- 폐기: `revoke`가 atomic commit된 후에는 후속 health/smoke 오류가 있어도
+  폐기 전 file을 자동 복원하지 않는다.
+- 마지막 1개 client는 단독 `revoke`할 수 없다. 긴급 회전도 새 세대 ID를 먼저
+  `add`한 뒤 구 ID를 `revoke`하거나, 동일 ID를 유지해야 하면 검증된 새 digest를
+  `add --replace`로 교체한다.
+- 무중단 회전: 새 세대 ID(예: 월 suffix) `add` → **새 raw token**으로
+  `tools/list` HTTP 200 확인 → 구 ID `revoke` → health count와 `list` 확인 →
+  가능하면 구 raw token의 `tools/list` 401 확인 순서로 실행한다. 새 token의
+  성공을 확인하기 전에 구 ID를 폐기하지 않는다.
+- 동일 `clientId` 또는 동일 digest의 중복 entry는 금지된다.
 - 긴급 회전: 의심 token entry를 즉시 제거한다. token digest가 packet proof 주체에
   포함되므로 제거·회전한 token의 기존 proof를 재사용하지 않는다.
 - registry나 token 원문을 health, 응답, access log, 오류 추적 시스템에 기록하지 않는다.
+
+mutation 명령이 exit `75`(`LEGAL_MCP_REGISTRY_COMMIT_STATE_UNKNOWN`)로 끝났거나
+SSH가 명령 도중 끊기면 add/revoke를 바로 재실행하지 않는다. atomic rename이 이미
+게시되었을 수 있으므로 같은 production lock 아래에서 먼저 `validate`와 `list`를
+실행해 count와 client ID만 확인하고, 목표 상태인지 판정한 뒤 다음 동작을 정한다.
+digest나 raw token을 확인 명령의 argv·environment·출력에 넣지 않는다.
+
+CLI가 비정상 종료되어 `clients.json.lock` directory만 남은 경우에도 곧바로
+삭제하지 않는다. 모든 updater가 같은 global flock을 사용한다는 전제에서 다음
+복구는 production lock을 획득하고, updater container가 없으며, lock directory가
+UID 1001 소유 mode `700`인 빈 실제 directory일 때만 `rmdir`한다. 이후 registry를
+다시 validate한다.
+
+```bash
+(
+  set -Eeuo pipefail
+  cd /home/ubuntu/alimtalk-proxy
+  production_lock_path="$(pwd -P)/.tonghari-api-production.lock"
+  if [[ ! -e "${production_lock_path}" && ! -L "${production_lock_path}" ]]; then
+    (umask 077; set -o noclobber; : > "${production_lock_path}") \
+      2>/dev/null || true
+  fi
+  if [[ ! -f "${production_lock_path}" || -L "${production_lock_path}" ]] \
+    || [[ "$(stat -c %u "${production_lock_path}")" != "$(id -u)" ]] \
+    || [[ "$(stat -c %a "${production_lock_path}")" != 600 ]]; then
+    echo 'production lock이 안전한 mode 600 regular file이 아닙니다.' >&2
+    exit 1
+  fi
+  exec 9>>"${production_lock_path}"
+  flock -w 30 9 || exit 1
+  test "$(<.legal-mcp-file-registry-v1)" = 'version=1'
+  if docker container inspect tonghari-legal-mcp-registry-updater \
+    >/dev/null 2>&1; then
+    echo 'registry updater가 존재하므로 lock을 제거하지 않습니다.' >&2
+    exit 1
+  fi
+  registry_image="$(docker container inspect --format '{{.Image}}' alimtalk-proxy)"
+  docker run --rm \
+    --name tonghari-legal-mcp-registry-lock-recovery \
+    --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --mount type=bind,src="$(pwd)/.legal-mcp-secrets",dst=/registry \
+    "${registry_image}" \
+    sh -eu -c '
+      lock_path=/registry/clients.json.lock
+      stale_count=0
+      test -d "${lock_path}"
+      test ! -L "${lock_path}"
+      test "$(stat -c %u "${lock_path}")" = "$(id -u)"
+      test "$(stat -c %a "${lock_path}")" = 700
+      test -z "$(find "${lock_path}" -mindepth 1 -maxdepth 1 -print -quit)"
+      node dist/cli/legal-mcp-registry.js validate \
+        --path /registry/clients.json
+      for temp_path in /registry/.clients.json.*.tmp; do
+        if test ! -e "${temp_path}" && test ! -L "${temp_path}"; then
+          continue
+        fi
+        stale_count=$((stale_count + 1))
+        test "${stale_count}" -le 8
+        test -f "${temp_path}"
+        test ! -L "${temp_path}"
+        test "$(stat -c %u "${temp_path}")" = "$(id -u)"
+        test "$(stat -c %a "${temp_path}")" = 600
+      done
+      for temp_path in /registry/.clients.json.*.tmp; do
+        if test -f "${temp_path}" && test ! -L "${temp_path}"; then
+          rm -f -- "${temp_path}"
+        fi
+      done
+      test -z "$(find /registry -mindepth 1 -maxdepth 1 \
+        -name ".clients.json.*.tmp" -print -quit)"
+      rmdir -- "${lock_path}"
+      node -e '\''
+        const fs = require("node:fs");
+        const descriptor = fs.openSync("/registry", fs.constants.O_RDONLY);
+        try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+      '\''
+      node dist/cli/legal-mcp-registry.js validate \
+        --path /registry/clients.json
+    '
+)
+```
+
+lock이 symlink·파일이거나, owner/mode가 다르거나, 내부가 비어 있지 않거나,
+updater 존재 여부가 불명확하면 자동 정리하지 말고 보존한 채 원인을 조사한다.
 
 이 방식은 신뢰된 service client에 사전 공유한 **정적 bearer 인증**이며 OAuth가
 아니다. 사용자 로그인, 동적 client 등록, consent, scope, refresh token, 짧은 수명의
@@ -275,16 +487,18 @@ redirect = "error"
 ## 배포 전·후 확인
 
 1. EC2 고정 IP와 `LAW_API_OC` 등록 상태를 확인한다.
-2. client registry, proxy digest, packet signing key, Host·Origin 정책과 rate limit을
-   API secret/runtime에 반영한다. registry와 legacy digest는 정확히 하나만 둔다.
+2. file registry, proxy digest, packet signing key, Host·Origin 정책과 rate limit을
+   API secret/runtime에 반영한다. file·JSON·legacy digest는 정확히 하나만 둔다.
 3. Caddy owner-only secret에 proxy raw 값을 반영하고 `caddy validate`를 통과한 뒤
    reload한다. Caddy의 raw 값과 API digest가 같은 발급 쌍인지 값 자체를 출력하지
    않는 승인 기록으로 확인한다.
-4. 변경 환경변수를 반영해 새 API container를 배포한다. 단순 `docker restart`는
-   변경 환경변수를 다시 읽지 않으므로 사용하지 않는다.
+4. 최초 file 전환은 자동 배포 workflow의 candidate → final → legacy rollback
+   제거 → env/marker commit 순서로만 수행한다. 일반 환경변수 변경은 새
+   API container 배포가 필요하지만 file registry add/revoke는 그렇지 않다.
 5. `/health`에서 다음 비밀 비노출 상태를 확인한다.
    - `legalMcpConfigurationValid=true`
    - 신규 다중 client 운영이면 `legalMcpAuthMode=client_registry`
+   - EC2 file 운영이면 `legalMcpAuthSource=file_registry`
    - 등록 client/token count가 승인 manifest와 일치
    - health에 client ID, digest, registry JSON, raw secret이 없음
 
@@ -326,8 +540,13 @@ redirect = "error"
 
 ## 장애·회전
 
-- `LEGAL_MCP_NOT_CONFIGURED`: registry와 legacy digest의 동시 설정, 빈 registry,
+- `LEGAL_MCP_NOT_CONFIGURED`: file·JSON·legacy digest의 동시 설정, 빈 registry,
   중복 client ID/digest, proxy digest·signing key·Host 설정 누락을 먼저 확인한다.
+- health의 `legalMcpConfigurationValid=false`, `legalMcpAuthSource=file_registry`:
+  registry file 누락·symlink, UID/GID·mode, 크기, JSON schema를 확인한다.
+  startup에서 invalid하면 route는 503, 실행 중 손상이면 기존 mounted route의
+  모든 bearer는 401 `invalid_token`으로 fail-closed한다. 이전 valid snapshot으로
+  복귀하지 말고 정상 file을 atomic replace한다.
 - `LEGAL_MCP_PROXY_FORBIDDEN`: direct 3100 접근, 비 HTTPS forwarding, Caddy raw
   proxy secret과 API digest 불일치 여부를 확인한다. client bearer를 바꾸어 우회하지
   않는다.

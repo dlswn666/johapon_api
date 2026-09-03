@@ -2,10 +2,27 @@ import { Router, Request, Response } from 'express';
 import { env } from '../config/env';
 import { queueService } from '../services/queue.service';
 import { createBuildInfo } from '../utils/build-info';
-import { getLegalMcpConfigurationStateV1 } from '../services/legal-research/mcp-config';
+import {
+    getLegalMcpRuntimeConfigurationStateV1,
+    type LegalMcpConfigurationStateV1,
+} from '../services/legal-research/mcp-config';
 import { getGisMcpConfigurationStateV1 } from '../services/public-data-mcp/mcp-config';
+import type { LegalMcpTokenRegistryFileProviderV1 } from '../middleware/legal-mcp-token-registry-file';
 
 const router = Router();
+let legalMcpTokenRegistryFileProvider:
+    LegalMcpTokenRegistryFileProviderV1 | undefined;
+let legalMcpStartupConfiguration:
+    LegalMcpConfigurationStateV1 | undefined;
+
+/** index가 auth와 동일한 provider를 health에 연결한다. */
+export function setLegalMcpHealthTokenRegistryFileProviderV1(
+    provider: LegalMcpTokenRegistryFileProviderV1 | undefined,
+    startupConfiguration?: LegalMcpConfigurationStateV1
+): void {
+    legalMcpTokenRegistryFileProvider = provider;
+    legalMcpStartupConfiguration = startupConfiguration;
+}
 
 function landAreaSyncHealthFeatures() {
     const enabled = env.LAND_AREA_SYNC_ENABLED;
@@ -20,19 +37,21 @@ function landAreaSyncHealthFeatures() {
     };
 }
 
-function legalMcpHealthFeatures() {
-    const configuration = getLegalMcpConfigurationStateV1({
+async function legalMcpHealthFeatures() {
+    const configuration = await getLegalMcpRuntimeConfigurationStateV1({
         lawApiOc: env.LAW_API_OC,
         tokenSha256: env.LEGAL_MCP_TOKEN_SHA256,
         tokenRegistryJson: env.LEGAL_MCP_TOKEN_REGISTRY_JSON,
+        tokenRegistryFile: env.LEGAL_MCP_TOKEN_REGISTRY_FILE,
         proxyTokenSha256: env.LEGAL_MCP_PROXY_TOKEN_SHA256,
         packetSigningKey: env.LEGAL_MCP_PACKET_SIGNING_KEY,
         allowedHosts: env.LEGAL_MCP_ALLOWED_HOSTS,
-    });
+    }, legalMcpTokenRegistryFileProvider, legalMcpStartupConfiguration);
     return {
         // provider reachability가 아니라 startup 설정의 존재·형식만 나타낸다.
         legalMcpConfigurationValid: configuration.configured,
         legalMcpAuthMode: configuration.authMode,
+        legalMcpAuthSource: configuration.authSource,
         legalMcpRegisteredClientCount: configuration.registeredClientCount,
         legalMcpRegisteredTokenCount: configuration.registeredTokenCount,
     };
@@ -75,7 +94,7 @@ function formatMemoryUsage(bytes: number): number {
  * 헬스체크 엔드포인트
  * GET /health
  */
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
     const memoryUsage = process.memoryUsage();
     const queueStatus = queueService.getQueueStatus();
     const buildInfo = createBuildInfo();
@@ -86,7 +105,7 @@ router.get('/', (req: Request, res: Response) => {
         ...buildInfo,
         features: {
             ...landAreaSyncHealthFeatures(),
-            ...legalMcpHealthFeatures(),
+            ...await legalMcpHealthFeatures(),
             ...gisMcpHealthFeatures(),
         },
         uptime: process.uptime(),
@@ -123,7 +142,7 @@ router.get('/detailed', async (req: Request, res: Response) => {
         ...buildInfo,
         features: {
             ...landAreaSyncHealthFeatures(),
-            ...legalMcpHealthFeatures(),
+            ...await legalMcpHealthFeatures(),
             ...gisMcpHealthFeatures(),
         },
         node: {

@@ -243,6 +243,18 @@ jobs:
             candidate_started=0
             registry_logged_in=0
             previous_image_id=""
+            legal_registry_host_dir="${HOME}/alimtalk-proxy/.legal-mcp-secrets"
+            legal_registry_container_dir="/run/secrets/tonghari-legal-mcp"
+            legal_registry_container_file="${legal_registry_container_dir}/clients.json"
+            legal_registry_marker="${HOME}/alimtalk-proxy/.legal-mcp-file-registry-v1"
+            legal_registry_env_next=""
+            legal_registry_runtime_env="${HOME}/alimtalk-proxy/.env"
+            legal_registry_client_count=""
+            legal_registry_required_at_start=0
+            legal_registry_finalization_required=0
+            legal_registry_needs_next_env=0
+            legal_registry_json_source_at_start=0
+            deployment_phase="precommit"
 
             for variable_name in \
               GHCR_USERNAME \
@@ -264,6 +276,106 @@ jobs:
             env_mode="$(stat -c '%a' .env)"
             if [[ "${env_owner}" != "$(id -un)" || "${env_mode}" != "600" ]]; then
               echo "Runtime .env must be owned by the deploy user with mode 600."
+              false
+            fi
+
+            legal_registry_file_definition_count="$(
+              grep -Ec '^[[:space:]]*LEGAL_MCP_TOKEN_REGISTRY_FILE[[:space:]]*=' \
+                .env || true
+            )"
+            legal_registry_json_definition_count="$(
+              grep -Ec '^[[:space:]]*LEGAL_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=' \
+                .env || true
+            )"
+            legal_registry_legacy_definition_count="$(
+              grep -Ec '^[[:space:]]*LEGAL_MCP_TOKEN_SHA256[[:space:]]*=' \
+                .env || true
+            )"
+            for definition_count in \
+              "${legal_registry_file_definition_count}" \
+              "${legal_registry_json_definition_count}" \
+              "${legal_registry_legacy_definition_count}"
+            do
+              if [[ "${definition_count}" -gt 1 ]]; then
+                echo "Runtime .env has duplicate legal MCP authentication keys."
+                false
+              fi
+            done
+
+            legal_registry_file_exact_count="$(
+              grep -Fxc \
+                "LEGAL_MCP_TOKEN_REGISTRY_FILE=${legal_registry_container_file}" \
+                .env || true
+            )"
+            legal_registry_file_nonempty_count="$(
+              grep -Ec '^LEGAL_MCP_TOKEN_REGISTRY_FILE=.+$' .env || true
+            )"
+            legal_registry_json_nonempty_count="$(
+              grep -Ec '^LEGAL_MCP_TOKEN_REGISTRY_JSON=.+$' .env || true
+            )"
+            legal_registry_legacy_nonempty_count="$(
+              grep -Ec '^LEGAL_MCP_TOKEN_SHA256=.+$' .env || true
+            )"
+
+            legal_registry_marker_present=0
+            if [[ -e "${legal_registry_marker}" || -L "${legal_registry_marker}" ]]; then
+              if [[ ! -f "${legal_registry_marker}" || -L "${legal_registry_marker}" ]] \
+                || [[ "$(stat -c '%u' "${legal_registry_marker}")" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${legal_registry_marker}")" != "600" ]] \
+                || [[ "$(<"${legal_registry_marker}")" != "version=1" ]]; then
+                echo "Legal MCP file-registry marker is invalid."
+                false
+              fi
+              legal_registry_marker_present=1
+              legal_registry_required_at_start=1
+              if [[ "${legal_registry_file_definition_count}" != "1" ]] \
+                || [[ "${legal_registry_file_exact_count}" != "1" ]] \
+                || [[ "${legal_registry_json_definition_count}" != "0" ]] \
+                || [[ "${legal_registry_legacy_definition_count}" != "0" ]]; then
+                echo "Migrated runtime .env must use only the fixed legal MCP registry file."
+                false
+              fi
+            else
+              legal_registry_finalization_required=1
+              if [[ "${legal_registry_file_exact_count}" == "1" ]] \
+                && [[ "${legal_registry_json_nonempty_count}" == "0" ]] \
+                && [[ "${legal_registry_legacy_nonempty_count}" == "0" ]]; then
+                # final health 통과 후 cleanup이 끊긴 경우를 안전하게 마감한다.
+                legal_registry_required_at_start=1
+                if [[ "${legal_registry_json_definition_count}" != "0" ]] \
+                  || [[ "${legal_registry_legacy_definition_count}" != "0" ]]; then
+                  legal_registry_needs_next_env=1
+                fi
+              elif [[ "${legal_registry_json_definition_count}" == "1" ]] \
+                && [[ "${legal_registry_json_nonempty_count}" == "1" ]] \
+                && [[ "${legal_registry_file_nonempty_count}" == "0" ]] \
+                && [[ "${legal_registry_legacy_nonempty_count}" == "0" ]]; then
+                # 최초 1회만 EC2의 기존 JSON registry를 file로 이전한다.
+                legal_registry_needs_next_env=1
+                legal_registry_json_source_at_start=1
+              else
+                echo "Pre-migration runtime .env must contain one non-empty legal MCP JSON registry."
+                false
+              fi
+            fi
+
+            shopt -s nullglob
+            legal_registry_orphan_next_envs=(
+              "${HOME}/alimtalk-proxy"/.env.legal-mcp.next.*
+            )
+            shopt -u nullglob
+            if (( ${#legal_registry_orphan_next_envs[@]} > 0 )); then
+              echo "CLEANUP_FAILED: orphan legal MCP next env requires manual review."
+              false
+            fi
+            if ! docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1 \
+              && docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+              echo "RECOVERY_REQUIRED: current container is missing while rollback exists; it will not be started automatically."
+              false
+            fi
+            if docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1 \
+              && [[ "$(docker container inspect --format '{{.State.Running}}' "${CONTAINER_NAME}")" != "true" ]]; then
+              echo "RECOVERY_REQUIRED: an existing current container must be running before deployment."
               false
             fi
 
@@ -382,18 +494,95 @@ jobs:
               return 1
             }
 
+            verify_file_registry_container_contract() {
+              local container_name="$1"
+              local configured_environment=""
+              local registry_mount=""
+
+              configured_environment="$(
+                docker container inspect \
+                  --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                  "${container_name}"
+              )" || return 1
+              if [[ "$(grep -Fxc "LEGAL_MCP_TOKEN_REGISTRY_FILE=${legal_registry_container_file}" <<< "${configured_environment}" || true)" != "1" ]] \
+                || [[ "$(grep -Ec '^LEGAL_MCP_TOKEN_REGISTRY_JSON=' <<< "${configured_environment}" || true)" != "0" ]] \
+                || [[ "$(grep -Ec '^LEGAL_MCP_TOKEN_SHA256=' <<< "${configured_environment}" || true)" != "0" ]]; then
+                return 1
+              fi
+
+              registry_mount="$(
+                docker container inspect --format \
+                  '{{range .Mounts}}{{if eq .Destination "/run/secrets/tonghari-legal-mcp"}}{{.Type}}|{{.RW}}|{{.Source}}{{println}}{{end}}{{end}}' \
+                  "${container_name}"
+              )" || return 1
+              [[ "${registry_mount}" == "bind|false|${legal_registry_host_dir}" ]]
+            }
+
+            verify_legal_registry_health() {
+              local container_name="$1"
+              local port="$2"
+
+              curl -fsS --connect-timeout 2 --max-time 5 \
+                "http://127.0.0.1:${port}/health" \
+                | docker exec -i \
+                    -e EXPECTED_LEGAL_MCP_CLIENT_COUNT="${legal_registry_client_count}" \
+                    "${container_name}" \
+                    node -e '
+                      let body = "";
+                      process.stdin.setEncoding("utf8");
+                      process.stdin.on("data", (chunk) => { body += chunk; });
+                      process.stdin.on("end", () => {
+                        try {
+                          const health = JSON.parse(body);
+                          const valid = health.features?.legalMcpConfigurationValid === true
+                            && health.features?.legalMcpAuthMode === "client_registry"
+                            && health.features?.legalMcpAuthSource === "file_registry"
+                            && String(health.features?.legalMcpRegisteredClientCount)
+                              === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT
+                            && String(health.features?.legalMcpRegisteredTokenCount)
+                              === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT;
+                          process.exit(valid ? 0 : 1);
+                        } catch {
+                          process.exit(1);
+                        }
+                      });
+                    ' >/dev/null 2>&1
+            }
+
             rollback() {
-              exit_code=$?
-              rollback_failed=0
-              trap - ERR
+              local exit_code="$1"
+              rollback_cleanup_failed=0
+              service_recovery_failed=0
+              trap - ERR INT TERM HUP EXIT
               set +e
               logout_registry
+
+              if [[ -n "${legal_registry_env_next}" ]]; then
+                legal_registry_env_next_path_valid=0
+                case "${legal_registry_env_next}" in
+                  "${HOME}/alimtalk-proxy/".env.legal-mcp.next.*)
+                    legal_registry_env_next_path_valid=1
+                    ;;
+                esac
+                if [[ "${legal_registry_env_next_path_valid}" -ne 1 ]] \
+                  || [[ ! -f "${legal_registry_env_next}" ]] \
+                  || [[ -L "${legal_registry_env_next}" ]] \
+                  || [[ "$(stat -c '%u' "${legal_registry_env_next}" 2>/dev/null)" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' "${legal_registry_env_next}" 2>/dev/null)" != "600" ]] \
+                  || ! rm -f -- "${legal_registry_env_next}" \
+                  || [[ -e "${legal_registry_env_next}" || -L "${legal_registry_env_next}" ]]; then
+                  echo "ROLLBACK_FAILED: legal MCP next env cleanup failed."
+                  rollback_cleanup_failed=1
+                fi
+                legal_registry_env_next=""
+              fi
 
               if [[ "${candidate_started}" -eq 1 ]] \
                 && docker container inspect "${CANDIDATE_CONTAINER}" >/dev/null 2>&1; then
                 docker logs --tail 200 "${CANDIDATE_CONTAINER}" || true
                 if ! docker rm -f "${CANDIDATE_CONTAINER}"; then
                   echo "Candidate cleanup failed; manual cleanup is required."
+                  rollback_cleanup_failed=1
                 fi
               fi
 
@@ -403,7 +592,7 @@ jobs:
                 docker logs --tail 200 "${CONTAINER_NAME}" || true
                 if ! docker rm -f "${CONTAINER_NAME}"; then
                   echo "ROLLBACK_FAILED: failed candidate could not be removed."
-                  rollback_failed=1
+                  service_recovery_failed=1
                 fi
               fi
 
@@ -415,41 +604,51 @@ jobs:
                     restore_source="${CONTAINER_NAME}"
                   else
                     echo "ROLLBACK_FAILED: current container is not the previous image."
-                    rollback_failed=1
+                    service_recovery_failed=1
                   fi
                 elif docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
                   rollback_image_id="$(docker container inspect --format '{{.Image}}' "${ROLLBACK_CONTAINER}")"
                   if [[ "${rollback_image_id}" != "${previous_image_id}" ]]; then
                     echo "ROLLBACK_FAILED: rollback container image ID is not the previous image."
-                    rollback_failed=1
+                    service_recovery_failed=1
                   elif docker rename "${ROLLBACK_CONTAINER}" "${CONTAINER_NAME}"; then
                     restore_source="${CONTAINER_NAME}"
                   else
                     echo "ROLLBACK_FAILED: rollback container rename failed."
-                    rollback_failed=1
+                    service_recovery_failed=1
                   fi
                 else
                   echo "ROLLBACK_FAILED: previous container is missing."
-                  rollback_failed=1
+                  service_recovery_failed=1
                 fi
 
-                if [[ "${rollback_failed}" -eq 0 && -n "${restore_source}" ]]; then
-                  if ! docker start "${restore_source}" >/dev/null; then
+                # 임시 file 정리 실패와 무관하게 가능한 서비스 복구는 항상 시도한다.
+                if [[ -n "${restore_source}" ]]; then
+                  if [[ "${legal_registry_required_at_start}" -eq 1 ]] \
+                    && ! verify_file_registry_container_contract "${restore_source}"; then
+                    echo "ROLLBACK_FAILED: previous container could revive an environment registry."
+                    service_recovery_failed=1
+                  elif ! docker start "${restore_source}" >/dev/null; then
                     echo "ROLLBACK_FAILED: previous container could not be started."
-                    rollback_failed=1
+                    service_recovery_failed=1
                   elif [[ "$(docker container inspect --format '{{.Image}}' "${restore_source}")" != "${previous_image_id}" ]]; then
                     echo "ROLLBACK_FAILED: restored container image ID changed unexpectedly."
-                    rollback_failed=1
+                    service_recovery_failed=1
                   elif ! verify_status_ok "${restore_source}" 3100; then
                     echo "ROLLBACK_FAILED: restored container health check failed."
-                    rollback_failed=1
+                    service_recovery_failed=1
+                  elif [[ "${legal_registry_required_at_start}" -eq 1 ]] \
+                    && ! verify_legal_registry_health "${restore_source}" 3100; then
+                    echo "ROLLBACK_FAILED: restored legal MCP registry health check failed."
+                    service_recovery_failed=1
                   else
                     echo "Previous container restored and health-checked successfully."
                   fi
                 fi
               fi
 
-              if [[ "${rollback_failed}" -ne 0 ]]; then
+              if [[ "${rollback_cleanup_failed}" -ne 0 ]] \
+                || [[ "${service_recovery_failed}" -ne 0 ]]; then
                 echo "ROLLBACK_FAILED: containers were preserved for manual recovery."
                 exit 70
               fi
@@ -457,7 +656,70 @@ jobs:
               exit "${exit_code}"
             }
 
-            trap rollback ERR
+            postcommit_cleanup() {
+              local exit_code="$1"
+              local cleanup_failed=0
+              local next_env_path_valid=0
+
+              trap - ERR INT TERM HUP EXIT
+              set +e
+              logout_registry
+
+              if [[ "${legal_registry_finalization_required}" -eq 1 ]] \
+                && docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                docker rm -f "${ROLLBACK_CONTAINER}" >/dev/null 2>&1 || cleanup_failed=1
+              fi
+              if [[ "${legal_registry_finalization_required}" -eq 1 ]] \
+                && docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                cleanup_failed=1
+              fi
+
+              if [[ -n "${legal_registry_env_next}" ]]; then
+                case "${legal_registry_env_next}" in
+                  "${HOME}/alimtalk-proxy/".env.legal-mcp.next.*)
+                    next_env_path_valid=1
+                    ;;
+                esac
+                if [[ "${next_env_path_valid}" -ne 1 ]] \
+                  || [[ ! -f "${legal_registry_env_next}" ]] \
+                  || [[ -L "${legal_registry_env_next}" ]] \
+                  || [[ "$(stat -c '%u' "${legal_registry_env_next}" 2>/dev/null)" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' "${legal_registry_env_next}" 2>/dev/null)" != "600" ]] \
+                  || ! rm -f -- "${legal_registry_env_next}" \
+                  || [[ -e "${legal_registry_env_next}" || -L "${legal_registry_env_next}" ]]; then
+                  cleanup_failed=1
+                fi
+                legal_registry_env_next=""
+              fi
+
+              if [[ "${cleanup_failed}" -ne 0 ]]; then
+                echo "CLEANUP_FAILED: file-mode current remains active; never start the legacy rollback container."
+                exit 71
+              fi
+              case "${exit_code}" in
+                129|130|143) ;;
+                *) exit_code=71 ;;
+              esac
+              echo "Deployment ended after the file-mode commit point; legacy rollback was not restarted."
+              exit "${exit_code}"
+            }
+
+            phase_aware_exit() {
+              local exit_code=$?
+              trap - ERR INT TERM HUP EXIT
+              if [[ "${deployment_phase}" == "precommit" ]]; then
+                rollback "${exit_code}"
+              elif [[ "${deployment_phase}" == "committed" ]]; then
+                postcommit_cleanup "${exit_code}"
+              fi
+              exit "${exit_code}"
+            }
+
+            trap 'exit $?' ERR
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+            trap 'exit 129' HUP
+            trap phase_aware_exit EXIT
 
             printf '%s' "${GHCR_TOKEN}" \
               | docker login ghcr.io --username "${GHCR_USERNAME}" --password-stdin >/dev/null 2>&1
@@ -468,6 +730,161 @@ jobs:
             if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE}" \
               | grep -Fq "@${EXPECTED_DIGEST}"; then
               echo "Pulled image digest does not match ${EXPECTED_DIGEST}."
+              false
+            fi
+
+            if [[ -e "${legal_registry_host_dir}" || -L "${legal_registry_host_dir}" ]]; then
+              if [[ ! -d "${legal_registry_host_dir}" || -L "${legal_registry_host_dir}" ]] \
+                || [[ "$(stat -c '%u' "${legal_registry_host_dir}")" != "1001" ]] \
+                || [[ "$(stat -c '%g' "${legal_registry_host_dir}")" != "1001" ]] \
+                || [[ "$(stat -c '%a' "${legal_registry_host_dir}")" != "700" ]]; then
+                echo "Legal MCP registry directory must be a UID/GID 1001 mode 700 directory."
+                false
+              fi
+            else
+              mkdir -m 700 -- "${legal_registry_host_dir}"
+              if [[ ! -d "${legal_registry_host_dir}" || -L "${legal_registry_host_dir}" ]] \
+                || [[ "$(stat -c '%u' "${legal_registry_host_dir}")" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${legal_registry_host_dir}")" != "700" ]]; then
+                echo "New legal MCP registry directory failed its host ownership check."
+                false
+              fi
+              docker run --rm \
+                --user 0:0 \
+                --network none \
+                --read-only \
+                --cap-drop ALL \
+                --cap-add CHOWN \
+                --cap-add FOWNER \
+                --security-opt no-new-privileges \
+                --mount \
+                  "type=bind,src=${legal_registry_host_dir},dst=/registry" \
+                "${IMAGE}" \
+                sh -eu -c 'chown 1001:1001 /registry && chmod 700 /registry'
+              if [[ "$(stat -c '%u' "${legal_registry_host_dir}")" != "1001" ]] \
+                || [[ "$(stat -c '%g' "${legal_registry_host_dir}")" != "1001" ]] \
+                || [[ "$(stat -c '%a' "${legal_registry_host_dir}")" != "700" ]]; then
+                echo "Legal MCP registry directory ownership initialization failed."
+                false
+              fi
+            fi
+
+            legal_registry_validation=""
+            if legal_registry_validation="$(
+              docker run --rm \
+                --network none \
+                --read-only \
+                --cap-drop ALL \
+                --security-opt no-new-privileges \
+                --mount \
+                  "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
+                "${IMAGE}" \
+                node dist/cli/legal-mcp-registry.js validate \
+                  --path "${legal_registry_container_file}"
+            )"; then
+              :
+            else
+              if [[ "${legal_registry_marker_present}" -eq 1 ]] \
+                || [[ "${legal_registry_required_at_start}" -eq 1 ]]; then
+                echo "Configured legal MCP file registry failed validation."
+                false
+              fi
+
+              legal_registry_initialization="$(
+                docker run --rm \
+                  --network none \
+                  --read-only \
+                  --cap-drop ALL \
+                  --security-opt no-new-privileges \
+                  --env-file .env \
+                  --mount \
+                    "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir}" \
+                  "${IMAGE}" \
+                  node dist/cli/legal-mcp-registry.js init-from-env \
+                    --path "${legal_registry_container_file}"
+              )"
+              if [[ ! "${legal_registry_initialization}" =~ ^action=init-from-env[[:space:]]clientCount=([1-9][0-9]*)$ ]]; then
+                echo "Legal MCP registry initialization returned an invalid attestation."
+                false
+              fi
+              legal_registry_validation="$(
+                docker run --rm \
+                  --network none \
+                  --read-only \
+                  --cap-drop ALL \
+                  --security-opt no-new-privileges \
+                  --mount \
+                    "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
+                  "${IMAGE}" \
+                  node dist/cli/legal-mcp-registry.js validate \
+                    --path "${legal_registry_container_file}"
+              )"
+            fi
+
+            if [[ ! "${legal_registry_validation}" =~ ^clientCount=([1-9][0-9]*)$ ]]; then
+              echo "Legal MCP registry validation returned an invalid attestation."
+              false
+            fi
+            legal_registry_client_count="${BASH_REMATCH[1]}"
+            if (( legal_registry_client_count < 1 || legal_registry_client_count > 32 )); then
+              echo "Legal MCP registry client count is outside the supported range."
+              false
+            fi
+
+            if [[ "${legal_registry_json_source_at_start}" -eq 1 ]]; then
+              legal_registry_env_match="$(
+                docker run --rm \
+                  --network none \
+                  --read-only \
+                  --cap-drop ALL \
+                  --security-opt no-new-privileges \
+                  --env-file .env \
+                  --mount \
+                    "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
+                  "${IMAGE}" \
+                  node dist/cli/legal-mcp-registry.js matches-env \
+                    --path "${legal_registry_container_file}"
+              )"
+              if [[ ! "${legal_registry_env_match}" =~ ^clientCount=([1-9][0-9]*)$ ]] \
+                || [[ "${BASH_REMATCH[1]:-}" != "${legal_registry_client_count}" ]]; then
+                echo "Legal MCP file registry does not match the current EC2 JSON registry."
+                false
+              fi
+            fi
+
+            if [[ "${legal_registry_needs_next_env}" -eq 1 ]]; then
+              legal_registry_env_next="$(
+                mktemp "${HOME}/alimtalk-proxy/.env.legal-mcp.next.XXXXXX"
+              )"
+              chmod 600 "${legal_registry_env_next}"
+              export LEGAL_REGISTRY_CONTAINER_FILE="${legal_registry_container_file}"
+              awk '
+                /^[[:space:]]*LEGAL_MCP_TOKEN_REGISTRY_FILE[[:space:]]*=/ { next }
+                /^[[:space:]]*LEGAL_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=/ { next }
+                /^[[:space:]]*LEGAL_MCP_TOKEN_SHA256[[:space:]]*=/ { next }
+                { print }
+                END {
+                  print "LEGAL_MCP_TOKEN_REGISTRY_FILE=" \
+                    ENVIRON["LEGAL_REGISTRY_CONTAINER_FILE"]
+                }
+              ' .env > "${legal_registry_env_next}"
+              unset LEGAL_REGISTRY_CONTAINER_FILE
+              if [[ ! -f "${legal_registry_env_next}" || -L "${legal_registry_env_next}" ]] \
+                || [[ "$(stat -c '%u' "${legal_registry_env_next}")" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${legal_registry_env_next}")" != "600" ]] \
+                || [[ "$(grep -Fxc "LEGAL_MCP_TOKEN_REGISTRY_FILE=${legal_registry_container_file}" "${legal_registry_env_next}" || true)" != "1" ]] \
+                || [[ "$(grep -Ec '^[[:space:]]*LEGAL_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=' "${legal_registry_env_next}" || true)" != "0" ]] \
+                || [[ "$(grep -Ec '^[[:space:]]*LEGAL_MCP_TOKEN_SHA256[[:space:]]*=' "${legal_registry_env_next}" || true)" != "0" ]]; then
+                echo "Next runtime .env did not establish an exclusive legal MCP file registry."
+                false
+              fi
+              legal_registry_runtime_env="${legal_registry_env_next}"
+            fi
+
+            if [[ "${legal_registry_required_at_start}" -eq 1 ]] \
+              && docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1 \
+              && ! verify_file_registry_container_contract "${CONTAINER_NAME}"; then
+              echo "Running container does not satisfy the committed legal MCP file-registry contract."
               false
             fi
 
@@ -511,6 +928,7 @@ jobs:
                       -e EXPECTED_LAND_AREA_SYNC_ENABLED="${expected_land_area_sync_enabled}" \
                       -e EXPECTED_ALLOWLIST_COUNT="${actual_allowlist_count}" \
                       -e EXPECTED_ALLOWLIST_DIGEST="${actual_allowlist_digest}" \
+                      -e EXPECTED_LEGAL_MCP_CLIENT_COUNT="${legal_registry_client_count}" \
                       "${container_name}" \
                       node -e '
                         let body = "";
@@ -528,7 +946,14 @@ jobs:
                               && String(health.features?.landAreaSyncAllowedTargetCount)
                                 === process.env.EXPECTED_ALLOWLIST_COUNT
                               && health.features?.landAreaSyncAllowedTargetsDigest
-                                === process.env.EXPECTED_ALLOWLIST_DIGEST;
+                                === process.env.EXPECTED_ALLOWLIST_DIGEST
+                              && health.features?.legalMcpConfigurationValid === true
+                              && health.features?.legalMcpAuthMode === "client_registry"
+                              && health.features?.legalMcpAuthSource === "file_registry"
+                              && String(health.features?.legalMcpRegisteredClientCount)
+                                === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT
+                              && String(health.features?.legalMcpRegisteredTokenCount)
+                                === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT;
                             process.exit(valid ? 0 : 1);
                           } catch {
                             process.exit(1);
@@ -550,7 +975,9 @@ jobs:
               --name "${CANDIDATE_CONTAINER}" \
               --restart no \
               -p 127.0.0.1:13100:3100 \
-              --env-file .env \
+              --env-file "${legal_registry_runtime_env}" \
+              --mount \
+                "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
               --memory=800m \
               --memory-swap=1600m \
               "${IMAGE}"
@@ -564,6 +991,10 @@ jobs:
 
             if ! verify_health "${CANDIDATE_CONTAINER}" 13100; then
               echo "Candidate health response did not match git SHA ${EXPECTED_GIT_SHA}."
+              false
+            fi
+            if ! verify_file_registry_container_contract "${CANDIDATE_CONTAINER}"; then
+              echo "Candidate did not preserve the legal MCP file-registry contract."
               false
             fi
 
@@ -585,7 +1016,9 @@ jobs:
               --name "${CONTAINER_NAME}" \
               --restart unless-stopped \
               -p 127.0.0.1:3100:3100 \
-              --env-file .env \
+              --env-file "${legal_registry_runtime_env}" \
+              --mount \
+                "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
               -v "$(pwd)/logs:/app/logs" \
               --memory=800m \
               --memory-swap=1600m \
@@ -601,11 +1034,95 @@ jobs:
               echo "Health response did not match git SHA ${EXPECTED_GIT_SHA}."
               false
             fi
+            if ! verify_file_registry_container_contract "${CONTAINER_NAME}"; then
+              echo "Running container did not preserve the legal MCP file-registry contract."
+              false
+            fi
 
-            trap - ERR
-            if [[ "${had_previous}" -eq 1 ]]; then
+            # file-mode final health를 commit point로 삼는다. 이 후에는
+            # 구 env registry container를 다시 실행하지 않는다.
+            deployment_phase="committed"
+            if [[ "${legal_registry_finalization_required}" -eq 1 ]]; then
+              legal_registry_cleanup_failed=0
+
+              if docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                if ! docker rm -f "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                  legal_registry_cleanup_failed=1
+                fi
+              fi
+              if docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                echo "CLEANUP_FAILED: legacy rollback container still exists."
+                legal_registry_cleanup_failed=1
+              else
+                had_previous=0
+              fi
+
+              if [[ "${legal_registry_cleanup_failed}" -eq 0 ]] \
+                && [[ -n "${legal_registry_env_next}" ]]; then
+                if mv -f -- "${legal_registry_env_next}" .env; then
+                  legal_registry_env_next=""
+                  legal_registry_runtime_env="${HOME}/alimtalk-proxy/.env"
+                else
+                  legal_registry_cleanup_failed=1
+                fi
+              fi
+
+              if [[ "${legal_registry_cleanup_failed}" -eq 0 ]]; then
+                if [[ ! -f .env || -L .env ]] \
+                  || [[ "$(stat -c '%u' .env)" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' .env)" != "600" ]] \
+                  || [[ "$(grep -Fxc "LEGAL_MCP_TOKEN_REGISTRY_FILE=${legal_registry_container_file}" .env || true)" != "1" ]] \
+                  || [[ "$(grep -Ec '^[[:space:]]*LEGAL_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=' .env || true)" != "0" ]] \
+                  || [[ "$(grep -Ec '^[[:space:]]*LEGAL_MCP_TOKEN_SHA256[[:space:]]*=' .env || true)" != "0" ]]; then
+                  echo "CLEANUP_FAILED: file-only runtime .env validation failed."
+                  legal_registry_cleanup_failed=1
+                fi
+              fi
+
+              legal_registry_marker_next=""
+              if [[ "${legal_registry_cleanup_failed}" -eq 0 ]]; then
+                if legal_registry_marker_next="$(
+                  mktemp "${HOME}/alimtalk-proxy/.legal-mcp-file-registry-v1.next.XXXXXX"
+                )" \
+                  && chmod 600 "${legal_registry_marker_next}" \
+                  && printf 'version=1\n' > "${legal_registry_marker_next}" \
+                  && mv -f -- "${legal_registry_marker_next}" "${legal_registry_marker}"; then
+                  legal_registry_marker_next=""
+                else
+                  echo "CLEANUP_FAILED: legal MCP migration marker installation failed."
+                  legal_registry_cleanup_failed=1
+                fi
+              fi
+              if [[ "${legal_registry_cleanup_failed}" -eq 0 ]] \
+                && { [[ ! -f "${legal_registry_marker}" ]] \
+                  || [[ -L "${legal_registry_marker}" ]] \
+                  || [[ "$(stat -c '%u' "${legal_registry_marker}")" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' "${legal_registry_marker}")" != "600" ]] \
+                  || [[ "$(<"${legal_registry_marker}")" != "version=1" ]]; }; then
+                echo "CLEANUP_FAILED: legal MCP migration marker validation failed."
+                legal_registry_cleanup_failed=1
+              fi
+
+              if [[ -n "${legal_registry_marker_next}" ]]; then
+                rm -f -- "${legal_registry_marker_next}" >/dev/null 2>&1 || true
+              fi
+              if [[ -n "${legal_registry_env_next}" ]]; then
+                if ! rm -f -- "${legal_registry_env_next}" >/dev/null 2>&1 \
+                  || [[ -e "${legal_registry_env_next}" || -L "${legal_registry_env_next}" ]]; then
+                  legal_registry_cleanup_failed=1
+                fi
+                legal_registry_env_next=""
+              fi
+
+              if [[ "${legal_registry_cleanup_failed}" -ne 0 ]]; then
+                echo "CLEANUP_FAILED: file-mode container remains active; migration finalization requires review."
+                exit 71
+              fi
+              echo "Legal MCP file-registry migration committed and legacy rollback removed."
+            elif [[ "${had_previous}" -eq 1 ]]; then
               echo "Previous container preserved as ${ROLLBACK_CONTAINER} for rollback."
             fi
             docker image prune -f || true
 
+            deployment_phase="complete"
             echo "Deployment verified for git SHA ${EXPECTED_GIT_SHA} and digest ${EXPECTED_DIGEST}."

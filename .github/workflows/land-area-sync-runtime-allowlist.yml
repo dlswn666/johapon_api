@@ -447,6 +447,11 @@ jobs:
           production_lock_path="${application_root}/.tonghari-api-production.lock"
           operation_lock_path="${application_root}/.land-area-sync-operation.lock"
           runtime_watermark_path="${application_root}/.land-area-sync-runtime-watermark"
+          legal_registry_host_dir="${application_root}/.legal-mcp-secrets"
+          legal_registry_container_dir="/run/secrets/tonghari-legal-mcp"
+          legal_registry_container_file="${legal_registry_container_dir}/clients.json"
+          legal_registry_marker="${application_root}/.legal-mcp-file-registry-v1"
+          legal_registry_client_count=""
           env_backup=""
           env_next=""
           env_replaced=0
@@ -460,10 +465,11 @@ jobs:
           new_current_attempted=0
           current_image_id=""
           previous_health_attestation=""
+          transaction_phase="precommit"
 
           cleanup_run_files() {
-            original_status=$?
-            trap - EXIT
+            local original_status="$1"
+            trap - ERR INT TERM HUP EXIT
             set +e
             cleanup_failed=0
             if [[ -e "${allowlist_path}" || -L "${allowlist_path}" ]]; then
@@ -490,7 +496,7 @@ jobs:
             fi
             exit "${original_status}"
           }
-          trap cleanup_run_files EXIT
+          trap 'cleanup_run_files $?' EXIT
 
           read_health_attestation() {
             local inspected_container="$1"
@@ -501,7 +507,9 @@ jobs:
               if result="$(
                 curl -fsS --connect-timeout 2 --max-time 5 \
                   "http://127.0.0.1:${port}/health" \
-                  | docker exec -i "${inspected_container}" node -e '
+                  | docker exec -i \
+                      -e EXPECTED_LEGAL_MCP_CLIENT_COUNT="${legal_registry_client_count}" \
+                      "${inspected_container}" node -e '
                       let body = "";
                       process.stdin.setEncoding("utf8");
                       process.stdin.on("data", (chunk) => { body += chunk; });
@@ -520,6 +528,13 @@ jobs:
                             || !Number.isInteger(count)
                             || count < 0
                             || typeof digest !== "string"
+                            || health.features?.legalMcpConfigurationValid !== true
+                            || health.features?.legalMcpAuthMode !== "client_registry"
+                            || health.features?.legalMcpAuthSource !== "file_registry"
+                            || String(health.features?.legalMcpRegisteredClientCount)
+                              !== process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT
+                            || String(health.features?.legalMcpRegisteredTokenCount)
+                              !== process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT
                           ) process.exit(1);
                           process.stdout.write(
                             `${enabled}:${count}:${digest}`
@@ -538,6 +553,46 @@ jobs:
             return 1
           }
 
+          verify_legal_container_env_mount_contract() {
+            local inspected_container="$1"
+            local configured_environment=""
+            local registry_mount=""
+
+            configured_environment="$(
+              docker container inspect \
+                --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                "${inspected_container}"
+            )" || return 1
+            if [[ "$(grep -Fxc "LEGAL_MCP_TOKEN_REGISTRY_FILE=${legal_registry_container_file}" <<< "${configured_environment}" || true)" != "1" ]] \
+              || [[ "$(grep -Ec '^LEGAL_MCP_TOKEN_REGISTRY_JSON=' <<< "${configured_environment}" || true)" != "0" ]] \
+              || [[ "$(grep -Ec '^LEGAL_MCP_TOKEN_SHA256=' <<< "${configured_environment}" || true)" != "0" ]]; then
+              return 1
+            fi
+
+            registry_mount="$(
+              docker container inspect --format \
+                '{{range .Mounts}}{{if eq .Destination "/run/secrets/tonghari-legal-mcp"}}{{.Type}}|{{.RW}}|{{.Source}}{{println}}{{end}}{{end}}' \
+                "${inspected_container}"
+            )" || return 1
+            if [[ "${registry_mount}" != "bind|false|${legal_registry_host_dir}" ]]; then
+              return 1
+            fi
+            return 0
+          }
+
+          verify_running_port_contract() {
+            local inspected_container="$1"
+            local host_port="$2"
+            local published_port=""
+
+            published_port="$(
+              docker container inspect --format \
+                '{{range (index .NetworkSettings.Ports "3100/tcp")}}{{.HostIp}}|{{.HostPort}}{{println}}{{end}}' \
+                "${inspected_container}"
+            )" || return 1
+            [[ "${published_port}" == "127.0.0.1|${host_port}" ]]
+          }
+
           verify_container() {
             local inspected_container="$1"
             local port="$2"
@@ -550,6 +605,13 @@ jobs:
                 "${inspected_container}"
             )"
             if [[ "${actual_image_id}" != "${current_image_id}" ]]; then
+              return 1
+            fi
+            if ! verify_legal_container_env_mount_contract \
+              "${inspected_container}"; then
+              return 1
+            fi
+            if ! verify_running_port_contract "${inspected_container}" "${port}"; then
               return 1
             fi
             actual_health="$(
@@ -625,6 +687,27 @@ jobs:
             echo "Runtime .env must be owned by the deploy user with mode 600."
             false
           fi
+          if [[ ! -f "${legal_registry_marker}" || -L "${legal_registry_marker}" ]] \
+            || [[ "$(stat -c '%u' "${legal_registry_marker}" 2>/dev/null)" != "$(id -u)" ]] \
+            || [[ "$(stat -c '%a' "${legal_registry_marker}" 2>/dev/null)" != "600" ]] \
+            || [[ "$(<"${legal_registry_marker}")" != "version=1" ]]; then
+            echo "Legal MCP file-registry migration marker is required."
+            false
+          fi
+          if [[ "$(grep -Fxc "LEGAL_MCP_TOKEN_REGISTRY_FILE=${legal_registry_container_file}" "${env_path}" || true)" != "1" ]] \
+            || [[ "$(grep -Ec '^[[:space:]]*LEGAL_MCP_TOKEN_REGISTRY_FILE[[:space:]]*=' "${env_path}" || true)" != "1" ]] \
+            || [[ "$(grep -Ec '^[[:space:]]*LEGAL_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=' "${env_path}" || true)" != "0" ]] \
+            || [[ "$(grep -Ec '^[[:space:]]*LEGAL_MCP_TOKEN_SHA256[[:space:]]*=' "${env_path}" || true)" != "0" ]]; then
+            echo "Runtime .env must use only the fixed legal MCP file registry."
+            false
+          fi
+          if [[ ! -d "${legal_registry_host_dir}" || -L "${legal_registry_host_dir}" ]] \
+            || [[ "$(stat -c '%u' "${legal_registry_host_dir}" 2>/dev/null)" != "1001" ]] \
+            || [[ "$(stat -c '%g' "${legal_registry_host_dir}" 2>/dev/null)" != "1001" ]] \
+            || [[ "$(stat -c '%a' "${legal_registry_host_dir}" 2>/dev/null)" != "700" ]]; then
+            echo "Legal MCP registry directory must be UID/GID 1001 mode 700."
+            false
+          fi
 
           if [[ -e "${runtime_watermark_path}" || -L "${runtime_watermark_path}" ]]; then
             if [[ ! -f "${runtime_watermark_path}" || -L "${runtime_watermark_path}" ]] \
@@ -662,6 +745,32 @@ jobs:
           )"
           if [[ ! "${current_image_id}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "The current API container does not expose an immutable image ID."
+            false
+          fi
+          legal_registry_validation="$(
+            docker run --rm \
+              --network none \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --mount \
+                "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
+              "${current_image_id}" \
+              node dist/cli/legal-mcp-registry.js validate \
+                --path "${legal_registry_container_file}"
+          )"
+          if [[ ! "${legal_registry_validation}" =~ ^clientCount=([1-9][0-9]*)$ ]]; then
+            echo "Legal MCP registry validation returned an invalid attestation."
+            false
+          fi
+          legal_registry_client_count="${BASH_REMATCH[1]}"
+          if (( legal_registry_client_count < 1 || legal_registry_client_count > 32 )); then
+            echo "Legal MCP registry client count is outside the supported range."
+            false
+          fi
+          if ! verify_legal_container_env_mount_contract "${container_name}" \
+            || ! verify_running_port_contract "${container_name}" 3100; then
+            echo "The current API container violates the legal MCP env, mount, or loopback port contract."
             false
           fi
           previous_health_attestation="$(
@@ -793,10 +902,10 @@ jobs:
             watermark_attempt_to_store="${last_attempt}"
           fi
 
-          rollback() {
-            exit_code=$?
+          rollback_transaction() {
+            local exit_code="$1"
             rollback_failed=0
-            trap - ERR
+            trap - ERR INT TERM HUP EXIT
             set +e
 
             if docker container inspect "${candidate_container}" >/dev/null 2>&1; then
@@ -831,22 +940,34 @@ jobs:
               rm -f -- "${watermark_next}" >/dev/null 2>&1 || true
             fi
 
-            if [[ "${previous_renamed}" -eq 1 ]]; then
-              if docker container inspect "${container_name}" >/dev/null 2>&1; then
-                rollback_failed=1
-              elif docker rename "${rollback_container}" "${container_name}"; then
-                docker start "${container_name}" >/dev/null \
-                  || rollback_failed=1
+            if ! docker container inspect "${container_name}" >/dev/null 2>&1 \
+              && docker container inspect "${rollback_container}" >/dev/null 2>&1; then
+              if docker rename "${rollback_container}" "${container_name}"; then
+                if ! verify_legal_container_env_mount_contract \
+                  "${container_name}"; then
+                  rollback_failed=1
+                else
+                  docker start "${container_name}" >/dev/null \
+                    || rollback_failed=1
+                fi
               else
                 rollback_failed=1
               fi
-            elif docker container inspect "${container_name}" >/dev/null 2>&1 \
-              && [[ "$(
+            elif docker container inspect "${container_name}" >/dev/null 2>&1; then
+              if [[ "$(
                 docker container inspect --format '{{.State.Running}}' \
                   "${container_name}"
               )" != "true" ]]; then
-              docker start "${container_name}" >/dev/null \
-                || rollback_failed=1
+                if ! verify_legal_container_env_mount_contract \
+                  "${container_name}"; then
+                  rollback_failed=1
+                else
+                  docker start "${container_name}" >/dev/null \
+                    || rollback_failed=1
+                fi
+              fi
+            else
+              rollback_failed=1
             fi
 
             if [[ ! -f "${env_path}" || -L "${env_path}" ]] \
@@ -863,12 +984,82 @@ jobs:
 
             if [[ "${rollback_failed}" -ne 0 ]]; then
               echo "ROLLBACK_FAILED: manual recovery is required."
-              exit 70
+              cleanup_run_files 70
             fi
             echo "Runtime change failed; previous .env and container were restored."
-            exit "${exit_code}"
+            cleanup_run_files "${exit_code}"
           }
-          trap rollback ERR
+
+          cleanup_committed_transaction() {
+            local exit_code="$1"
+            local cleanup_failed=0
+
+            trap - ERR INT TERM HUP EXIT
+            set +e
+
+            if docker container inspect "${rollback_container}" >/dev/null 2>&1; then
+              docker rm -f "${rollback_container}" >/dev/null 2>&1 \
+                || cleanup_failed=1
+            fi
+            if docker container inspect "${rollback_container}" >/dev/null 2>&1; then
+              cleanup_failed=1
+            else
+              previous_renamed=0
+            fi
+
+            if [[ -n "${env_backup}" ]]; then
+              if [[ ! -f "${env_backup}" || -L "${env_backup}" ]] \
+                || [[ "$(stat -c '%u' "${env_backup}" 2>/dev/null)" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${env_backup}" 2>/dev/null)" != "600" ]] \
+                || ! rm -f -- "${env_backup}" \
+                || [[ -e "${env_backup}" || -L "${env_backup}" ]]; then
+                cleanup_failed=1
+              fi
+              env_backup=""
+            fi
+            if [[ -n "${env_next}" ]]; then
+              rm -f -- "${env_next}" >/dev/null 2>&1 || cleanup_failed=1
+              if [[ -e "${env_next}" || -L "${env_next}" ]]; then
+                cleanup_failed=1
+              fi
+              env_next=""
+            fi
+            if [[ -n "${watermark_next}" ]]; then
+              rm -f -- "${watermark_next}" >/dev/null 2>&1 || cleanup_failed=1
+              if [[ -e "${watermark_next}" || -L "${watermark_next}" ]]; then
+                cleanup_failed=1
+              fi
+              watermark_next=""
+            fi
+
+            if [[ "${cleanup_failed}" -ne 0 ]]; then
+              echo "CLEANUP_FAILED: committed runtime container remains active; manual cleanup is required."
+              cleanup_run_files 71
+            fi
+            case "${exit_code}" in
+              129|130|143) ;;
+              *) exit_code=71 ;;
+            esac
+            echo "Runtime transaction ended after commit; the previous container was not restarted."
+            cleanup_run_files "${exit_code}"
+          }
+
+          phase_aware_transaction_exit() {
+            local exit_code="$1"
+            trap - ERR INT TERM HUP EXIT
+            if [[ "${transaction_phase}" == "precommit" ]]; then
+              rollback_transaction "${exit_code}"
+            elif [[ "${transaction_phase}" == "committed" ]]; then
+              cleanup_committed_transaction "${exit_code}"
+            fi
+            cleanup_run_files "${exit_code}"
+          }
+
+          trap 'exit $?' ERR
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          trap 'exit 129' HUP
+          trap 'phase_aware_transaction_exit $?' EXIT
 
           env_backup="$(
             mktemp "${application_root}/.env.land-area-sync.backup.XXXXXX"
@@ -967,9 +1158,9 @@ jobs:
             false
           fi
 
+          env_replaced=1
           mv -f -- "${env_next}" "${env_path}"
           env_next=""
-          env_replaced=1
           if [[ ! -f "${env_path}" || -L "${env_path}" ]] \
             || [[ "$(stat -c '%u' "${env_path}")" != "$(id -u)" ]] \
             || [[ "$(stat -c '%a' "${env_path}")" != "600" ]]; then
@@ -982,6 +1173,8 @@ jobs:
             --restart no \
             -p 127.0.0.1:13100:3100 \
             --env-file "${env_path}" \
+            --mount \
+              "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
             --memory=800m \
             --memory-swap=1600m \
             "${current_image_id}" >/dev/null
@@ -1002,8 +1195,10 @@ jobs:
           docker run -d \
             --name "${container_name}" \
             --restart unless-stopped \
-            -p 3100:3100 \
+            -p 127.0.0.1:3100:3100 \
             --env-file "${env_path}" \
+            --mount \
+              "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
             -v "${application_root}/logs:/app/logs" \
             --memory=800m \
             --memory-swap=1600m \
@@ -1016,18 +1211,19 @@ jobs:
             false
           fi
 
+          # final의 env/mount/loopback/legal/land health가 모두 통과한 시점이
+          # commit point다. 이후에는 구 container나 env를 다시 활성화하지 않는다.
+          transaction_phase="committed"
           rollback_cleanup_command_failed=0
           if ! docker rm -f "${rollback_container}" >/dev/null 2>&1; then
             rollback_cleanup_command_failed=1
           fi
           if docker container inspect "${rollback_container}" >/dev/null 2>&1; then
             echo "Verified cleanup could not remove the runtime rollback container."
-            # rollback container가 남아 있을 때는 ERR trap으로 이전 상태를 복구한다.
             false
           fi
           previous_renamed=0
 
-          trap - ERR
           success_cleanup_failed="${rollback_cleanup_command_failed}"
           if [[ -z "${env_backup}" ]] \
             || ! rm -f -- "${env_backup}" >/dev/null 2>&1 \
@@ -1043,6 +1239,7 @@ jobs:
             echo "CLEANUP_FAILED: runtime backup cleanup requires manual recovery."
             exit 71
           fi
+          transaction_phase="complete"
           echo "Runtime action ${RUNTIME_ACTION} verified (count=${actual_count}, digest=${actual_digest:-empty})."
           REMOTE_RUNTIME
 

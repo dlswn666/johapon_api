@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
+    chmodSync,
+    mkdtempSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
+import {
     createServer,
     request as httpRequest,
     type Server,
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import express from 'express';
 import {
@@ -13,6 +23,10 @@ import {
     parseLegalMcpHostnameAllowlist,
     type LegalMcpRouteHandle,
 } from '../src/routes/legal-mcp';
+import {
+    createLegalMcpTokenRegistryFileProviderV1,
+    type LegalMcpTokenRegistryFileProviderV1,
+} from '../src/middleware/legal-mcp-token-registry-file';
 import {
     LEGAL_MCP_CLIENT_ID,
     LEGAL_MCP_SERVER_INSTRUCTIONS,
@@ -154,6 +168,7 @@ interface StartEndpointOptions {
     globalResearchRequestsPerMinute?: number;
     tokenSha256?: string;
     tokenRegistryJson?: string;
+    tokenRegistryFileProvider?: LegalMcpTokenRegistryFileProviderV1;
     proxyTokenSha256?: string;
 }
 
@@ -209,9 +224,14 @@ async function startEndpoint(
         dependencies,
         allowedHosts: ['127.0.0.1'],
         allowedOrigins: ['app.tonghari.test'],
-        ...(options.tokenRegistryJson
-            ? { tokenRegistryJson: options.tokenRegistryJson }
-            : { tokenSha256: options.tokenSha256 ?? TOKEN_SHA256 }),
+        ...(options.tokenRegistryFileProvider
+            ? {
+                tokenRegistryFile: '',
+                tokenRegistryFileProvider: options.tokenRegistryFileProvider,
+            }
+            : options.tokenRegistryJson
+                ? { tokenRegistryJson: options.tokenRegistryJson }
+                : { tokenSha256: options.tokenSha256 ?? TOKEN_SHA256 }),
         proxyTokenSha256: options.proxyTokenSha256 ?? PROXY_TOKEN_SHA256,
         packetSigningKey: options.packetSigningKey ?? PACKET_SIGNING_KEY,
         researchRequestsPerMinute: options.researchRequestsPerMinute,
@@ -831,6 +851,65 @@ describe('법률 MCP 공개 계약', () => {
             assert.equal(renderCalls, 0);
         } finally {
             await registryEndpoint.close();
+        }
+    });
+
+    it('file provider route는 atomic 교체 직후 새 bearer를 허용하고 구 bearer를 폐기한다', async () => {
+        const root = realpathSync(mkdtempSync(
+            path.join(tmpdir(), 'legal-mcp-route-registry-')
+        ));
+        chmodSync(root, 0o700);
+        const filePath = path.join(root, 'clients.json');
+        const firstToken = 'file-route-first-token';
+        const secondToken = 'file-route-second-token';
+        const writeAtomic = (clientId: string, rawToken: string): void => {
+            const temporaryPath = path.join(root, 'clients.next.json');
+            writeFileSync(temporaryPath, JSON.stringify({
+                version: 1,
+                clients: [{
+                    clientId,
+                    tokenSha256: createHash('sha256')
+                        .update(rawToken, 'utf8')
+                        .digest('hex'),
+                }],
+            }), { encoding: 'utf8', mode: 0o600 });
+            chmodSync(temporaryPath, 0o600);
+            renameSync(temporaryPath, filePath);
+        };
+
+        let fileEndpoint: RunningEndpoint | undefined;
+        try {
+            writeAtomic('file-route-first', firstToken);
+            fileEndpoint = await startEndpoint(dependencies, {
+                tokenRegistryFileProvider:
+                    createLegalMcpTokenRegistryFileProviderV1(filePath),
+            });
+            const first = await mcpRequest(
+                fileEndpoint.baseUrl,
+                'tools/list',
+                {},
+                { token: firstToken }
+            );
+            assert.equal(first.response.status, 200);
+
+            writeAtomic('file-route-second', secondToken);
+            const second = await mcpRequest(
+                fileEndpoint.baseUrl,
+                'tools/list',
+                {},
+                { token: secondToken }
+            );
+            const revoked = await mcpRequest(
+                fileEndpoint.baseUrl,
+                'tools/list',
+                {},
+                { token: firstToken }
+            );
+            assert.equal(second.response.status, 200);
+            assert.equal(revoked.response.status, 401);
+        } finally {
+            await fileEndpoint?.close();
+            rmSync(root, { recursive: true, force: true });
         }
     });
 

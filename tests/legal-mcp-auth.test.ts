@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import {
+    chmodSync,
+    mkdtempSync,
+    realpathSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
 import { OAuthError, OAuthErrorCode } from '@modelcontextprotocol/server';
 import {
@@ -11,6 +21,7 @@ import {
     LEGAL_MCP_CLIENT_ID,
     LEGAL_MCP_REQUIRED_SCOPE,
 } from '../src/services/legal-research/mcp-policy';
+import { createLegalMcpTokenRegistryFileProviderV1 } from '../src/middleware/legal-mcp-token-registry-file';
 
 function sha256(value: string): string {
     return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -214,5 +225,139 @@ describe('법률 MCP bearer 인증', () => {
                 return true;
             }
         );
+    });
+
+    it('보호 파일 atomic 교체를 다음 인증에서 읽고 stale token을 즉시 폐기한다', async () => {
+        const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'legal-mcp-auth-')));
+        chmodSync(root, 0o700);
+        const filePath = path.join(root, 'clients.json');
+        const firstToken = 'file-client-first-token';
+        const secondToken = 'file-client-second-token';
+        const recoveredToken = 'file-client-recovered-token';
+        const writeAtomic = (clientId: string, token: string): void => {
+            const temporaryPath = path.join(root, 'clients.next.json');
+            writeFileSync(temporaryPath, JSON.stringify({
+                version: 1,
+                clients: [{ clientId, tokenSha256: sha256(token) }],
+            }), { encoding: 'utf8', mode: 0o600 });
+            chmodSync(temporaryPath, 0o600);
+            renameSync(temporaryPath, filePath);
+        };
+
+        try {
+            writeAtomic('file-client-first', firstToken);
+            const provider = createLegalMcpTokenRegistryFileProviderV1(filePath);
+            const verifier = createLegalMcpTokenVerifier({
+                tokenSha256: '',
+                tokenRegistryJson: '',
+                tokenRegistryFile: '',
+                tokenRegistryFileProvider: provider,
+            });
+            assert.equal(
+                (await verifier.verifyAccessToken(firstToken)).clientId,
+                'file-client-first'
+            );
+
+            writeAtomic('file-client-second', secondToken);
+            assert.equal(
+                (await verifier.verifyAccessToken(secondToken)).clientId,
+                'file-client-second'
+            );
+            await assert.rejects(
+                verifier.verifyAccessToken(firstToken),
+                (error: unknown) => error instanceof OAuthError
+                    && error.code === OAuthErrorCode.InvalidToken
+            );
+
+            writeFileSync(path.join(root, 'clients.next.json'), '{', {
+                encoding: 'utf8',
+                mode: 0o600,
+            });
+            renameSync(path.join(root, 'clients.next.json'), filePath);
+            await assert.rejects(
+                verifier.verifyAccessToken(secondToken),
+                (error: unknown) => error instanceof OAuthError
+                    && error.code === OAuthErrorCode.InvalidToken
+            );
+
+            writeAtomic('file-client-recovered', recoveredToken);
+            assert.equal(
+                (await verifier.verifyAccessToken(recoveredToken)).clientId,
+                'file-client-recovered'
+            );
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    it('교체 전 inspection이 멈춰 있어도 교체 뒤 요청은 새 세대로 인증한다', async () => {
+        const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'legal-mcp-order-')));
+        chmodSync(root, 0o700);
+        const filePath = path.join(root, 'clients.json');
+        const oldToken = 'ordering-old-token';
+        const newToken = 'ordering-new-token';
+        const writeAtomic = (clientId: string, token: string): void => {
+            const temporaryPath = path.join(root, 'clients.next.json');
+            writeFileSync(temporaryPath, JSON.stringify({
+                version: 1,
+                clients: [{ clientId, tokenSha256: sha256(token) }],
+            }), { encoding: 'utf8', mode: 0o600 });
+            chmodSync(temporaryPath, 0o600);
+            renameSync(temporaryPath, filePath);
+        };
+        let announcePaused!: () => void;
+        const paused = new Promise<void>((resolve) => {
+            announcePaused = resolve;
+        });
+        let releaseInspection!: () => void;
+        const inspectionReleased = new Promise<void>((resolve) => {
+            releaseInspection = resolve;
+        });
+        let completedInspections = 0;
+        let requestBeforeReplace: Promise<unknown> | null = null;
+
+        try {
+            writeAtomic('ordering-old', oldToken);
+            const provider = createLegalMcpTokenRegistryFileProviderV1(filePath, {
+                onRuntimeInspectionComplete: async () => {
+                    completedInspections += 1;
+                    if (completedInspections === 1) {
+                        announcePaused();
+                        await inspectionReleased;
+                    }
+                },
+            });
+            const verifier = createLegalMcpTokenVerifier({
+                tokenSha256: '',
+                tokenRegistryJson: '',
+                tokenRegistryFile: '',
+                tokenRegistryFileProvider: provider,
+            });
+
+            requestBeforeReplace = verifier.verifyAccessToken(oldToken);
+            await paused;
+            writeAtomic('ordering-new', newToken);
+
+            await assert.rejects(
+                verifier.verifyAccessToken(oldToken),
+                (error: unknown) => error instanceof OAuthError
+                    && error.code === OAuthErrorCode.InvalidToken
+            );
+            assert.equal(
+                (await verifier.verifyAccessToken(newToken)).clientId,
+                'ordering-new'
+            );
+
+            releaseInspection();
+            await assert.rejects(
+                requestBeforeReplace,
+                (error: unknown) => error instanceof OAuthError
+                    && error.code === OAuthErrorCode.InvalidToken
+            );
+        } finally {
+            releaseInspection();
+            await requestBeforeReplace?.catch(() => undefined);
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 });

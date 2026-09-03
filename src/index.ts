@@ -11,6 +11,8 @@ import {
 } from './routes/legal-mcp';
 import { createLegalMcpRuntimeDependenciesV1 } from './services/legal-research/mcp-runtime';
 import { getLegalMcpConfigurationStateV1 } from './services/legal-research/mcp-config';
+import { createLegalMcpTokenRegistryFileProviderV1 } from './middleware/legal-mcp-token-registry-file';
+import { setLegalMcpHealthTokenRegistryFileProviderV1 } from './routes/health';
 import {
     createGisMcpRoute,
     type GisMcpRouteHandle,
@@ -26,11 +28,23 @@ const legalMcpConfiguration = getLegalMcpConfigurationStateV1({
     lawApiOc: env.LAW_API_OC,
     tokenSha256: env.LEGAL_MCP_TOKEN_SHA256,
     tokenRegistryJson: env.LEGAL_MCP_TOKEN_REGISTRY_JSON,
+    tokenRegistryFile: env.LEGAL_MCP_TOKEN_REGISTRY_FILE,
     proxyTokenSha256: env.LEGAL_MCP_PROXY_TOKEN_SHA256,
     packetSigningKey: env.LEGAL_MCP_PACKET_SIGNING_KEY,
     allowedHosts: env.LEGAL_MCP_ALLOWED_HOSTS,
 });
 const legalMcpConfigured = legalMcpConfiguration.configured;
+const legalMcpTokenRegistryFileProvider =
+    legalMcpConfigured
+        && legalMcpConfiguration.authSource === 'file_registry'
+        ? createLegalMcpTokenRegistryFileProviderV1(
+            env.LEGAL_MCP_TOKEN_REGISTRY_FILE
+        )
+        : undefined;
+setLegalMcpHealthTokenRegistryFileProviderV1(
+    legalMcpTokenRegistryFileProvider,
+    legalMcpConfiguration
+);
 const gisMcpConfiguration = getGisMcpConfigurationStateV1({
     vworldApiKey: env.VWORLD_API_KEY,
     vworldApiDomain: env.VWORLD_API_DOMAIN,
@@ -62,6 +76,10 @@ if (legalMcpConfigured) {
         }),
         tokenSha256: env.LEGAL_MCP_TOKEN_SHA256,
         tokenRegistryJson: env.LEGAL_MCP_TOKEN_REGISTRY_JSON,
+        tokenRegistryFile: legalMcpTokenRegistryFileProvider
+            ? ''
+            : env.LEGAL_MCP_TOKEN_REGISTRY_FILE,
+        tokenRegistryFileProvider: legalMcpTokenRegistryFileProvider,
         proxyTokenSha256: env.LEGAL_MCP_PROXY_TOKEN_SHA256,
         packetSigningKey: env.LEGAL_MCP_PACKET_SIGNING_KEY,
         allowedHosts: env.LEGAL_MCP_ALLOWED_HOSTS,

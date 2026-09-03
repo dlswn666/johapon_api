@@ -113,7 +113,7 @@ test('runtime allowlist workflow는 pinned SSH, regular .env 0600, atomic rename
     assert.match(workflow, /mv -f -- "\$\{env_next\}" "\$\{env_path\}"/);
 });
 
-test('runtime allowlist workflow는 현재 image ID, health attestation, rollback을 검증한다', () => {
+test('runtime allowlist workflow는 현재 image ID, health attestation, phase-aware rollback을 검증한다', () => {
     assert.match(
         workflow,
         /current_image_id=.*docker container inspect --format '\{\{\.Image\}\}'/s
@@ -126,10 +126,21 @@ test('runtime allowlist workflow는 현재 image ID, health attestation, rollbac
     assert.match(workflow, /landAreaSyncEnabled/);
     assert.match(workflow, /landAreaSyncAllowedTargetCount/);
     assert.match(workflow, /landAreaSyncAllowedTargetsDigest/);
-    assert.match(workflow, /trap rollback ERR/);
+    assert.match(workflow, /trap 'exit \$\?' ERR/);
+    assert.match(workflow, /trap 'exit 130' INT/);
+    assert.match(workflow, /trap 'exit 143' TERM/);
+    assert.match(workflow, /trap 'exit 129' HUP/);
+    assert.match(workflow, /trap 'phase_aware_transaction_exit \$\?' EXIT/);
     assert.match(
         workflow,
         /mv -f -- "\$\{env_backup\}" "\$\{env_path\}"/
+    );
+    assert.ok(
+        workflow.indexOf('          env_replaced=1') <
+            workflow.indexOf(
+                '          mv -f -- "${env_next}" "${env_path}"'
+            ),
+        'signal이 atomic env rename 직후 도착해도 backup 복원 경로가 활성화되어야 한다'
     );
     assert.match(
         workflow,
@@ -137,6 +148,97 @@ test('runtime allowlist workflow는 현재 image ID, health attestation, rollbac
     );
     assert.doesNotMatch(workflow, /docker pull/);
     assert.doesNotMatch(workflow, /docker build/);
+});
+
+test('runtime rollback은 stopped env+mount와 start 이후 live port+health를 분리 검증한다', () => {
+    const staticContractBody =
+        workflow.split('          verify_legal_container_env_mount_contract() {')[1]?.split(
+            '          verify_running_port_contract() {'
+        )[0] ?? '';
+    const runningPortBody =
+        workflow.split('          verify_running_port_contract() {')[1]?.split(
+            '          verify_container() {'
+        )[0] ?? '';
+    const rollbackBody =
+        workflow.split('          rollback_transaction() {')[1]?.split(
+            '          cleanup_committed_transaction() {'
+        )[0] ?? '';
+
+    assert.notEqual(staticContractBody, '');
+    assert.match(staticContractBody, /\.Config\.Env/);
+    assert.match(staticContractBody, /\.Mounts/);
+    assert.doesNotMatch(staticContractBody, /\.NetworkSettings\.Ports/);
+    assert.notEqual(runningPortBody, '');
+    assert.match(runningPortBody, /\.NetworkSettings\.Ports/);
+    assert.match(runningPortBody, /127\.0\.0\.1\|\$\{host_port\}/);
+    assert.notEqual(rollbackBody, '');
+    assert.ok(
+        rollbackBody.indexOf('verify_legal_container_env_mount_contract') <
+            rollbackBody.indexOf('docker start "${container_name}"'),
+        'stopped rollback은 env+mount 확인 뒤에만 start해야 한다'
+    );
+    assert.ok(
+        rollbackBody.indexOf('docker start "${container_name}"') <
+            rollbackBody.lastIndexOf('verify_container'),
+        'live port와 health는 rollback start 이후 verify_container에서 확인해야 한다'
+    );
+});
+
+test('runtime final commit 이후에는 rollback 제거 실패가 이전 env/container를 되살리지 않는다', () => {
+    const finalVerificationIndex = workflow.lastIndexOf(
+        '          if ! verify_container \\\n            "${container_name}"'
+    );
+    const commitIndex = workflow.indexOf(
+        '          transaction_phase="committed"',
+        finalVerificationIndex
+    );
+    const rollbackRemovalIndex = workflow.indexOf(
+        'docker rm -f "${rollback_container}"',
+        commitIndex
+    );
+    const committedCleanupBody =
+        workflow.split('          cleanup_committed_transaction() {')[1]?.split(
+            '          phase_aware_transaction_exit() {'
+        )[0] ?? '';
+
+    assert.ok(finalVerificationIndex >= 0);
+    assert.ok(commitIndex > finalVerificationIndex);
+    assert.ok(rollbackRemovalIndex > commitIndex);
+    assert.notEqual(committedCleanupBody, '');
+    assert.doesNotMatch(
+        committedCleanupBody,
+        /mv -f -- "\$\{env_backup\}" "\$\{env_path\}"/
+    );
+    assert.doesNotMatch(committedCleanupBody, /docker start/);
+    assert.doesNotMatch(committedCleanupBody, /docker rename/);
+    assert.match(committedCleanupBody, /cleanup_run_files 71/);
+});
+
+test('docker-build rollback은 next-env cleanup 실패와 무관하게 서비스 복구를 시도한다', () => {
+    const rollbackBody =
+        dockerBuildWorkflow.split('            rollback() {')[1]?.split(
+            '            postcommit_cleanup() {'
+        )[0] ?? '';
+    const restoreAttemptIndex = rollbackBody.indexOf(
+        'if [[ -n "${restore_source}" ]]; then'
+    );
+
+    assert.notEqual(rollbackBody, '');
+    assert.match(rollbackBody, /rollback_cleanup_failed=0/);
+    assert.match(rollbackBody, /service_recovery_failed=0/);
+    assert.match(
+        rollbackBody,
+        /legal MCP next env cleanup failed[\s\S]*rollback_cleanup_failed=1/
+    );
+    assert.ok(restoreAttemptIndex >= 0);
+    assert.doesNotMatch(
+        rollbackBody.slice(0, restoreAttemptIndex).split('\n').slice(-2).join('\n'),
+        /rollback_cleanup_failed/
+    );
+    assert.match(
+        rollbackBody,
+        /rollback_cleanup_failed[\s\S]*service_recovery_failed[\s\S]*exit 70/
+    );
 });
 
 test('모든 production workflow는 동일한 EC2 advisory lock 계약을 강제한다', () => {
@@ -219,8 +321,8 @@ test('runtime action slot과 monotonic sequence는 pending disable 대체와 sta
         'requested watermark는 runtime env 변경보다 먼저 원자적으로 기록해야 한다'
     );
     const rollbackBody =
-        workflow.split('          rollback() {')[1]?.split(
-            '          trap rollback ERR'
+        workflow.split('          rollback_transaction() {')[1]?.split(
+            '          cleanup_committed_transaction() {'
         )[0] ?? '';
     assert.doesNotMatch(
         rollbackBody,
@@ -348,7 +450,7 @@ ${orphanGuardScript}`,
 test('staged raw allowlist는 모든 local/remote 종료 경로에서 fail-closed cleanup한다', () => {
     const remoteExitCleanupBody =
         workflow.split('          cleanup_run_files() {')[1]?.split(
-            '          trap cleanup_run_files EXIT'
+            "          trap 'cleanup_run_files $?' EXIT"
         )[0] ?? '';
     const sshExitCleanupBody =
         workflow.split('          cleanup_remote() {')[1]?.split(

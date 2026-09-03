@@ -195,6 +195,8 @@ export function createLegalMcpRoute(
     router.use(createLegalMcpAuthMiddleware({
         tokenSha256: options.tokenSha256,
         tokenRegistryJson: options.tokenRegistryJson,
+        tokenRegistryFile: options.tokenRegistryFile,
+        tokenRegistryFileProvider: options.tokenRegistryFileProvider,
         now: options.now,
     }));
     router.use(json({ limit: LEGAL_MCP_JSON_BODY_LIMIT, strict: true }));

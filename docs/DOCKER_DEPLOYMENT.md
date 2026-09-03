@@ -7,9 +7,12 @@ Tonghari API는 `.github/workflows/docker-build.yml`을 통한 자동 배포만 
 - 이미지는 GitHub Actions에서 빌드하고 GHCR(`ghcr.io/dlswn666/alimtalk-proxy`)에 저장한다.
 - 배포 대상은 `latest`가 아니라 Git SHA 태그와 `sha256` digest로 고정한다.
 - EC2에서는 이미지를 빌드하지 않고 검증된 digest를 pull해 실행한다.
-- 런타임 비밀값은 GitHub에 복제하지 않고 EC2의 `/home/ubuntu/alimtalk-proxy/.env`만 사용한다.
+- 런타임 비밀값은 GitHub에 복제하지 않고 EC2의 `/home/ubuntu/alimtalk-proxy/.env`와
+  보호된 `.legal-mcp-secrets/clients.json`만 사용한다.
 - 후보 컨테이너를 `127.0.0.1:13100`에서 검증한 후 공개 포트 `3100`을 교체한다.
 - 성공 후 직전 컨테이너를 `alimtalk-proxy-rollback`이라는 정지 상태 컨테이너로 1세대 보존한다.
+  단, 법률 MCP file registry 최초 전환에서는 구 env digest를 복원하지 않기 위해
+  file-mode 최종 health 통과 후 기존 rollback container를 제거한다.
 
 기존 `scripts/build-and-push.sh`와 `scripts/deploy-to-ec2.sh`의 Docker Hub/`latest` 방식은 사용하지 않는다.
 
@@ -44,6 +47,45 @@ stat -c 'owner=%U group=%G mode=%a file=%n' .env
 ```
 
 정상 기준은 `owner=ubuntu`, `mode=600`이다. 배포 workflow도 컨테이너를 건드리기 전에 이 조건을 검사한다.
+
+### 법률 MCP file registry
+
+소수 초대 client의 bearer digest registry는 다음 고정 경로를 사용한다.
+
+```text
+/home/ubuntu/alimtalk-proxy/.legal-mcp-secrets             uid/gid 1001:1001, mode 700
+/home/ubuntu/alimtalk-proxy/.legal-mcp-secrets/clients.json uid/gid 1001:1001, mode 600
+```
+
+container에서는 directory 전체를 `/run/secrets/tonghari-legal-mcp`에
+read-only bind mount하고 `.env`에는 다음 경로만 둔다.
+
+```text
+LEGAL_MCP_TOKEN_REGISTRY_FILE=/run/secrets/tonghari-legal-mcp/clients.json
+```
+
+`LEGAL_MCP_TOKEN_REGISTRY_JSON` 및 `LEGAL_MCP_TOKEN_SHA256` 키는 최초 전환 후
+`.env`에 남기지 않는다. file·JSON·legacy digest 중 둘 이상이 설정되면
+법률 MCP는 fail-closed한다. 서버에는 bearer 원문을 저장하지 않고
+`clientId`와 SHA-256 digest만 저장한다.
+
+배포 workflow는 최초 1회에 한해 기존 EC2 `.env`의 JSON registry를
+no-network one-shot helper로 file에 이전한다. registry 원문은 GitHub Secret,
+workflow input, 로그, artifact로 전송하지 않는다. 같은 경로에 이전 시도의 file이
+이미 있어도 현재 `.env` JSON과 semantic equality를 `matches-env`로 증명해야 하며,
+불일치하면 덮어쓰지 않고 중단한다. candidate와 final은 file-only next env와
+read-only directory mount로 검증한다. final health 통과가 migration
+commit point이며, 이후 구 rollback container 제거 → `.env` atomic install → mode
+`600` marker 생성 순서로 마감한다. commit point 후 cleanup 실패는
+새 file-mode container를 계속 실행하며 exit `71`로 수동 조치를 요청한다.
+구 env-mode container를 자동으로 재시작하지 않는다.
+
+배포는 `ERR`, `INT`, `TERM`, `HUP`, `EXIT`를 phase-aware하게 처리한다. commit
+point 전에는 next env를 정리하고 기존 container를 복구하지만, commit point 후에는
+구 rollback을 다시 시작하지 않고 best-effort 제거와 next env 정리만 수행한다.
+프로세스 강제 종료 등으로 `.env.legal-mcp.next.*`가 남았거나 current container가
+없는 상태에서 rollback만 남으면 다음 배포도 자동 진행·자동 재기동하지 않고
+operator review를 요구한다.
 
 개발 DB 분기를 위한 필수 항목은 다음 세 개다.
 
@@ -138,10 +180,12 @@ EC2 적용 시에는 다음 보호 조건을 모두 확인한다.
    rename한다.
 4. 현재 컨테이너의 image ID와 후보·최종 컨테이너의 image ID가 정확히 같다.
 5. 후보와 최종 `/health`의 enabled/count/digest가 승인 입력과 일치한다.
-6. 실패 시 원래 `.env`, 컨테이너 이름, 실행 상태와 이전 health attestation을 복구한다.
+6. 후보·최종 검증이 모두 끝나는 commit point 전 실패 시 원래 `.env`, 컨테이너 이름,
+   실행 상태와 이전 health attestation을 복구한다.
 7. 컨테이너 재기동 전 production lock과 land-area operation lock을 고정 순서로 획득한다.
-8. 성공 보고 전 runtime rollback container와 secret-bearing `.env` backup의 삭제 및
-   부재를 재검증하고, cleanup 명령이나 부재 검증이 실패하면 exit `71`로 green을 금지한다.
+8. 최종 검증 직후 rollback 삭제 전에 commit point를 기록한다. 이후 runtime rollback
+   container나 secret-bearing `.env` backup cleanup이 실패하면 새 current를 유지하고
+   이전 컨테이너는 재기동하지 않으며 exit `71`로 green을 금지한다.
 9. 같은-run idempotent return 전에 orphan `.env.land-area-sync.backup.*`를 최대 8개까지
    검출하고 소유자와 mode `600`을 확인한다. 현재는 성공 apply 뒤 cleanup만 실패했다는
    durable marker가 없으므로 하나라도 있으면 자동 삭제하지 않고 복구 근거로 보존한 채
@@ -169,10 +213,23 @@ done
 3. push 결과의 digest 형식을 검증한다.
 4. EC2 접속 비밀과 EC2 `.env` 소유자·권한·필수 항목을 검사한다.
 5. `repo@sha256:digest` 형식으로 정확한 이미지를 pull한다.
-6. 후보 컨테이너를 `127.0.0.1:13100`에 띄워 SHA, build time, image tag와 승인된
-   LAND_AREA_SYNC enabled/count/digest를 검증한다.
-7. 후보가 통과한 경우에만 기존 `3100` 컨테이너를 rollback 이름으로 보존하고 새 컨테이너로 교체한다.
-8. 최종 `3100` health 검증에 실패하면 직전 컨테이너를 복구한다.
+6. 법률 MCP registry directory/file의 소유자·모드·schema를 검증한다. 최초
+   전환이면 EC2 내부에서만 JSON registry를 file로 초기화하고 file-only next
+   env를 만든다.
+7. 후보 컨테이너를 `127.0.0.1:13100`에 띄워 SHA, build time, image tag,
+   LAND_AREA_SYNC enabled/count/digest와 법률 MCP valid/mode/source/client count를 검증한다.
+8. 후보가 통과한 경우에만 기존 `3100` 컨테이너를 rollback 이름으로 보존하고 새 컨테이너로 교체한다.
+9. 최종 `3100` health 검증에 실패하면 직전 컨테이너를 복구한다. 이미 file
+   migration marker가 있다면 rollback container의 file-only env와 동일 read-only
+   mount를 먼저 검증하며, 불일치하면 구 digest를 살리지 않고 fail-closed한다.
+10. 최초 전환의 final health가 통과하면 구 rollback을 제거하고 file-only
+    `.env`와 migration marker를 원자적으로 확정한다.
+
+별도 `Land Area Sync Runtime Allowlist` workflow도 migration marker, file-only
+`.env`, UID/GID `1001:1001` mode `700` registry directory와 CLI validate count를
+먼저 요구한다. 현재·candidate·final·rollback container 모두 같은 read-only
+directory mount, loopback `127.0.0.1` port, legal MCP valid/mode/source/count 계약을
+통과해야 하므로 runtime allowlist 변경이 legal MCP 구성을 우회할 수 없다.
 
 ## 상태 확인과 롤백
 
@@ -189,20 +246,99 @@ curl -fsS http://127.0.0.1:3100/health
 docker ps -a --filter name=alimtalk-proxy-rollback
 ```
 
-자동 rollback이 실패한 비상 상황에서만 다음을 실행한다.
+법률 MCP file registry 최초 전환 배포는 구 env digest 부활을 막기 위해
+rollback container가 **없는 것이 정상**이다. 그 다음 file-mode 배포부터
+동일 registry directory를 read-only mount한 직전 container 하나를 보존한다.
+
+자동 rollback이 실패한 비상 상황에서만 다음을 실행한다. 법률 MCP
+migration marker가 있으면 먼저 rollback container의 env에 file path가 정확히
+한 번 있고 JSON/legacy key가 없으며, mount source/destination이 동일하고
+`RW=false`인지 확인한다. 이 계약을 자동 workflow와 동일하게 검증할 수
+없으면 아래 명령을 실행하지 않는다.
 
 ```bash
+set -Eeuo pipefail
+
+rollback_env="$(
+  docker container inspect \
+    --format '{{range .Config.Env}}{{println .}}{{end}}' \
+    alimtalk-proxy-rollback
+)"
+test "$(grep -Fxc \
+  'LEGAL_MCP_TOKEN_REGISTRY_FILE=/run/secrets/tonghari-legal-mcp/clients.json' \
+  <<< "${rollback_env}" || true)" = 1
+test "$(grep -Ec '^LEGAL_MCP_TOKEN_REGISTRY_JSON=' \
+  <<< "${rollback_env}" || true)" = 0
+test "$(grep -Ec '^LEGAL_MCP_TOKEN_SHA256=' \
+  <<< "${rollback_env}" || true)" = 0
+
+rollback_mount="$(
+  docker container inspect --format \
+    '{{range .Mounts}}{{if eq .Destination "/run/secrets/tonghari-legal-mcp"}}{{.Type}}|{{.RW}}|{{.Source}}{{println}}{{end}}{{end}}' \
+    alimtalk-proxy-rollback
+)"
+test "${rollback_mount}" = \
+  'bind|false|/home/ubuntu/alimtalk-proxy/.legal-mcp-secrets'
+
+rollback_image="$(
+  docker container inspect --format '{{.Image}}' alimtalk-proxy-rollback
+)"
+registry_validation="$(
+  docker run --rm \
+    --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges \
+    --mount \
+      type=bind,src=/home/ubuntu/alimtalk-proxy/.legal-mcp-secrets,dst=/run/secrets/tonghari-legal-mcp,readonly \
+    "${rollback_image}" \
+    node dist/cli/legal-mcp-registry.js validate \
+      --path /run/secrets/tonghari-legal-mcp/clients.json
+)"
+[[ "${registry_validation}" =~ ^clientCount=([1-9][0-9]*)$ ]]
+expected_client_count="${BASH_REMATCH[1]}"
+
 docker rm -f alimtalk-proxy
 docker rename alimtalk-proxy-rollback alimtalk-proxy
 docker start alimtalk-proxy
-curl -fsS http://127.0.0.1:3100/health
+curl -fsS http://127.0.0.1:3100/health \
+  | docker exec -i \
+      -e EXPECTED_LEGAL_MCP_CLIENT_COUNT="${expected_client_count}" \
+      alimtalk-proxy \
+      node -e '
+        let body = "";
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", (chunk) => { body += chunk; });
+        process.stdin.on("end", () => {
+          try {
+            const health = JSON.parse(body);
+            const valid = health.status === "ok"
+              && health.features?.legalMcpConfigurationValid === true
+              && health.features?.legalMcpAuthMode === "client_registry"
+              && health.features?.legalMcpAuthSource === "file_registry"
+              && String(health.features?.legalMcpRegisteredClientCount)
+                === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT
+              && String(health.features?.legalMcpRegisteredTokenCount)
+                === process.env.EXPECTED_LEGAL_MCP_CLIENT_COUNT;
+            process.exit(valid ? 0 : 1);
+          } catch {
+            process.exit(1);
+          }
+        });
+      '
 ```
 
 비상 롤백 전에는 실행 중인 컨테이너와 rollback 컨테이너의 존재를 먼저 확인한다.
+시작 후 health의 `legalMcpConfigurationValid=true`,
+`legalMcpAuthMode=client_registry`, `legalMcpAuthSource=file_registry`와 두 count가
+현재 `clients.json`의 검증 count와 일치하지 않으면 롤백 성공으로 판정하지 않는다.
+폐기된 legal token이 포함된 env-mode rollback은 서비스 중단을 감수하고라도
+시작하지 않는다.
 
 ## 주의사항
 
-- `.env`를 수정해도 실행 중인 컨테이너에는 반영되지 않는다. `docker restart`도 환경변수를 다시 읽지 않으므로 새 컨테이너 배포가 필요하다.
+- `.env`를 수정해도 실행 중인 컨테이너에는 반영되지 않는다. `docker restart`도 환경변수를
+  다시 읽지 않으므로 새 컨테이너 배포가 필요하다. 단, legal MCP
+  `clients.json`은 directory bind mount와 request-time reload를 사용하므로 원자적
+  add/revoke 후 재배포·재시작이 필요 없다.
 - Vercel 환경변수도 새 배포부터 적용된다. 공유 JWT를 교체한 경우 API와 `johapon-dev`를 연속으로 재배포한다.
 - 공개 HTTP `3100`은 HTTPS 전환 전 합성 개발 GIS 검증에만 제한한다. 운영 bearer token 검증에 사용하지 않는다.
 - `.env` 원문은 저장소나 GitHub Actions artifact에 백업하지 않는다. 별도의 암호화 백업 절차를 사용한다.
