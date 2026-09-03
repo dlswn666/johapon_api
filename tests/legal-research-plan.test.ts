@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+    buildCaseSearchQueriesV1,
     LegalResearchInputV1Schema,
     LegalResearchPlanV1Schema,
 } from '../src/services/legal-research/research-plan';
@@ -35,6 +36,66 @@ const validPlan = {
 };
 
 describe('LegalResearchPlanV1Schema', () => {
+    it('caseQuery 순서대로 법령명+쟁점 복합 검색을 만들고 법령명 보완 stream은 중복 제거한다', () => {
+        assert.deepEqual(buildCaseSearchQueriesV1([
+            {
+                lawNames: ['도시 및 주거환경정비법'],
+                issueTerms: ['조합설립', '동의'],
+            },
+            {
+                lawNames: [' 도시  및 주거환경정비법 '],
+                issueTerms: ['동의', '대표자 선정'],
+            },
+        ]), {
+            lawNameQueries: ['도시 및 주거환경정비법'],
+            issueQueries: [
+                '조합설립',
+                '동의',
+                '대표자 선정',
+            ],
+            executedBodyQueries: [
+                '도시 및 주거환경정비법 조합설립',
+                '도시 및 주거환경정비법 동의',
+                '도시 및 주거환경정비법 대표자 선정',
+            ],
+        });
+    });
+
+    it('쟁점어에 법령명이 이미 포함되어 있으면 복합 검색에서 법령명을 중복하지 않는다', () => {
+        assert.deepEqual(buildCaseSearchQueriesV1([{
+            lawNames: ['도시 및 주거환경정비법'],
+            issueTerms: ['도시 및 주거환경정비법상 조합설립 동의'],
+        }]).executedBodyQueries, [
+            '도시 및 주거환경정비법상 조합설립 동의',
+        ]);
+    });
+
+    it('복합 검색과 법령명 보완 stream 합계가 24개까지이고 25개면 거부한다', () => {
+        const issueTerms = Array.from({ length: 24 }, (_, index) =>
+            `쟁점검색어${String(index + 1).padStart(2, '0')}`);
+        const caseQueries = [
+            { ...validPlan.caseQueries[0], issueTerms: issueTerms.slice(0, 12) },
+            { ...validPlan.caseQueries[0], issueTerms: issueTerms.slice(12, 23) },
+        ];
+
+        assert.equal(LegalResearchPlanV1Schema.safeParse({
+            ...validPlan,
+            caseQueries,
+        }).success, true);
+        const overLimit = LegalResearchPlanV1Schema.safeParse({
+            ...validPlan,
+            caseQueries: [
+                caseQueries[0],
+                { ...caseQueries[1], issueTerms: issueTerms.slice(12) },
+            ],
+        });
+        assert.equal(overLimit.success, false);
+        assert.match(
+            JSON.stringify(overLimit.error?.issues ?? []),
+            /복합 검색과 법령명 보완 검색을 합쳐/
+        );
+    });
+
     it('provider 제어 파라미터를 공개 입력에서 허용하지 않는다', () => {
         assert.equal(
             LegalResearchPlanV1Schema.safeParse({

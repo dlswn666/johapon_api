@@ -678,7 +678,7 @@ redirect = "error"
    blocking unknown이 없고 packet에 facts가 있으면 적용 판단 1건 이상이 필요하며,
    blocking unknown이 있으면 서버가 결론을 고정 유보문으로 바꾸고 적용 판단을 비운다.
 5. `render_legal_answer_v1`을 호출한다. 서버가 packetId, 상태, 사실, 미확인
-   사항, 출처 색인, 판례 건수·최신순·부족 사유·검색 stream 범위·정규화 plan hash·
+   사항, 출처 색인, 결론 판례와 격리된 검토 후보의 건수·최신순·부족 사유·검색 stream 범위·정규화 plan hash·
    상류 완결성과 고정 면책문구를 자동 조립한다.
 6. render 도구가 반환한 Markdown을 수정하거나 링크를 다시 쓰지 않고 표시한다.
 
@@ -697,23 +697,41 @@ redirect = "error"
 - 법령 목록: `target=eflaw`, `nw=3`(현행)
 - 자치법규 목록: `target=ordin`, `nw=1`(현행), 요청 관할 코드·명칭 exact match
 - 판례 목록: `target=prec`, `sort=ddes`, 한 page 최대 100건
-- 판례 선정: 공식 전문과 목록 식별자 재검증 → exact 법령·조문 및 쟁점 관련성
+- 판례 검색: exact `법령명+쟁점어` 본문 stream을 우선하고 법령명-only stream을
+  보완하며, 단독 쟁점어 검색으로 완화하지 않음
+- 결론 판례 선정: 공식 전문과 목록 식별자 재검증 → exact 법령·조문 및 쟁점 관련성
   → 현행 규정 정합성 gate → 선고일 내림차순 → 최대 12건
+- 검토 후보 선정: 공식 전문·목록/상세 identity와 exact 법령명 문맥 + 별도 폐쇄형
+  strong-term 문맥, 또는 하나의 직접 법명·대상 조문 인용 문맥 + 쟁점군을 검증해 최대
+  12건. 두 분리 문맥은 같은 법률쟁점임이 검증됐다는 뜻이 아니다. 전자투표 쟁점은
+  두 경로 모두 전자투표 계열 exact term을 요구하고 대표자 단독 family 활성화는 금지한다.
+  현행 정합성 미확정·결론 사용 금지로 고정하고 `sourceIndex`, 결론, 적용, evidence에서 제외
 - 선고일 안전: 조회 기준일 뒤 선고일이 목록·본문에 있으면 schema drift로 전체 요청을 닫음
 - 최신성 범위: `planCoverageAudit`의 정규화 plan/hash와 실제 법령명·쟁점 query stream
   안에서만 최신순 완결성을 주장하며 전체 판례 universe의 최신성을 주장하지 않음
-- 12건 미만: 검색 조건을 완화하거나 구법·무관 판례로 채우지 않고 실제 건수와
+- 어느 목록이든 12건 미만이면 검색 조건을 완화하거나 무관 판례로 채우지 않고 실제 건수와
   `shortfallReason`을 반환
+- 검토 후보당 저장 match는 최대 2건이다. 쟁점별 0건은 반환 후보에 저장된 match
+  기준이며, 후순위 쟁점이 이 상한 때문에 미평가될 수 있으므로 전체 판례에 해당 쟁점이
+  없다고 표현하지 않는다.
 - 공개 링크: HTTPS 국가법령정보센터의 레코드별 공개 상세 URL만 허용; API OC와
   인증 query는 반환 금지
 - 호출 보호: 공식 API를 사용하는 research 도구는 bearer digest별 분당 6회,
   모든 bearer 합산 프로세스별 분당 12회로 제한
 - 부하 보호: admission 대기 포함 전체 45초 deadline, 프로세스 전역 동시 2건·대기
   4건. queue 초과 또는 provider 429이면 남은 fanout을 시작하지 않음
+- 전송 보호: 근거 packet UTF-8 128KiB, answerDraft UTF-8 96KiB를 도메인 validator가
+  각각 제한하고 proof·JSON-RPC envelope를 포함한 요청도 HTTP 256kb parser 상한 아래로 유지
 - 현행 법령 조문이 0건이면 판례의 현행 규정 정합성을 검증할 수 없으므로 판례
   목록·상세 fanout을 시작하지 않음
 - 부칙·별표: 파싱 후 쟁점 조문·검색어로 선별한 건수와 해시만 감사하며, 관련 자료가
   있으면 `SUPPLEMENTAL_MATERIAL_REVIEW_REQUIRED`로 자동 결론을 차단
+
+검토 후보는 `sourceId`를 받지 않으며 sourceIndex/evidence 참조, 사건번호·공식 URL·
+충분히 긴 고유 사건명·라벨된 판례일련번호와 40자 이상 판결문 발췌 exact-copy를
+분석 필드에서 차단한다. 다만 짧은 fragment와 LLM의 의미적 paraphrase까지 기계적으로
+검출·보증하지 않으므로 사람 검토가 필요하다. 진정한 hard isolation은 검토 후보를
+encrypted/server-side appendix로 분리하는 2-stage 구조가 필요하며 후속 과제다.
 
 ## 배포 전·후 확인
 

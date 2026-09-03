@@ -1,6 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
     compareCaseSerialIdDescendingV1,
+    containsBoundExactLawArticleCitationV1,
+    hasJointOwnerRepresentativeSignalsV1,
+    isCaseReviewStrongTermV1,
+    normalizeCaseReviewTermV1,
+    requiresJointOwnerReviewSignalsV1,
+    selectCaseReviewCandidatesV1,
     selectRelevantCasesV1,
 } from './case-selector';
 import {
@@ -13,7 +19,13 @@ import { LawOpenApiClient } from './law-open-api-client';
 import {
     LEGAL_POLICY_VERSION,
     LEGAL_RESEARCH_PACKET_VERSION,
+    MAX_CASE_REVIEW_CANDIDATES,
+    MAX_CASE_REVIEW_EXCERPT_CHARS,
+    MAX_CASE_REVIEW_MATCHES_PER_CANDIDATE,
+    MAX_CASE_SOURCE_TEXT_CHARS,
     MAX_RELEVANT_CASES,
+    type CaseReviewCandidateV1,
+    type CaseReviewMatchV1,
     type CaseSourceV1,
     type LawSourceV1,
     type LegalResearchPacketV1,
@@ -34,16 +46,46 @@ import type {
     SearchCasesInput,
 } from './provider-types';
 import {
+    buildCaseSearchQueriesV1,
     buildLegalPlanCoverageAuditV1,
+    MAX_CASE_QUERY_STREAMS_V1,
     type LegalResearchInputV1,
 } from './research-plan';
 import { assertLegalResearchPacketV1 } from './validator';
 
-const MAX_CASE_QUERY_STREAMS = 24;
 const CASE_LIST_PAGE_SIZE = 100;
 const MAX_CASE_SEARCH_REQUESTS = 48;
 const MAX_CASE_DETAIL_CANDIDATES = 120;
 const CASE_DETAIL_BATCH_SIZE = 4;
+const CASE_FULL_TEXT_EXCERPT_MAX_CHARS = MAX_CASE_SOURCE_TEXT_CHARS;
+const CASE_REVIEW_EXCERPT_MAX_CHARS = MAX_CASE_REVIEW_EXCERPT_CHARS;
+
+type CaseReviewIssueFamily = 'joint_owner' | 'assembly_vote';
+
+const CASE_REVIEW_FAMILY_SIGNALS: Record<CaseReviewIssueFamily, ReadonlySet<string>> = {
+    joint_owner: new Set([
+        '대표조합원', '공동소유자', '공동소유', '공유자',
+    ]),
+    assembly_vote: new Set([
+        '전자투표', '전자적방법', '전자의결', '의결권', '투표', '표결',
+        '의사정족수', '의결정족수', '정족수', '총회결의무효',
+    ]),
+};
+
+const CASE_REVIEW_FAMILY_TERMS: Record<CaseReviewIssueFamily, readonly string[]> = {
+    joint_owner: [
+        '공동소유', '공동소유자', '공유자', '공유', '수인', '여러 명',
+        '토지등소유자', '대표조합원', '대표하는 1인', '대표하는 1명',
+    ],
+    assembly_vote: [
+        '의결권', '의사정족수', '의결정족수', '정족수', '직접출석', '서면결의',
+        '전자투표', '전자적 방법', '전자의결', '투표', '표결', '총회결의무효', '결의무효',
+    ],
+};
+
+const CASE_REVIEW_ELECTRONIC_TERMS = [
+    '전자투표', '전자적 방법', '전자의결',
+] as const;
 
 export interface LegalResearchProviderV1 {
     searchCurrentLaws(input: {
@@ -131,6 +173,309 @@ function compactText(value: string): string {
 
 function includesTerm(haystack: string, term: string): boolean {
     return compactText(haystack).includes(compactText(term));
+}
+
+function nonEmptyText(value: string | undefined): string | null {
+    const normalized = value?.trim();
+    return normalized ? normalized : null;
+}
+
+function boundedExactText(value: string | undefined, maxChars: number): string {
+    const normalized = value?.trim() ?? '';
+    if (!normalized) return '';
+    return Array.from(normalized).slice(0, maxChars).join('').trimEnd();
+}
+
+function normalizeNumericIdentifier(value: string | undefined): string | null {
+    const normalized = value?.normalize('NFKC').trim();
+    if (!normalized || !/^\d+$/.test(normalized)) return null;
+    return normalized.replace(/^0+(?=\d)/, '');
+}
+
+function normalizePrimaryCaseNumber(value: string | undefined): string | null {
+    const normalized = nonEmptyText(value)?.normalize('NFKC').replace(/\s+/g, '')
+        .toLocaleLowerCase('ko-KR');
+    if (!normalized) return null;
+    return normalized.split(',')[0]?.trim() || null;
+}
+
+function normalizeCourtName(value: string | undefined): string | null {
+    const normalized = nonEmptyText(value)?.normalize('NFKC').replace(/\s+/g, '');
+    if (!normalized) return null;
+    return normalized
+        .replace(/지방법원$/, '지법')
+        .replace(/고등법원$/, '고법')
+        .toLocaleLowerCase('ko-KR');
+}
+
+function normalizedSummaryDecisionIdentity(
+    caseNumber: string | undefined,
+    courtName: string | undefined,
+    decisionDate: string | undefined
+): string | null {
+    const normalizedNumber = normalizePrimaryCaseNumber(caseNumber);
+    const normalizedCourt = normalizeCourtName(courtName);
+    const normalizedDate = normalizeDate(decisionDate);
+    if (!normalizedNumber || !normalizedCourt || !normalizedDate) return null;
+    return `${normalizedNumber}|${normalizedCourt}|${normalizedDate}`;
+}
+
+function reviewSummaryIsBoundaryCritical(
+    summary: CaseSummary,
+    boundary: CaseSummary,
+    selectedSerialIds: ReadonlySet<string>,
+    selectedDecisionIdentities: ReadonlySet<string>,
+    selectedDecisionDates: ReadonlySet<string>
+): boolean {
+    const decisionDate = normalizeDate(summary.decisionDate);
+    if (decisionDate === null || compareProviderCases(summary, boundary) < 0) return true;
+    const serialId = normalizeNumericIdentifier(summary.caseSerialId);
+    if (serialId !== null && selectedSerialIds.has(serialId)) return true;
+    const caseNumber = normalizePrimaryCaseNumber(summary.caseNumber);
+    const courtName = normalizeCourtName(summary.courtName);
+    const identity = normalizedSummaryDecisionIdentity(
+        summary.caseNumber,
+        summary.courtName,
+        summary.decisionDate
+    );
+    if (identity !== null && selectedDecisionIdentities.has(identity)) return true;
+    // 목록의 optional identity가 빠졌으면 같은 선고일의 상세가 기존 review와
+    // 동일 사건인지 목록만으로 배제할 수 없다.
+    return selectedDecisionDates.has(decisionDate)
+        && (caseNumber === null || courtName === null);
+}
+
+function optionalMetadataMatches(
+    left: string | undefined,
+    right: string | undefined,
+    normalize: (value: string | undefined) => string | null
+): boolean {
+    const leftValue = nonEmptyText(left);
+    const rightValue = nonEmptyText(right);
+    if (leftValue === null || rightValue === null) return true;
+    const normalizedLeft = normalize(leftValue);
+    const normalizedRight = normalize(rightValue);
+    return normalizedLeft !== null
+        && normalizedRight !== null
+        && normalizedLeft === normalizedRight;
+}
+
+interface NormalizedTextIndex {
+    text: string;
+    sourceStarts: number[];
+    sourceEnds: number[];
+}
+
+/**
+ * NFKC/case/whitespace 검색용 문자열과 원문 offset을 함께 만든다.
+ * 발췌는 이 offset으로 원문을 그대로 slice하므로 생성·의역된 문장이 섞이지 않는다.
+ */
+function normalizeTextWithSourceOffsets(value: string): NormalizedTextIndex {
+    let text = '';
+    const sourceStarts: number[] = [];
+    const sourceEnds: number[] = [];
+
+    for (let sourceStart = 0; sourceStart < value.length;) {
+        const codePoint = value.codePointAt(sourceStart);
+        if (codePoint === undefined) break;
+        const sourceCharacter = String.fromCodePoint(codePoint);
+        const sourceEnd = sourceStart + sourceCharacter.length;
+        const folded = sourceCharacter.normalize('NFKC').toLocaleLowerCase('ko-KR');
+
+        for (const foldedCharacter of folded) {
+            if (/\s/u.test(foldedCharacter)) {
+                if (text.endsWith(' ')) {
+                    sourceEnds[sourceEnds.length - 1] = sourceEnd;
+                } else {
+                    text += ' ';
+                    sourceStarts.push(sourceStart);
+                    sourceEnds.push(sourceEnd);
+                }
+                continue;
+            }
+            text += foldedCharacter;
+            for (let unit = 0; unit < foldedCharacter.length; unit += 1) {
+                sourceStarts.push(sourceStart);
+                sourceEnds.push(sourceEnd);
+            }
+        }
+        sourceStart = sourceEnd;
+    }
+
+    return { text, sourceStarts, sourceEnds };
+}
+
+function exactFullTextExcerptAroundFirstTerm(
+    fullText: string,
+    matchedTerms: readonly string[]
+): string | null {
+    const indexed = normalizeTextWithSourceOffsets(fullText);
+    for (const term of unique(matchedTerms)) {
+        const normalizedTerm = compactText(term);
+        if (!normalizedTerm) continue;
+        const matchIndex = indexed.text.indexOf(normalizedTerm);
+        if (matchIndex < 0) continue;
+
+        const matchStart = indexed.sourceStarts[matchIndex];
+        const matchEnd = indexed.sourceEnds[matchIndex + normalizedTerm.length - 1];
+        if (matchStart === undefined || matchEnd === undefined) continue;
+
+        const matchLength = matchEnd - matchStart;
+        const remaining = Math.max(0, CASE_FULL_TEXT_EXCERPT_MAX_CHARS - matchLength);
+        let excerptStart = Math.max(0, matchStart - Math.floor(remaining / 2));
+        let excerptEnd = Math.min(
+            fullText.length,
+            matchEnd + (remaining - (matchStart - excerptStart))
+        );
+        excerptStart = Math.max(
+            0,
+            excerptStart - Math.max(0, CASE_FULL_TEXT_EXCERPT_MAX_CHARS - (excerptEnd - excerptStart))
+        );
+        excerptEnd = Math.min(
+            fullText.length,
+            excerptStart + CASE_FULL_TEXT_EXCERPT_MAX_CHARS
+        );
+        const excerpt = fullText.slice(excerptStart, excerptEnd).trim();
+        if (excerpt && fullText.includes(excerpt) && includesTerm(excerpt, term)) {
+            return excerpt;
+        }
+    }
+    return null;
+}
+
+function excerptAroundNormalizedMatch(
+    source: string,
+    indexed: NormalizedTextIndex,
+    matchIndex: number,
+    matchLength: number,
+    maxChars = CASE_FULL_TEXT_EXCERPT_MAX_CHARS
+): string | null {
+    const matchStart = indexed.sourceStarts[matchIndex];
+    const matchEnd = indexed.sourceEnds[matchIndex + matchLength - 1];
+    if (matchStart === undefined || matchEnd === undefined) return null;
+
+    const sourceMatchLength = matchEnd - matchStart;
+    const remaining = Math.max(0, maxChars - sourceMatchLength);
+    let excerptStart = Math.max(0, matchStart - Math.floor(remaining / 2));
+    let excerptEnd = Math.min(
+        source.length,
+        matchEnd + (remaining - (matchStart - excerptStart))
+    );
+    excerptStart = Math.max(
+        0,
+        excerptStart - Math.max(
+            0,
+            maxChars - (excerptEnd - excerptStart)
+        )
+    );
+    excerptEnd = Math.min(
+        source.length,
+        excerptStart + maxChars
+    );
+    const excerpt = source.slice(excerptStart, excerptEnd).trim();
+    return excerpt && source.includes(excerpt) ? excerpt : null;
+}
+
+function exactReviewTermContextExcerpt(fullText: string, term: string): string | null {
+    const indexed = normalizeTextWithSourceOffsets(fullText);
+    const normalizedTerm = compactText(term);
+    if (!normalizedTerm) return null;
+    const matchIndex = indexed.text.indexOf(normalizedTerm);
+    if (matchIndex < 0) return null;
+    const excerpt = excerptAroundNormalizedMatch(
+        fullText,
+        indexed,
+        matchIndex,
+        normalizedTerm.length,
+        CASE_REVIEW_EXCERPT_MAX_CHARS
+    );
+    return excerpt && includesTerm(excerpt, term) ? excerpt : null;
+}
+
+/**
+ * 판결문에서 본법 명칭의 정확한 occurrence만 찾는다. 시행령·시행규칙 명칭 안에
+ * 포함된 본법 문자열과 `구/종전` 법령 언급은 current-law review anchor로 쓰지 않는다.
+ */
+function exactLawContextExcerpts(fullText: string, lawName: string): string[] {
+    const indexed = normalizeTextWithSourceOffsets(fullText);
+    const normalizedLawName = compactText(lawName);
+    if (!normalizedLawName) return [];
+
+    const excerpts: string[] = [];
+    let offset = 0;
+    while (offset <= indexed.text.length - normalizedLawName.length) {
+        const index = indexed.text.indexOf(normalizedLawName, offset);
+        if (index < 0) break;
+        offset = index + normalizedLawName.length;
+
+        const prefix = indexed.text.slice(0, index);
+        const previous = prefix.at(-1);
+        const startsOnBoundary = previous === undefined
+            || !/[0-9a-z가-힣]/iu.test(previous);
+        const semanticPrefix = prefix
+            .replace(/[「『(\[]+\s*$/u, '')
+            .trimEnd();
+        const historicalQualifier = /(?:^|\s)(?:구|종전)(?:법)?(?:인|의)?$/u
+            .test(semanticPrefix);
+        let suffix = indexed.text.slice(index + normalizedLawName.length);
+        suffix = suffix.replace(/^[」』)\]]+/u, '');
+        const directSuffix = suffix.trimStart();
+        const directSubordinateLaw = /^(?:시행령|시행규칙|규칙)/u
+            .test(directSuffix);
+        const next = suffix[0];
+        let endsOnBoundary = next === undefined
+            || !/[0-9a-z가-힣]/iu.test(next);
+        if (!endsOnBoundary) {
+            // 공백 없는 자연어(`법의문언`)도 허용하되 폐쇄형 조사만 소비한다.
+            // 조사 뒤 시행령·시행규칙이면 본법 명칭으로 오인하지 않는다.
+            const particle = /^(?:으로부터|에서|으로|에게|의|에|은|는|이|가|을|를|과|와|로|상)/u
+                .exec(suffix);
+            if (particle) {
+                endsOnBoundary = true;
+                suffix = suffix.slice(particle[0].length).trimStart();
+            }
+        }
+        const subordinateLaw = directSubordinateLaw
+            || /^(?:시행령|시행규칙|규칙)/u.test(suffix);
+        if (!startsOnBoundary || !endsOnBoundary || historicalQualifier || subordinateLaw) {
+            continue;
+        }
+
+        const excerpt = excerptAroundNormalizedMatch(
+            fullText,
+            indexed,
+            index,
+            normalizedLawName.length,
+            CASE_REVIEW_EXCERPT_MAX_CHARS
+        );
+        if (excerpt && includesTerm(excerpt, lawName) && !excerpts.includes(excerpt)) {
+            excerpts.push(excerpt);
+        }
+    }
+    return excerpts;
+}
+
+function caseReviewFamilies(
+    issueText: string,
+    issueTerms: readonly string[]
+): CaseReviewIssueFamily[] {
+    const signals = new Set([
+        normalizeCaseReviewTermV1(issueText),
+        ...issueTerms.map(normalizeCaseReviewTermV1),
+    ]);
+    return (Object.keys(CASE_REVIEW_FAMILY_SIGNALS) as CaseReviewIssueFamily[])
+        .filter((family) => [...CASE_REVIEW_FAMILY_SIGNALS[family]].some((signal) =>
+            [...signals].some((value) => value.includes(normalizeCaseReviewTermV1(signal)))
+        ));
+}
+
+function requiresElectronicReviewAnchor(
+    issueText: string,
+    issueTerms: readonly string[]
+): boolean {
+    const values = [issueText, ...issueTerms].map(normalizeCaseReviewTermV1);
+    return CASE_REVIEW_ELECTRONIC_TERMS.some((signal) =>
+        values.some((value) => value.includes(normalizeCaseReviewTermV1(signal))));
 }
 
 function exactLegalToken(left: string | undefined, right: string): boolean {
@@ -357,13 +702,29 @@ function assertCasePageOrder(
 }
 
 function identityMatches(summary: CaseSummary, detail: CaseDetail): boolean {
-    return detail.caseSerialId === summary.caseSerialId
-        && Boolean(summary.caseNumber && detail.caseNumber && summary.caseNumber === detail.caseNumber)
-        && Boolean(
-            normalizeDate(summary.decisionDate)
-            && normalizeDate(summary.decisionDate) === normalizeDate(detail.decisionDate)
-        )
-        && Boolean(summary.courtName && detail.courtName && summary.courtName === detail.courtName);
+    const summarySerialId = normalizeNumericIdentifier(summary.caseSerialId);
+    const detailSerialId = normalizeNumericIdentifier(detail.caseSerialId);
+    if (
+        summarySerialId === null
+        || detailSerialId === null
+        || summarySerialId !== detailSerialId
+    ) {
+        return false;
+    }
+
+    const mergedCaseNumber = nonEmptyText(detail.caseNumber) ?? nonEmptyText(summary.caseNumber);
+    const mergedCourt = nonEmptyText(detail.courtName) ?? nonEmptyText(summary.courtName);
+    const mergedDecisionDate = normalizeDate(detail.decisionDate)
+        ?? normalizeDate(summary.decisionDate);
+    if (!mergedCaseNumber || !mergedCourt || !mergedDecisionDate) return false;
+
+    return optionalMetadataMatches(
+        summary.caseNumber,
+        detail.caseNumber,
+        normalizePrimaryCaseNumber
+    )
+        && optionalMetadataMatches(summary.decisionDate, detail.decisionDate, normalizeDate)
+        && optionalMetadataMatches(summary.courtName, detail.courtName, normalizeCourtName);
 }
 
 function mapLocalAuthorities(input: LegalResearchInputV1): LocalAuthorityRefV1[] {
@@ -421,6 +782,10 @@ export class LegalResearchOrchestratorV1 {
         const resolvedLawAnchors: ResolvedLawAnchor[] = [];
         const laws: LawSourceV1[] = [];
         const ordinances: OrdinanceSourceV1[] = [];
+        const planCoverageAudit = buildLegalPlanCoverageAuditV1(
+            input.question,
+            input.researchPlan
+        );
 
         const ordinanceRequired = input.researchPlan.ordinanceRequirement === 'required';
         const localAuthorities = mapLocalAuthorities(input);
@@ -453,7 +818,12 @@ export class LegalResearchOrchestratorV1 {
         }
 
         const caseResult = await this.researchCases(
-            input,
+            {
+                ...input,
+                // 실제 provider 호출 순서는 패킷에 보존되는 정규화 계획과
+                // 동일한 순서로 고정해 감사값만 재배열하는 우회를 막는다.
+                researchPlan: planCoverageAudit.normalizedPlan,
+            },
             resolvedLawAnchors,
             generatedAt,
             asOfDate,
@@ -504,7 +874,10 @@ export class LegalResearchOrchestratorV1 {
             || blockingCodes.has('FUTURE_EVENT_DATE')
         ) status = 'temporal_scope_conflict';
         else if (blockingCodes.size > 0 || laws.length === 0) status = 'insufficient_evidence';
-        else if (!caseResult.audit.upstreamComplete) status = 'partial';
+        else if (
+            !caseResult.audit.upstreamComplete
+            || !caseResult.reviewAudit.upstreamComplete
+        ) status = 'partial';
 
         const allLawAnchorsResolved = resolvedLawAnchors.length === input.researchPlan.lawAnchors.length;
         const packet: LegalResearchPacketV1 = {
@@ -531,6 +904,7 @@ export class LegalResearchOrchestratorV1 {
             laws: this.uniqueSources(laws),
             ordinances: this.uniqueSources(ordinances),
             cases: caseResult.cases,
+            caseReviewCandidates: caseResult.reviewCandidates,
             lawSearchAudit: {
                 target: 'eflaw',
                 currentOnlyNw: 3,
@@ -543,11 +917,9 @@ export class LegalResearchOrchestratorV1 {
                 target: 'ordin',
                 currentOnlyNw: 1,
             },
-            planCoverageAudit: buildLegalPlanCoverageAuditV1(
-                input.question,
-                input.researchPlan
-            ),
+            planCoverageAudit,
             caseSearchAudit: caseResult.audit,
+            caseReviewAudit: caseResult.reviewAudit,
             unknowns,
             provenance: {
                 provider: 'KOREA_LAW_OPEN_API',
@@ -851,30 +1223,44 @@ export class LegalResearchOrchestratorV1 {
         asOfDate: string,
         signal?: AbortSignal
     ) {
-        const lawNameQueries = unique(
-            input.researchPlan.caseQueries.flatMap((query) => query.lawNames)
-        );
-        const issueQueries = unique(
-            input.researchPlan.caseQueries.flatMap((query) => query.issueTerms)
-        );
+        const {
+            lawNameQueries,
+            issueQueries,
+            executedBodyQueries,
+        } = buildCaseSearchQueriesV1(input.researchPlan.caseQueries);
+        const issueIds = input.researchPlan.issues.map((issue) => issue.issueId);
         // 현행 법령 조문이 하나도 확정되지 않으면 판례의 현행 규정 정합성을
         // 검증할 수 없으므로 최대 120건의 상세 fanout을 시작하지 않는다.
         if (resolvedLaws.every((law) => law.sources.length === 0)) {
-            return selectRelevantCasesV1([], {
+            const strict = selectRelevantCasesV1([], {
                 upstreamComplete: false,
                 lawNameQueries,
                 issueQueries,
             });
+            const review = selectCaseReviewCandidatesV1([], {
+                upstreamComplete: false,
+                candidatePoolCount: 0,
+                issueIds,
+                strictCases: strict.cases,
+            });
+            return {
+                cases: strict.cases,
+                audit: strict.audit,
+                reviewCandidates: review.candidates,
+                reviewAudit: review.audit,
+            };
         }
         const streams: Array<Omit<SearchCasesInput, 'page'>> = [
+            // 법령명과 쟁점어가 함께 있는 선택적 본문 검색에 상세조회 예산을 먼저 준다.
+            ...executedBodyQueries.map((query) => ({ query, searchScope: 2 as const })),
+            // 공급자 검색 누락을 보완하는 법령명-only stream도 같은 24-stream 상한 안에 둔다.
             ...lawNameQueries.map((referenceLawName) => ({ referenceLawName })),
-            ...issueQueries.map((query) => ({ query, searchScope: 2 as const })),
         ];
-        if (streams.length > MAX_CASE_QUERY_STREAMS) {
+        if (streams.length > MAX_CASE_QUERY_STREAMS_V1) {
             throw new LegalOpenApiError('INVALID_REQUEST');
         }
 
-        // 동일 판례가 법령명 stream과 쟁점어 stream 중 어디에서 발견됐는지
+        // 동일 판례가 법령명 보완 stream과 법령명+쟁점 복합 stream 중 어디에서 발견됐는지
         // 상세조회 우선순위에 사용하므로 page와 검색 provenance를 함께 보존한다.
         const pages: CaseSearchPageWithProvenance[] = [];
         const streamStates: CaseSearchStreamState[] = [];
@@ -937,8 +1323,8 @@ export class LegalResearchOrchestratorV1 {
                 const rightHasIssue = rightFound?.minIssueTotalCount !== null
                     && rightFound?.minIssueTotalCount !== undefined;
 
-                // 상세조회 예산은 검색 결과가 적은 선택적 쟁점 stream부터 쓴다.
-                // 포괄 쟁점+법령명 교집합이 선택적 쟁점 후보를 밀어내지 않도록
+                // 상세조회 예산은 검색 결과가 적은 선택적 복합 stream부터 쓴다.
+                // 포괄 복합+법령명 교집합이 선택적 복합 후보를 밀어내지 않도록
                 // issue 선택도를 교집합 여부보다 먼저 비교한다.
                 if (leftHasIssue !== rightHasIssue) return leftHasIssue ? -1 : 1;
                 if (leftHasIssue && rightHasIssue) {
@@ -1015,10 +1401,14 @@ export class LegalResearchOrchestratorV1 {
         };
 
         const candidates: CaseSourceV1[] = [];
+        const reviewCandidates: CaseReviewCandidateV1[] = [];
         const processedSerialIds = new Set<string>();
         let detailFailureCount = 0;
         let detailLimitReached = false;
         let latestBoundaryProven = false;
+        let reviewLatestBoundaryProven = false;
+        let strictBoundaryProofKey: string | null = null;
+        let reviewBoundaryProofKey: string | null = null;
 
         while (true) {
             const chronologicalSummaries = orderedSummaries();
@@ -1031,6 +1421,12 @@ export class LegalResearchOrchestratorV1 {
                 lawNameQueries,
                 issueQueries,
             }).cases;
+            const selectedReview = selectCaseReviewCandidatesV1(reviewCandidates, {
+                upstreamComplete: false,
+                candidatePoolCount: candidates.length,
+                issueIds,
+                strictCases: selected,
+            }).candidates;
             // 목표 건수에 아직 못 미쳐도 현재 가장 오래된 적격 판례를 임시
             // 경계로 삼는다. 그렇지 않으면 다른 stream의 다음 page에 숨어 있는
             // 더 최신 판례를 보기 전에 상세조회 예산을 오래된 후보에 소진할 수 있다.
@@ -1043,45 +1439,111 @@ export class LegalResearchOrchestratorV1 {
                     decisionDate: boundary.decisionDate,
                 }
                 : null;
-            if (boundary && boundarySummary) {
-                // tier 우선 탐색으로 목표 건수를 확보했더라도 최종 결과의 최신순을
-                // 증명하려면 현재 경계보다 최신인 미처리 목록 후보를 먼저 검증한다.
-                const newerPending = chronologicalPending.filter((summary) =>
-                    compareProviderCases(summary, boundarySummary) < 0);
-                if (newerPending.length === 0) {
-                    const hiddenNewerPossible = streamStates.some((state) =>
-                        !state.exhausted
-                        && (
-                            state.oldestFetchedDate === null
-                            || state.oldestFetchedDate >= boundary.decisionDate
-                        ));
-                    if (hiddenNewerPossible) {
-                        const fetchedAny = await fetchNextPages((state) =>
-                            !state.exhausted
-                            && (
-                                state.oldestFetchedDate === null
-                                || state.oldestFetchedDate >= boundary.decisionDate
-                            ));
-                        if (fetchedAny) continue;
-                        break;
-                    }
-                    if (targetReached) {
+            const boundaryCriticalPending = boundarySummary
+                ? chronologicalPending.filter((summary) =>
+                    normalizeDate(summary.decisionDate) === null
+                    || compareProviderCases(summary, boundarySummary) < 0)
+                : [];
+            const reviewBoundary = selectedReview.at(-1) ?? null;
+            const reviewTargetReached = selectedReview.length === MAX_CASE_REVIEW_CANDIDATES;
+            const reviewBoundarySummary: CaseSummary | null = reviewBoundary
+                ? {
+                    caseSerialId: reviewBoundary.caseSerialId,
+                    caseName: reviewBoundary.caseName,
+                    caseNumber: reviewBoundary.caseNumber,
+                    courtName: reviewBoundary.court,
+                    decisionDate: reviewBoundary.decisionDate,
+                }
+                : null;
+            const selectedReviewDecisionIdentities = new Set(
+                selectedReview
+                    .map((candidate) => normalizedSummaryDecisionIdentity(
+                        candidate.caseNumber,
+                        candidate.court,
+                        candidate.decisionDate
+                    ))
+                    .filter((identity): identity is string => identity !== null)
+            );
+            const selectedReviewSerialIds = new Set(
+                selectedReview
+                    .map((candidate) => normalizeNumericIdentifier(candidate.caseSerialId))
+                    .filter((serialId): serialId is string => serialId !== null)
+            );
+            const selectedReviewDecisionDates = new Set(
+                selectedReview
+                    .map((candidate) => normalizeDate(candidate.decisionDate))
+                    .filter((date): date is string => date !== null)
+            );
+            const reviewBoundaryCriticalPending = reviewBoundarySummary
+                ? chronologicalPending.filter((summary) => reviewSummaryIsBoundaryCritical(
+                    summary,
+                    reviewBoundarySummary,
+                    selectedReviewSerialIds,
+                    selectedReviewDecisionIdentities,
+                    selectedReviewDecisionDates
+                ))
+                : [];
+
+            const strictBoundaryReady = boundarySummary !== null
+                && boundaryCriticalPending.length === 0;
+            const reviewBoundaryReady = reviewBoundarySummary !== null
+                && reviewBoundaryCriticalPending.length === 0;
+            const currentStrictBoundaryKey = targetReached && boundarySummary
+                ? `${boundarySummary.caseSerialId}|${normalizeDate(boundarySummary.decisionDate) ?? ''}`
+                : null;
+            const currentReviewBoundaryKey = reviewTargetReached && reviewBoundarySummary
+                ? `${reviewBoundarySummary.caseSerialId}|${normalizeDate(reviewBoundarySummary.decisionDate) ?? ''}`
+                : null;
+            if (
+                !strictBoundaryReady
+                || currentStrictBoundaryKey === null
+                || strictBoundaryProofKey !== currentStrictBoundaryKey
+            ) latestBoundaryProven = false;
+            if (
+                !reviewBoundaryReady
+                || currentReviewBoundaryKey === null
+                || reviewBoundaryProofKey !== currentReviewBoundaryKey
+            ) reviewLatestBoundaryProven = false;
+            if (strictBoundaryReady || reviewBoundaryReady) {
+                // 목록 선고일은 nullable이므로 각 목록의 최신 경계를 증명하려면
+                // 모든 미소진 stream의 page까지 확인해야 한다.
+                const unreadPagesRemain = streamStates.some((state) => !state.exhausted);
+                if (unreadPagesRemain) {
+                    const fetchedAny = await fetchNextPages();
+                    if (fetchedAny) continue;
+                    // 요청 상한·일시 실패로 다음 page 경계를 확인하지 못했으면
+                    // 경계보다 오래된 후보를 추가 조회해 최신성 미증명을 숨기지 않는다.
+                    break;
+                }
+                if (streamStates.every((state) => state.exhausted)) {
+                    if (targetReached && strictBoundaryReady) {
                         latestBoundaryProven = true;
-                        break;
+                        strictBoundaryProofKey = currentStrictBoundaryKey;
                     }
+                    if (reviewTargetReached && reviewBoundaryReady) {
+                        reviewLatestBoundaryProven = true;
+                        reviewBoundaryProofKey = currentReviewBoundaryKey;
+                    }
+                    if (latestBoundaryProven && reviewLatestBoundaryProven) break;
                 }
             }
 
             const prioritizedPending = prioritizedSummaries().filter(
                 (summary) => !processedSerialIds.has(summary.caseSerialId)
             );
-            const pending = targetReached && boundarySummary
-                ? [
-                    ...chronologicalPending.filter((summary) =>
-                        compareProviderCases(summary, boundarySummary) < 0),
-                    ...prioritizedPending.filter((summary) =>
-                        compareProviderCases(summary, boundarySummary) >= 0),
-                ]
+            const boundaryPriorityIds = unique([
+                ...(targetReached
+                    ? boundaryCriticalPending.map((summary) => summary.caseSerialId)
+                    : []),
+                ...(reviewTargetReached
+                    ? reviewBoundaryCriticalPending.map((summary) => summary.caseSerialId)
+                    : []),
+            ]);
+            const pending = boundaryPriorityIds.length > 0
+                ? boundaryPriorityIds.map((caseSerialId) =>
+                    chronologicalPending.find((summary) =>
+                        summary.caseSerialId === caseSerialId)!)
+                    .filter(Boolean)
                 : prioritizedPending;
 
             if (pending.length === 0) {
@@ -1102,17 +1564,32 @@ export class LegalResearchOrchestratorV1 {
                 Math.min(CASE_DETAIL_BATCH_SIZE, remainingDetailBudget)
             );
             const batchResults = await Promise.allSettled(
-                batch.map(async (summary) => this.toCaseSource(
-                    summary,
-                    await this.provider.getCaseDetail(
+                batch.map(async (summary) => {
+                    const detail = await this.provider.getCaseDetail(
                         { caseSerialId: summary.caseSerialId },
                         signal
-                    ),
-                    input,
-                    resolvedLaws,
-                    retrievedAt,
-                    asOfDate
-                ))
+                    );
+                    const source = this.toCaseSource(
+                        summary,
+                        detail,
+                        input,
+                        resolvedLaws,
+                        retrievedAt,
+                        asOfDate
+                    );
+                    return {
+                        source,
+                        reviewCandidate: this.toCaseReviewCandidate(
+                            summary,
+                            detail,
+                            source,
+                            input,
+                            resolvedLaws,
+                            retrievedAt,
+                            asOfDate
+                        ),
+                    };
+                })
             );
             signal?.throwIfAborted();
 
@@ -1120,7 +1597,10 @@ export class LegalResearchOrchestratorV1 {
                 processedSerialIds.add(summary.caseSerialId);
                 const result = batchResults[index];
                 if (result.status === 'fulfilled') {
-                    candidates.push(result.value);
+                    candidates.push(result.value.source);
+                    if (result.value.reviewCandidate) {
+                        reviewCandidates.push(result.value.reviewCandidate);
+                    }
                 } else {
                     const caseDetailUnavailable = isLegalOpenApiError(result.reason)
                         && result.reason.code === 'CASE_DETAIL_NOT_FOUND';
@@ -1141,9 +1621,14 @@ export class LegalResearchOrchestratorV1 {
         const allFetchedProcessed = orderedSummaries().every(
             (summary) => processedSerialIds.has(summary.caseSerialId)
         );
+        const allUndatedFetchedProcessed = orderedSummaries().every(
+            (summary) => normalizeDate(summary.decisionDate) !== null
+                || processedSerialIds.has(summary.caseSerialId)
+        );
         const officialExhausted = streamStates.every((state) =>
             state.exhausted && state.fetchedCount >= state.totalCount)
             && allFetchedProcessed
+            && allUndatedFetchedProcessed
             && !searchIncomplete
             && !detailLimitReached
             && detailFailureCount === 0;
@@ -1151,16 +1636,87 @@ export class LegalResearchOrchestratorV1 {
             upstreamComplete: false,
             lawNameQueries,
             issueQueries,
+            executedBodyQueries,
         });
         const enoughToProveLatestBoundary = latestBoundaryProven
+            && allUndatedFetchedProcessed
             && preliminary.cases.length === MAX_RELEVANT_CASES
             && detailFailureCount === 0
             && !searchIncomplete;
-        return selectRelevantCasesV1(candidates, {
+        const strict = selectRelevantCasesV1(candidates, {
             upstreamComplete: officialExhausted || enoughToProveLatestBoundary,
             lawNameQueries,
             issueQueries,
+            executedBodyQueries,
         });
+        const preliminaryReview = selectCaseReviewCandidatesV1(reviewCandidates, {
+            upstreamComplete: false,
+            candidatePoolCount: candidates.length,
+            issueIds,
+            strictCases: strict.cases,
+        });
+        const finalReviewBoundary = preliminaryReview.candidates.at(-1) ?? null;
+        const finalReviewBoundarySummary: CaseSummary | null = finalReviewBoundary
+            ? {
+                caseSerialId: finalReviewBoundary.caseSerialId,
+                caseName: finalReviewBoundary.caseName,
+                caseNumber: finalReviewBoundary.caseNumber,
+                courtName: finalReviewBoundary.court,
+                decisionDate: finalReviewBoundary.decisionDate,
+            }
+            : null;
+        const finalReviewIdentities = new Set(
+            preliminaryReview.candidates
+                .map((candidate) => normalizedSummaryDecisionIdentity(
+                    candidate.caseNumber,
+                    candidate.court,
+                    candidate.decisionDate
+                ))
+                .filter((identity): identity is string => identity !== null)
+        );
+        const finalReviewSerialIds = new Set(
+            preliminaryReview.candidates
+                .map((candidate) => normalizeNumericIdentifier(candidate.caseSerialId))
+                .filter((serialId): serialId is string => serialId !== null)
+        );
+        const finalReviewDates = new Set(
+            preliminaryReview.candidates
+                .map((candidate) => normalizeDate(candidate.decisionDate))
+                .filter((date): date is string => date !== null)
+        );
+        const finalReviewPending = orderedSummaries().filter(
+            (summary) => !processedSerialIds.has(summary.caseSerialId)
+        );
+        const finalReviewBoundaryReady = finalReviewBoundarySummary !== null
+            && finalReviewPending.every((summary) => !reviewSummaryIsBoundaryCritical(
+                summary,
+                finalReviewBoundarySummary,
+                finalReviewSerialIds,
+                finalReviewIdentities,
+                finalReviewDates
+            ));
+        const finalReviewBoundaryKey = finalReviewBoundarySummary
+            ? `${finalReviewBoundarySummary.caseSerialId}|${normalizeDate(finalReviewBoundarySummary.decisionDate) ?? ''}`
+            : null;
+        const enoughToProveReviewLatestBoundary = reviewLatestBoundaryProven
+            && reviewBoundaryProofKey === finalReviewBoundaryKey
+            && finalReviewBoundaryReady
+            && allUndatedFetchedProcessed
+            && preliminaryReview.candidates.length === MAX_CASE_REVIEW_CANDIDATES
+            && detailFailureCount === 0
+            && !searchIncomplete;
+        const review = selectCaseReviewCandidatesV1(reviewCandidates, {
+            upstreamComplete: officialExhausted || enoughToProveReviewLatestBoundary,
+            candidatePoolCount: candidates.length,
+            issueIds,
+            strictCases: strict.cases,
+        });
+        return {
+            cases: strict.cases,
+            audit: strict.audit,
+            reviewCandidates: review.candidates,
+            reviewAudit: review.audit,
+        };
     }
 
     private toUnavailableCaseSource(
@@ -1183,6 +1739,7 @@ export class LegalResearchOrchestratorV1 {
             decisionDate: normalizeDate(summary.decisionDate) ?? '',
             disposition: summary.decision,
             holding: '',
+            holdingSource: 'official_full_text_excerpt',
             reasoningSummary: '',
             referencedProvisions: [],
             fullTextVerified: false,
@@ -1198,6 +1755,166 @@ export class LegalResearchOrchestratorV1 {
         };
     }
 
+    private toCaseReviewCandidate(
+        summary: CaseSummary,
+        detail: CaseDetail,
+        strictSource: CaseSourceV1,
+        input: LegalResearchInputV1,
+        resolvedLaws: ResolvedLawAnchor[],
+        retrievedAt: string,
+        asOfDate: string
+    ): CaseReviewCandidateV1 | null {
+        const fullText = detail.fullText?.trim() ?? '';
+        const decisionDate = normalizeDate(detail.decisionDate)
+            ?? normalizeDate(summary.decisionDate)
+            ?? '';
+        const caseName = nonEmptyText(detail.caseName) ?? nonEmptyText(summary.caseName) ?? '';
+        const caseNumber = nonEmptyText(detail.caseNumber) ?? nonEmptyText(summary.caseNumber) ?? '';
+        const court = nonEmptyText(detail.courtName) ?? nonEmptyText(summary.courtName) ?? '';
+        if (
+            !fullText
+            || !identityMatches(summary, detail)
+            || !caseName
+            || !caseNumber
+            || !court
+            || !decisionDate
+            || decisionDate > asOfDate
+            || (
+                strictSource.currentLawFit !== 'changed_rule'
+                && strictSource.currentLawFit !== 'unknown'
+            )
+        ) return null;
+
+        const matches: CaseReviewMatchV1[] = [];
+        const matchedIssues = new Set<string>();
+        for (const query of input.researchPlan.caseQueries) {
+            if (matches.length >= MAX_CASE_REVIEW_MATCHES_PER_CANDIDATE) break;
+            const issueId = query.issueIds[0];
+            const lawName = query.lawNames[0];
+            if (!issueId || !lawName || matchedIssues.has(issueId)) continue;
+
+            // 검토 목록도 현재 시행 중인 정확 법령 anchor가 확인된 query만 사용한다.
+            const currentLawResolved = resolvedLaws.some((law) =>
+                law.issueIds.includes(issueId)
+                && exactLegalToken(law.exactName, lawName)
+                && law.sources.length > 0);
+            if (!currentLawResolved) continue;
+
+            const lawContexts = exactLawContextExcerpts(fullText, lawName);
+            if (lawContexts.length === 0) continue;
+
+            const issueText = input.researchPlan.issues.find((issue) =>
+                issue.issueId === issueId)?.issue ?? '';
+            const issueLawQueryTerms = input.researchPlan.caseQueries
+                .filter((candidateQuery) =>
+                    candidateQuery.issueIds[0] === issueId
+                    && exactLegalToken(candidateQuery.lawNames[0], lawName))
+                .flatMap((candidateQuery) => candidateQuery.issueTerms);
+            const electronicAnchorRequired = requiresElectronicReviewAnchor(
+                issueText,
+                issueLawQueryTerms
+            );
+            const jointOwnerSignalsRequired = requiresJointOwnerReviewSignalsV1(
+                issueText,
+                issueLawQueryTerms
+            );
+            const strongTerm = query.issueTerms.find((candidateTerm) =>
+                isCaseReviewStrongTermV1(candidateTerm)
+                && includesTerm(fullText, candidateTerm)
+                && (
+                    !electronicAnchorRequired
+                    || CASE_REVIEW_ELECTRONIC_TERMS.some((electronicTerm) =>
+                        normalizeCaseReviewTermV1(electronicTerm)
+                            === normalizeCaseReviewTermV1(candidateTerm))
+                ));
+            const issueContextExcerpt = strongTerm
+                ? exactReviewTermContextExcerpt(fullText, strongTerm)
+                : null;
+            const strongMatch = strongTerm && issueContextExcerpt
+                ? {
+                    term: strongTerm,
+                    lawContextExcerpt: lawContexts[0],
+                    issueContextExcerpt,
+                }
+                : null;
+            if (strongMatch) {
+                matches.push({
+                    issueId,
+                    lawName,
+                    issueTerm: strongMatch.term,
+                    relevanceBasis: 'exact_law_and_strong_term',
+                    lawContextExcerpt: strongMatch.lawContextExcerpt,
+                    issueContextExcerpt: strongMatch.issueContextExcerpt,
+                });
+                matchedIssues.add(issueId);
+                continue;
+            }
+
+            const families = caseReviewFamilies(issueText, query.issueTerms);
+            const reviewFamilyTerms = electronicAnchorRequired
+                ? [...CASE_REVIEW_ELECTRONIC_TERMS]
+                : families.flatMap((family) => CASE_REVIEW_FAMILY_TERMS[family]);
+            const articleLabels = query.articleLabels
+                .map(canonicalArticleLabel)
+                .filter((label): label is string => label !== null);
+            let articleMatch: CaseReviewMatchV1 | null = null;
+            for (const exactExcerpt of lawContexts) {
+                const articleLabelValue = articleLabels.find((label) =>
+                    containsBoundExactLawArticleCitationV1(
+                        exactExcerpt,
+                        lawName,
+                        label
+                    ));
+                if (!articleLabelValue) continue;
+
+                const issueTerm = reviewFamilyTerms.find((term) =>
+                    includesTerm(exactExcerpt, term));
+                if (!issueTerm) continue;
+                if (
+                    jointOwnerSignalsRequired
+                    && !electronicAnchorRequired
+                    && !hasJointOwnerRepresentativeSignalsV1(exactExcerpt)
+                ) continue;
+                articleMatch = {
+                    issueId,
+                    lawName,
+                    issueTerm,
+                    articleLabel: articleLabelValue,
+                    relevanceBasis: 'exact_law_target_article_and_issue_family',
+                    // 한 exact substring에 법명·대상 조문·쟁점군을 함께 보존한다.
+                    lawContextExcerpt: exactExcerpt,
+                };
+                break;
+            }
+            if (articleMatch) {
+                matches.push(articleMatch);
+                matchedIssues.add(issueId);
+            }
+        }
+        if (matches.length === 0) return null;
+
+        return {
+            reviewOnly: true,
+            official: true,
+            verificationStatus: 'verified',
+            caseSerialId: summary.caseSerialId,
+            caseName,
+            caseNumber,
+            court,
+            decisionDate,
+            officialUrl: casePublicUrl(summary.caseSerialId),
+            retrievedAt,
+            fullTextHash: hashText(fullText),
+            fullTextVerified: true,
+            listingIdentityVerified: true,
+            currentLawFit: strictSource.currentLawFit,
+            useInConclusion: 'excluded',
+            issueIds: matches.map((match) => match.issueId),
+            matches,
+            excerptLabel: '판결문 발췌',
+        };
+    }
+
     private toCaseSource(
         summary: CaseSummary,
         detail: CaseDetail,
@@ -1207,18 +1924,21 @@ export class LegalResearchOrchestratorV1 {
         asOfDate: string
     ): CaseSourceV1 {
         const identityVerified = identityMatches(summary, detail);
-        const decisionDate = normalizeDate(detail.decisionDate ?? summary.decisionDate) ?? '';
+        const decisionDate = normalizeDate(detail.decisionDate)
+            ?? normalizeDate(summary.decisionDate)
+            ?? '';
         if (decisionDate && decisionDate > asOfDate) {
             throw new LegalOpenApiError('SCHEMA_DRIFT');
         }
-        const holdings = detail.holdings?.trim() ?? '';
-        const reasoning = detail.summary?.trim() || detail.fullText?.trim().slice(0, 2000) || '';
+        const holdings = boundedExactText(detail.holdings, MAX_CASE_SOURCE_TEXT_CHARS);
+        const fullText = detail.fullText?.trim() ?? '';
         const searchable = [detail.holdings, detail.summary, detail.fullText]
             .filter(Boolean)
             .join('\n');
         const referenced = detail.referenceProvisions?.trim() ?? '';
 
         let matchedIssueIds: string[] = [];
+        let matchedIssueTerms: string[] = [];
         let matchedProvisions: string[] = [];
         let controllingDates: string[] = [];
         for (const query of input.researchPlan.caseQueries) {
@@ -1260,6 +1980,7 @@ export class LegalResearchOrchestratorV1 {
             const matchedSources = [...sourcePool.values()];
 
             matchedIssueIds = unique([...matchedIssueIds, issueId]);
+            matchedIssueTerms = unique([...matchedIssueTerms, ...matchedTerms]);
             matchedProvisions = unique([
                 ...matchedProvisions,
                 ...matchedSources.map((source) => `${source.title} ${source.provision.article}`),
@@ -1270,7 +1991,20 @@ export class LegalResearchOrchestratorV1 {
             ]);
         }
 
-        const relevanceProven = matchedIssueIds.length > 0 && matchedProvisions.length > 0;
+        const fullTextExcerpt = fullText
+            ? exactFullTextExcerptAroundFirstTerm(fullText, matchedIssueTerms)
+            : null;
+        const holding = holdings || fullTextExcerpt || '';
+        const holdingSource = holdings
+            ? 'official_holdings' as const
+            : 'official_full_text_excerpt' as const;
+        const reasoning = boundedExactText(detail.summary, MAX_CASE_SOURCE_TEXT_CHARS)
+            || fullTextExcerpt
+            || holdings;
+        const relevanceProven = matchedIssueIds.length > 0
+            && matchedProvisions.length > 0
+            && Boolean(holding)
+            && Boolean(reasoning);
         const currentRuleCandidate = relevanceProven
             && Boolean(decisionDate)
             && controllingDates.length > 0
@@ -1282,7 +2016,8 @@ export class LegalResearchOrchestratorV1 {
             : relevanceProven && controllingDates.length > 0 && Boolean(decisionDate)
                 ? 'changed_rule'
                 : 'unknown';
-        const fullTextVerified = Boolean(holdings && reasoning && detail.fullText);
+        // 전문 존재 여부와 공급자의 선택 필드(판시사항/판결요지) 누락을 분리한다.
+        const fullTextVerified = Boolean(fullText);
 
         return {
             sourceId: `CASE-${sourceIdPart(summary.caseSerialId)}`,
@@ -1300,11 +2035,12 @@ export class LegalResearchOrchestratorV1 {
             ].filter(Boolean).join('\n')),
             caseSerialId: summary.caseSerialId,
             caseName: detail.caseName || summary.caseName,
-            caseNumber: detail.caseNumber ?? summary.caseNumber ?? '',
-            court: detail.courtName ?? summary.courtName ?? '',
+            caseNumber: nonEmptyText(detail.caseNumber) ?? nonEmptyText(summary.caseNumber) ?? '',
+            court: nonEmptyText(detail.courtName) ?? nonEmptyText(summary.courtName) ?? '',
             decisionDate,
             disposition: detail.decision ?? summary.decision,
-            holding: holdings,
+            holding,
+            holdingSource,
             reasoningSummary: reasoning,
             referencedProvisions: referenced
                 ? referenced.split(/[\n;]/).map((item) => item.trim()).filter(Boolean)

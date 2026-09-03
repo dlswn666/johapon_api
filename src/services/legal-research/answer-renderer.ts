@@ -1,5 +1,6 @@
 import {
     LEGAL_DISCLAIMER,
+    MAX_CASE_REVIEW_CANDIDATES,
     MAX_RELEVANT_CASES,
     type CaseShortfallReasonV1,
     type LegalAnswerV1,
@@ -206,8 +207,11 @@ function renderOrdinances(answer: LegalAnswerV1, sourceMap: Map<string, LegalSou
 }
 
 function renderCases(answer: LegalAnswerV1, sourceMap: Map<string, LegalSourceV1>): string {
+    const exclusions = answer.caseSynthesis.exclusions;
     const lines: string[] = [
-        `반환 판례: ${answer.caseSynthesis.returnedCount}건 (최대 ${MAX_RELEVANT_CASES}건)`,
+        '결론 근거 판례',
+        `공식 후보 검토: ${answer.caseSynthesis.candidateCount}건; 검증 적격: ${answer.caseSynthesis.qualifiedCount}건; 반환: ${answer.caseSynthesis.returnedCount}건 (최대 ${MAX_RELEVANT_CASES}건)`,
+        `제외 집계: 전문 미확인 ${exclusions.fullTextUnavailable}건, 목록·상세 식별 충돌 ${exclusions.identityMismatch}건, 관련성 미충족 ${exclusions.irrelevant}건, 현행법 정합성 미충족 ${exclusions.currentLawMisaligned}건, 공식 링크 미확인 ${exclusions.unofficialUrl}건, 중복 ${exclusions.duplicate}건`,
         answer.caseSynthesis.upstreamComplete
             ? '계획된 법령명·쟁점 검색 stream 내 최신순 완결성: 검증됨'
             : `계획된 법령명·쟁점 검색 stream 내 최신순 완결성: 미완료 — 반환 목록은 확보된 후보 안에서만 최신순이며 해당 stream의 최신 ${MAX_RELEVANT_CASES}건을 증명하지 못함`,
@@ -226,14 +230,70 @@ function renderCases(answer: LegalAnswerV1, sourceMap: Map<string, LegalSourceV1
         const fitLabel = source.currentLawFit === 'verified_same_rule'
             ? '현행 규정 동일성 확인'
             : '현행 규정 관련 후보(공식 판례 데이터에 규정 버전 ID 없음)';
+        const holdingLabel = source.holdingSource === 'official_full_text_excerpt'
+            ? '판결문 발췌'
+            : '공식 판시사항';
         lines.push(
             `${index + 1}. ${sourceLink(source)} — ${source.decisionDate}, `
             + `${escapeMarkdownText(source.court)} ${escapeMarkdownText(source.caseNumber)}; `
-            + `${escapeMarkdownText(source.holding)}; ${fitLabel}`
+            + `${holdingLabel}: ${escapeMarkdownText(source.holding)}; ${fitLabel}`
         );
     });
     if (answer.caseSynthesis.returnedCount < MAX_RELEVANT_CASES) {
         lines.push(`${MAX_RELEVANT_CASES}건 미만 사유: ${shortfallLabel(answer.caseSynthesis.shortfallReason)}`);
+    }
+
+    const reviewAudit = answer.caseReviewAudit;
+    lines.push('검색상 최신 판례 검토 후보 — 결론·동일 쟁점 근거 아님');
+    lines.push(
+        `같은 상세조회 후보 pool: ${reviewAudit.candidatePoolCount}건; `
+        + `검토 적격: ${reviewAudit.qualifiedCount}건; `
+        + `반환: ${reviewAudit.returnedCount}건 (최대 ${MAX_CASE_REVIEW_CANDIDATES}건; 부족분 padding 없음)`
+    );
+    lines.push(reviewAudit.latestScope === 'planned_streams_verified'
+        ? '검토 목록 최신순 범위: 계획된 검색 stream 검증 완료'
+        : '검토 목록 최신순 범위: 검토 후보 풀 내 최신순 (탐색 미완료)');
+    reviewAudit.issues.forEach((issueAudit) => {
+        const zeroState = issueAudit.qualifiedCount === 0
+            ? reviewAudit.upstreamComplete
+                ? '반환 후보의 저장된 match 기준 0건 (계획 stream 소진; 후보당 match 상한으로 미평가 가능)'
+                : '반환 후보의 저장된 match 기준 0건 / 탐색 미완료 (후보당 match 상한으로 미평가 가능)'
+            : `저장된 match 기준 검토 적격 ${issueAudit.qualifiedCount}건, 반환 ${issueAudit.returnedCount}건`;
+        lines.push(`쟁점별 ${escapeMarkdownText(issueAudit.issueId)}: ${zeroState}`);
+    });
+    answer.caseReviewCandidates.forEach((candidate, index) => {
+        const matches = candidate.matches.map((match) => {
+            const article = match.articleLabel ? ` ${escapeMarkdownText(match.articleLabel)}` : '';
+            const basis = match.relevanceBasis === 'exact_law_and_strong_term'
+                ? '정확 법령명 + 폐쇄형 strong term'
+                : '정확 법령명 + 대상 조문 + 쟁점군';
+            const excerpts = match.relevanceBasis === 'exact_law_and_strong_term'
+                ? `법령명 문맥 ${candidate.excerptLabel}: ${escapeMarkdownText(match.lawContextExcerpt)}; `
+                    + `쟁점어 문맥 ${candidate.excerptLabel}: ${escapeMarkdownText(match.issueContextExcerpt ?? '')}; `
+                    + '두 문맥이 같은 법률쟁점인지 여부 미검증'
+                : `동일 문맥 ${candidate.excerptLabel}: ${escapeMarkdownText(match.lawContextExcerpt)}; `
+                    + '동일 법률쟁점 확정 아님';
+            return `${escapeMarkdownText(match.issueId)}: `
+                + `${escapeMarkdownText(match.lawName)}${article}, `
+                + `${escapeMarkdownText(match.issueTerm)} (${basis}); `
+                + excerpts;
+        }).join(' / ');
+        const fit = candidate.currentLawFit === 'changed_rule'
+            ? '현행 규정과 달라진 규정일 수 있음'
+            : '현행 규정 동일성 미확인';
+        lines.push(
+            `검토 ${index + 1}. [${escapeLinkLabel(candidate.caseName)}](${candidate.officialUrl})`
+            + ` — ${candidate.decisionDate}, ${escapeMarkdownText(candidate.court)} `
+            + `${escapeMarkdownText(candidate.caseNumber)}; ${matches}; `
+            + `공식 링크·전문·목록/상세 identity 확인; ${fit}; `
+            + '검토용으로만 제공하며 결론·법률 명제·사실 적용 근거로 사용 금지'
+        );
+    });
+    if (reviewAudit.returnedCount < MAX_CASE_REVIEW_CANDIDATES) {
+        const reason = reviewAudit.shortfallReason === 'official_results_exhausted'
+            ? '이중 anchor를 충족한 공식 후보가 더 없음'
+            : '공식 상류 탐색이 완료되지 않음';
+        lines.push(`검토 목록 ${MAX_CASE_REVIEW_CANDIDATES}건 미만 사유: ${reason}`);
     }
     return renderBullets(lines);
 }

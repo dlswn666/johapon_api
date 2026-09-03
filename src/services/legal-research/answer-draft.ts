@@ -8,6 +8,9 @@ import {
 } from './model';
 import { assertLegalAnswerV1 } from './validator';
 
+/** packet 128KiB와 함께 256KiB HTTP envelope 안에 들어가기 위한 draft UTF-8 상한. */
+export const LEGAL_ANSWER_DRAFT_MAX_BYTES = 96 * 1024;
+
 /** LLM 서술 입력의 상한. 패킷 원문과 검색 감사 필드는 이 계약에 포함하지 않는다. */
 export const LEGAL_ANSWER_DRAFT_LIMITS = {
     idLength: 120,
@@ -251,8 +254,8 @@ export const LegalAnswerDraftV1Schema = z
             .trim()
             .min(1)
             .max(LEGAL_ANSWER_DRAFT_LIMITS.caseSummaryLength)
-            .describe('packet cases 전체를 제공된 최신순 그대로 종합합니다. 판례 순서, returnedCount, sourceIds, 부족 사유와 upstream 최신순 완결성은 서버가 자동으로 채웁니다.'),
-        caseEvidenceQuotes: EvidenceQuotesSchema.describe('판례 종합에 사용한 판시사항·판결요지의 공식 원문 인용입니다. 판례가 있으면 하나 이상 필요합니다.'),
+            .describe('packet.cases의 결론 근거 판례만 제공된 최신순 그대로 종합합니다. caseReviewCandidates는 언급하지 않습니다. 판례 순서, returnedCount, sourceIds, 부족 사유와 upstream 최신순 완결성은 서버가 자동으로 채웁니다.'),
+        caseEvidenceQuotes: EvidenceQuotesSchema.describe('packet.cases의 결론 근거 판례 종합에 사용한 판시사항·판결요지의 공식 원문 인용입니다. caseReviewCandidates는 사용할 수 없습니다.'),
         applications: z
             .array(ApplicationSchema)
             .max(LEGAL_ANSWER_DRAFT_LIMITS.applicationCount)
@@ -265,6 +268,13 @@ export const LegalAnswerDraftV1Schema = z
     })
     .strict()
     .superRefine((draft, context) => {
+        if (Buffer.byteLength(JSON.stringify(draft), 'utf8') > LEGAL_ANSWER_DRAFT_MAX_BYTES) {
+            context.addIssue({
+                code: 'custom',
+                path: [],
+                message: `answerDraft는 UTF-8 ${LEGAL_ANSWER_DRAFT_MAX_BYTES} bytes 이하여야 합니다.`,
+            });
+        }
         if (draft.conclusion.kind === 'supported' && draft.ruleClaims.length === 0) {
             context.addIssue({
                 code: 'custom',
@@ -305,9 +315,12 @@ export function buildLegalAnswerFromDraftV1(
         ruleClaims: draft.ruleClaims,
         ordinanceAnalysis: draft.ordinanceAnalysis,
         caseSynthesis: {
+            candidateCount: packet.caseSearchAudit.candidateCount,
+            qualifiedCount: packet.caseSearchAudit.qualifiedCount,
             returnedCount: packet.cases.length,
+            exclusions: structuredClone(packet.caseSearchAudit.exclusions),
             summary: packet.cases.length === 0
-                ? '검증 조건을 충족한 반환 판례가 없습니다.'
+                ? `공식 판례 후보 ${packet.caseSearchAudit.candidateCount}건을 검토했으나 검증 조건을 모두 충족한 반환 판례는 0건입니다.`
                 : draft.caseSummary,
             sourceIds: packet.cases.map((legalCase) => legalCase.sourceId),
             shortfallReason: packet.caseSearchAudit.shortfallReason,
@@ -319,6 +332,8 @@ export function buildLegalAnswerFromDraftV1(
                 issueQueries: structuredClone(packet.caseSearchAudit.issueQueries),
             },
         },
+        caseReviewCandidates: structuredClone(packet.caseReviewCandidates),
+        caseReviewAudit: structuredClone(packet.caseReviewAudit),
         applications: useServerControlledDeferral ? [] : draft.applications,
         temporalReview: draft.temporalReview,
         unknowns: structuredClone(packet.unknowns),

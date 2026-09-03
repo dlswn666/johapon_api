@@ -183,6 +183,28 @@ test('판례 상세 ID가 요청과 다르면 SOURCE_MISMATCH로 닫힌다', asy
     );
 });
 
+test('판례 상세 ID의 선행 0·전각 숫자는 동일 숫자일 때만 허용한다', async (t) => {
+    for (const [label, detailId] of [
+        ['선행 0', '0009000'],
+        ['전각 숫자', '９０００'],
+    ] as const) {
+        await t.test(label, async () => {
+            const detailXml = fixtures.caseDetail.replace(
+                '<판례정보일련번호>9000</판례정보일련번호>',
+                `<판례정보일련번호>${detailId}</판례정보일련번호>`,
+            );
+            const client = new LawOpenApiClient({
+                oc: SECRET_OC,
+                httpGet: async () => ({ data: detailXml }),
+            });
+
+            const detail = await client.getCaseDetail({ caseSerialId: '9000' });
+
+            assert.equal(detail.caseSerialId, detailId);
+        });
+    }
+});
+
 test('검색 목록 판례의 상세 없음 exact 응답만 별도 누락으로 분류한다', async () => {
     const listedButUnavailable = '<?xml version="1.0" encoding="utf-8"?>'
         + '<Law>일치하는 판례가 없습니다.  판례명을 확인하여 주십시오.</Law>';

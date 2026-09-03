@@ -8,12 +8,15 @@ import type {
     CurrentLawSummary,
     CurrentOrdinanceDetail,
     CurrentOrdinanceSummary,
+    LawArticleHistoryEntry,
     LawAddendum,
     LawAppendix,
     LawArticle,
     LawItem,
     LawParagraph,
     LawSubItem,
+    LawVersionHistoryCode,
+    LawVersionSummary,
     ProviderSearchPage,
 } from './provider-types';
 
@@ -82,6 +85,43 @@ function parseRequiredNonNegativeInteger(value: string): number {
         throw new LegalOpenApiError('SCHEMA_DRIFT');
     }
     return parsed;
+}
+
+function requiredProviderText(record: XmlRecord | undefined, ...keys: string[]): string {
+    const value = pickText(record, ...keys);
+    if (!value) throw new LegalOpenApiError('SCHEMA_DRIFT');
+    return value;
+}
+
+function requiredProviderDate(record: XmlRecord | undefined, ...keys: string[]): string {
+    const value = requiredProviderText(record, ...keys);
+    if (!/^\d{8}$/.test(value)) throw new LegalOpenApiError('SCHEMA_DRIFT');
+    return value;
+}
+
+function requiredProviderNumericText(record: XmlRecord | undefined, ...keys: string[]): string {
+    const value = requiredProviderText(record, ...keys);
+    if (!/^\d+$/.test(value)) throw new LegalOpenApiError('SCHEMA_DRIFT');
+    return value;
+}
+
+function canonicalProviderJo(record: XmlRecord | undefined, ...keys: string[]): string {
+    const value = requiredProviderText(record, ...keys);
+    if (!/^\d{1,6}$/.test(value)) throw new LegalOpenApiError('SCHEMA_DRIFT');
+    return value.padStart(6, '0');
+}
+
+const LAW_VERSION_HISTORY_CODES = new Set<LawVersionHistoryCode>([
+    '현행',
+    '연혁',
+    '시행예정',
+]);
+
+function lawVersionHistoryCode(value: string): LawVersionHistoryCode {
+    if (!LAW_VERSION_HISTORY_CODES.has(value as LawVersionHistoryCode)) {
+        throw new LegalOpenApiError('SCHEMA_DRIFT');
+    }
+    return value as LawVersionHistoryCode;
 }
 
 function classifyProviderFailure(text: string): never {
@@ -222,7 +262,7 @@ export function parseCurrentLawSearchXml(xml: string): ProviderSearchPage<Curren
     const items = itemRecords(container, ['law', '법령']).map((record) => {
         const rawLink = pickText(record, '법령상세링크', '상세링크');
         const preliminaryUrl = sanitizeOptionalOfficialLawLink(rawLink || undefined);
-        const mst = pickText(record, '법령일련번호', '법령키', 'MST')
+        const mst = pickText(record, '법령일련번호', 'MST')
             || urlQueryValue(preliminaryUrl, ['MST', 'lsiSeq']);
         const lawId = pickText(record, '법령ID', 'LID', 'ID');
         const name = pickText(record, '법령명한글', '법령명_한글', '법령명');
@@ -257,6 +297,116 @@ export function parseCurrentLawSearchXml(xml: string): ProviderSearchPage<Curren
         } satisfies CurrentLawSummary;
     });
     return searchPage(container, items);
+}
+
+/**
+ * 시행일 기준 법령 버전 목록을 상태 손실 없이 파싱합니다.
+ * 현행 전용 parser와 달리 연혁/시행예정도 정상적인 provider 값으로 보존합니다.
+ */
+export function parseLawVersionSearchXml(xml: string): ProviderSearchPage<LawVersionSummary> {
+    const container = searchContainer(parseXml(xml));
+    const items = itemRecords(container, ['law', '법령']).map((record) => {
+        const rawLink = pickText(record, '법령상세링크', '상세링크');
+        const preliminaryUrl = sanitizeOptionalOfficialLawLink(rawLink || undefined);
+        const mst = pickText(record, '법령일련번호', 'MST')
+            || urlQueryValue(preliminaryUrl, ['MST', 'lsiSeq']);
+        if (!/^\d+$/.test(mst)) throw new LegalOpenApiError('SCHEMA_DRIFT');
+        const lawId = requiredProviderText(record, '법령ID', 'LID', 'ID');
+        const name = requiredProviderText(record, '법령명한글', '법령명_한글', '법령명');
+        const currentHistoryCode = lawVersionHistoryCode(
+            requiredProviderText(record, '현행연혁코드'),
+        );
+        const promulgationDate = requiredProviderDate(record, '공포일자');
+        const promulgationNo = requiredProviderText(record, '공포번호');
+        const effectiveDate = requiredProviderDate(record, '시행일자');
+        const officialUrl = preliminaryUrl
+            ? sanitizeOptionalOfficialLawLink(preliminaryUrl, {
+                identifiers: [
+                    { value: mst, queryKeys: ['MST', 'lsiSeq'] },
+                    { value: lawId, queryKeys: ['ID', 'LID', 'lawId'] },
+                ],
+                requireIdentifier: true,
+            })
+            : undefined;
+        return {
+            mst,
+            lawId,
+            name,
+            shortName: pickText(record, '법령약칭명') || undefined,
+            lawType: pickText(record, '법령구분명', '법종구분') || undefined,
+            ministry: pickText(record, '소관부처명', '소관부처') || undefined,
+            promulgationDate,
+            promulgationNo,
+            effectiveDate,
+            revisionType: pickText(record, '제개정구분명', '제개정구분') || undefined,
+            currentHistoryCode,
+            officialUrl,
+        } satisfies LawVersionSummary;
+    });
+    return searchPage(container, items);
+}
+
+/** 조문별 변경이력 API는 실응답에서 page를 생략할 수 있어 요청 page를 함께 받습니다. */
+export function parseLawArticleHistoryXml(
+    xml: string,
+    requestedPage = 1,
+): ProviderSearchPage<LawArticleHistoryEntry> {
+    if (!Number.isSafeInteger(requestedPage) || requestedPage < 1) {
+        throw new LegalOpenApiError('SCHEMA_DRIFT');
+    }
+    const container = searchContainer(parseXml(xml));
+    const lawId = requiredProviderText(container, '법령ID', 'LID', 'ID');
+    const lawName = requiredProviderText(container, '법령명한글', '법령명_한글', '법령명');
+    const items = itemRecords(container, ['law', '법령']).map((record) => {
+        const lawInfo = pickRecord(record, '법령정보') ?? record;
+        const articleInfo = pickRecord(record, '조문정보') ?? record;
+        const mst = requiredProviderNumericText(lawInfo, '법령일련번호', 'MST');
+        const articleNumber = canonicalProviderJo(articleInfo, '조문번호', '조번호');
+        const promulgationDate = requiredProviderDate(lawInfo, '공포일자');
+        const promulgationNo = requiredProviderText(lawInfo, '공포번호');
+        const effectiveDate = requiredProviderDate(lawInfo, '시행일자');
+        const changeReason = requiredProviderText(articleInfo, '변경사유');
+        const changeDate = requiredProviderDate(articleInfo, '조문변경일', '조문개정일');
+        const rawLink = pickText(articleInfo, '조문링크', '조문변경이력상세링크', '상세링크');
+        const preliminaryUrl = sanitizeOptionalOfficialLawLink(rawLink || undefined);
+        const officialUrl = preliminaryUrl
+            ? sanitizeOptionalOfficialLawLink(preliminaryUrl, {
+                identifiers: [
+                    { value: mst, queryKeys: ['MST', 'lsiSeq'] },
+                    { value: articleNumber, queryKeys: ['JO', 'joNo'] },
+                ],
+                requireIdentifier: true,
+            })
+            : undefined;
+        return {
+            mst,
+            lawId,
+            lawName,
+            articleNumber,
+            promulgationDate,
+            promulgationNo,
+            effectiveDate,
+            revisionType: pickText(lawInfo, '제개정구분명', '제개정구분') || undefined,
+            lawType: pickText(lawInfo, '법령구분명', '법종구분') || undefined,
+            ministry: pickText(lawInfo, '소관부처명', '소관부처') || undefined,
+            changeReason,
+            changeDate,
+            officialUrl,
+        } satisfies LawArticleHistoryEntry;
+    });
+
+    const totalCount = parseRequiredNonNegativeInteger(
+        requiredProviderText(container, 'totalCnt', 'totalCount', '검색결과개수', '검색건수'),
+    );
+    const responsePageText = pickText(container, 'page', '현재페이지', '출력페이지');
+    if (responsePageText) {
+        const responsePage = parseRequiredNonNegativeInteger(responsePageText);
+        if (responsePage !== requestedPage) throw new LegalOpenApiError('SCHEMA_DRIFT');
+    }
+    if (totalCount < items.length || (totalCount > 0 && items.length === 0)) {
+        throw new LegalOpenApiError('SCHEMA_DRIFT');
+    }
+    return { totalCount, page: requestedPage, items };
 }
 
 export function parseCurrentOrdinanceSearchXml(
@@ -448,7 +598,8 @@ function parseLawLikeDetail(parsedRoot: XmlRecord, ordinance: boolean): CurrentL
     }
 
     const detail: CurrentLawDetail = {
-        mst: pickText(basic, '법령키', '법령일련번호', 'MST') || undefined,
+        // 법령키는 법령ID+공포일+공포번호 복합키일 수 있으므로 MST로 사용하지 않는다.
+        mst: pickText(basic, '법령일련번호', 'MST') || undefined,
         lawId: pickText(basic, '법령ID', 'ID') || undefined,
         name: pickText(basic, '법령명_한글', '법령명한글', '법령명') || undefined,
         nameHanja: pickText(basic, '법령명_한자') || undefined,

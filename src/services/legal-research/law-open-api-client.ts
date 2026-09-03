@@ -3,6 +3,8 @@ import { LegalOpenApiError, isLegalOpenApiError } from './errors';
 import {
     parseCaseDetailXml,
     parseCaseSearchXml,
+    parseLawArticleHistoryXml,
+    parseLawVersionSearchXml,
     parseCurrentLawDetailXml,
     parseCurrentLawSearchXml,
     parseCurrentOrdinanceDetailXml,
@@ -19,10 +21,18 @@ import type {
     CurrentOrdinanceDetailInput,
     CurrentOrdinanceSummary,
     GetCaseDetailInput,
+    GetLawProvisionSnapshotInput,
+    LawArticle,
+    LawArticleHistoryEntry,
+    LawProvisionSnapshot,
+    LawVersionHistoryCode,
+    LawVersionSummary,
     ProviderSearchPage,
     SearchCasesInput,
     SearchCurrentLawsInput,
     SearchCurrentOrdinancesInput,
+    SearchLawArticleHistoryInput,
+    SearchLawVersionsInput,
 } from './provider-types';
 
 const LAW_OPEN_API_BASE_URL = 'https://www.law.go.kr/DRF';
@@ -91,6 +101,22 @@ function numericIdentifier(value: string | undefined): string {
     return identifier;
 }
 
+/**
+ * 공급자가 동일한 숫자 식별자를 선행 0 또는 전각 숫자로 되돌려주는 경우만
+ * 비교 단계에서 동일하게 취급한다. 요청 파라미터 자체는 기존 ASCII 숫자 계약을 유지한다.
+ */
+function canonicalNumericIdentifier(value: string | undefined): string | null {
+    const identifier = value?.normalize('NFKC').trim();
+    if (!identifier || !/^\d+$/.test(identifier)) return null;
+    return identifier.replace(/^0+(?=\d)/, '');
+}
+
+function lawIdentifier(value: string | undefined): string {
+    const identifier = numericIdentifier(value);
+    if (identifier.length > 6) throw new LegalOpenApiError('INVALID_REQUEST');
+    return identifier.padStart(6, '0');
+}
+
 function effectiveDate(value: string | undefined): string {
     const date = requiredText(value, 8);
     if (!/^\d{8}$/.test(date)) throw new LegalOpenApiError('INVALID_REQUEST');
@@ -119,6 +145,44 @@ function provisionNumber(value: string | undefined): string {
 
 function optionalProvisionNumber(value: string | undefined): string | undefined {
     return value === undefined ? undefined : provisionNumber(value);
+}
+
+function subItemNumber(value: string | undefined): string {
+    const subItem = requiredText(value, 3).replace(/목$/, '');
+    if (!/^[가-힣]$/.test(subItem)) throw new LegalOpenApiError('INVALID_REQUEST');
+    return subItem;
+}
+
+const LAW_VERSION_HISTORY_CODES = new Set<LawVersionHistoryCode>([
+    '현행',
+    '연혁',
+    '시행예정',
+]);
+
+function versionHistoryCode(value: LawVersionHistoryCode | undefined): LawVersionHistoryCode {
+    if (!value || !LAW_VERSION_HISTORY_CODES.has(value)) {
+        throw new LegalOpenApiError('INVALID_REQUEST');
+    }
+    return value;
+}
+
+function canonicalProviderLawId(value: string | undefined): string | undefined {
+    const identifier = value?.trim();
+    if (!identifier || !/^\d{1,6}$/.test(identifier)) return undefined;
+    return identifier.padStart(6, '0');
+}
+
+function articleJo(article: LawArticle): string | undefined {
+    const rawArticle = article.articleNumber.trim();
+    const rawBranch = article.branchNumber?.trim() ?? '';
+
+    if (/^\d{6}$/.test(rawArticle) && (!rawBranch || rawBranch === '0' || rawBranch === '00')) {
+        return rawArticle;
+    }
+    if (!/^\d{1,4}$/.test(rawArticle) || (rawBranch && !/^\d{1,2}$/.test(rawBranch))) {
+        return undefined;
+    }
+    return `${rawArticle.padStart(4, '0')}${(rawBranch || '0').padStart(2, '0')}`;
 }
 
 function mapTransportError(error: unknown): LegalOpenApiError {
@@ -237,6 +301,59 @@ export class LawOpenApiClient {
         return parseCurrentLawSearchXml(xml);
     }
 
+    /**
+     * LID 하나의 시행일 기준 버전을 최신 시행일 순으로 한 페이지씩 조회합니다.
+     * 연혁/시행예정/현행을 모두 요청하고 provider 상태값을 그대로 보존합니다.
+     */
+    async searchLawVersions(
+        input: SearchLawVersionsInput,
+        signal?: AbortSignal,
+    ): Promise<ProviderSearchPage<LawVersionSummary>> {
+        const requestedLawId = lawIdentifier(input.lawId);
+        const requestedPage = pageNumber(input.page);
+        const xml = await this.requestXml('/lawSearch.do', {
+            target: 'eflaw',
+            LID: requestedLawId,
+            nw: '1,2,3',
+            sort: 'efdes',
+            display: LIST_PAGE_SIZE,
+            page: requestedPage,
+        }, signal);
+        const result = parseLawVersionSearchXml(xml);
+        if (
+            result.page !== requestedPage
+            || result.items.some((item) => canonicalProviderLawId(item.lawId) !== requestedLawId)
+        ) {
+            throw new LegalOpenApiError('SOURCE_MISMATCH');
+        }
+        return result;
+    }
+
+    /** 법령 ID와 6자리 JO로 조문별 변경 이력을 한 페이지씩 조회합니다. */
+    async searchLawArticleHistory(
+        input: SearchLawArticleHistoryInput,
+        signal?: AbortSignal,
+    ): Promise<ProviderSearchPage<LawArticleHistoryEntry>> {
+        const requestedLawId = lawIdentifier(input.lawId);
+        const requestedArticle = provisionNumber(input.articleNumber);
+        const requestedPage = pageNumber(input.page);
+        const xml = await this.requestXml('/lawService.do', {
+            target: 'lsJoHstInf',
+            ID: requestedLawId,
+            JO: requestedArticle,
+            display: LIST_PAGE_SIZE,
+            page: requestedPage,
+        }, signal);
+        const result = parseLawArticleHistoryXml(xml, requestedPage);
+        if (result.items.some((item) => (
+            canonicalProviderLawId(item.lawId) !== requestedLawId
+            || item.articleNumber !== requestedArticle
+        ))) {
+            throw new LegalOpenApiError('SOURCE_MISMATCH');
+        }
+        return result;
+    }
+
     async getCurrentLawDetail(
         input: CurrentLawDetailInput,
         signal?: AbortSignal
@@ -271,9 +388,7 @@ export class LawOpenApiClient {
             params.HO = optionalProvisionNumber(input.itemNumber)!;
         }
         if (input.subItemNumber !== undefined) {
-            const subItem = requiredText(input.subItemNumber, 3).replace(/목$/, '');
-            if (!/^[가-힣]$/.test(subItem)) throw new LegalOpenApiError('INVALID_REQUEST');
-            params.MOK = subItem;
+            params.MOK = subItemNumber(input.subItemNumber);
         }
 
         if (input.lawId !== undefined && input.mst === undefined) {
@@ -294,6 +409,65 @@ export class LawOpenApiClient {
             throw new LegalOpenApiError('SOURCE_MISMATCH');
         }
         return detail;
+    }
+
+    /**
+     * 목록 API가 반환한 MST + 시행일을 그대로 사용해 특정 버전의 조문을 조회합니다.
+     * eflawjosub 실응답은 요청 MST를 별도 필드로 되돌려주지 않을 수 있으므로,
+     * MST는 응답에 명시된 경우 검증하고 항상 ID/시행일/공포 메타데이터/조문을 함께 검증합니다.
+     */
+    async getLawProvisionSnapshot(
+        input: GetLawProvisionSnapshotInput,
+        signal?: AbortSignal,
+    ): Promise<LawProvisionSnapshot> {
+        const mst = numericIdentifier(input.version.mst);
+        const lawId = lawIdentifier(input.version.lawId);
+        const lawName = requiredText(input.version.name, 300);
+        const versionEffectiveDate = effectiveDate(input.version.effectiveDate);
+        const promulgationDate = effectiveDate(input.version.promulgationDate);
+        const promulgationNo = requiredText(input.version.promulgationNo, 100);
+        const currentHistoryCode = versionHistoryCode(input.version.currentHistoryCode);
+        const requestedArticle = provisionNumber(input.articleNumber);
+        const params: Record<string, ProviderParam> = {
+            target: 'eflawjosub',
+            MST: mst,
+            efYd: versionEffectiveDate,
+            JO: requestedArticle,
+        };
+        if (input.paragraphNumber !== undefined) {
+            params.HANG = optionalProvisionNumber(input.paragraphNumber)!;
+        }
+        if (input.itemNumber !== undefined) {
+            params.HO = optionalProvisionNumber(input.itemNumber)!;
+        }
+        if (input.subItemNumber !== undefined) {
+            params.MOK = subItemNumber(input.subItemNumber);
+        }
+
+        const xml = await this.requestXml('/lawService.do', params, signal);
+        const detail = parseCurrentLawDetailXml(xml);
+        const actualArticles = detail.articles.filter((article) => article.isArticle);
+        if (
+            canonicalProviderLawId(detail.lawId) !== lawId
+            || (detail.mst !== undefined && detail.mst !== mst)
+            || detail.effectiveDate !== versionEffectiveDate
+            || detail.promulgationDate !== promulgationDate
+            || detail.promulgationNo !== promulgationNo
+            || detail.name !== lawName
+            || actualArticles.length === 0
+            || actualArticles.some((article) => articleJo(article) !== requestedArticle)
+        ) {
+            throw new LegalOpenApiError('SOURCE_MISMATCH');
+        }
+
+        return {
+            mst,
+            lawId,
+            effectiveDate: versionEffectiveDate,
+            currentHistoryCode,
+            articleNumber: requestedArticle,
+            detail,
+        };
     }
 
     async searchCurrentOrdinances(
@@ -365,7 +539,11 @@ export class LawOpenApiClient {
             ID: requestedId,
         }, signal);
         const detail = parseCaseDetailXml(xml);
-        if (detail.caseSerialId !== requestedId) {
+        if (
+            canonicalNumericIdentifier(detail.caseSerialId) === null
+            || canonicalNumericIdentifier(detail.caseSerialId)
+                !== canonicalNumericIdentifier(requestedId)
+        ) {
             throw new LegalOpenApiError('SOURCE_MISMATCH');
         }
         return detail;
