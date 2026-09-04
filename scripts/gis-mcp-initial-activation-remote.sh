@@ -439,9 +439,9 @@ check_caddy_container_contract() {
   [[ "$(docker container inspect --format '{{.State.Running}}' caddy)" == true \
     && "$(docker container inspect --format '{{.HostConfig.NetworkMode}}' caddy)" == host \
     && "$(docker container inspect --format '{{.HostConfig.RestartPolicy.Name}}' caddy)" == unless-stopped \
-    && "$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination \"/etc/caddy/Caddyfile\"}}{{.Type}}|{{.RW}}|{{.Source}}{{end}}{{end}}' caddy)" == "bind|false|${caddyfile}" \
-    && "$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination \"/data\"}}{{.Type}}|{{.RW}}|{{.Name}}{{end}}{{end}}' caddy)" == 'volume|true|caddy_data' \
-    && "$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination \"/config\"}}{{.Type}}|{{.RW}}|{{.Name}}{{end}}{{end}}' caddy)" == 'volume|true|caddy_config' ]]
+    && "$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Type}}|{{.RW}}|{{.Source}}{{end}}{{end}}' caddy)" == "bind|false|${caddyfile}" \
+    && "$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}|{{.RW}}|{{.Name}}{{end}}{{end}}' caddy)" == 'volume|true|caddy_data' \
+    && "$(docker container inspect --format '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Type}}|{{.RW}}|{{.Name}}{{end}}{{end}}' caddy)" == 'volume|true|caddy_config' ]]
 }
 
 check_legal_caddy_baseline() {
