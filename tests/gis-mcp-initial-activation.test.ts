@@ -112,6 +112,17 @@ test('prepare는 공개 Caddy를 바꾸지 않고 API env와 root-only candidate
     assert.match(remote, /encode gzip/);
 });
 
+test('Caddy mount 검사는 escape되지 않은 유효한 Go template을 사용한다', () => {
+    const contract = remote.match(
+        /check_caddy_container_contract\(\) \{([\s\S]*?)\n\}/
+    )?.[1] ?? '';
+    assert.ok(contract.length > 0);
+    assert.match(contract, /eq \.Destination "\/etc\/caddy\/Caddyfile"/);
+    assert.match(contract, /eq \.Destination "\/data"/);
+    assert.match(contract, /eq \.Destination "\/config"/);
+    assert.doesNotMatch(contract, /\\"/);
+});
+
 test('publish는 file registry와 두 MCP health를 확인한 뒤에만 Caddy를 공개한다', () => {
     assert.match(remote, /GIS_MCP_TOKEN_REGISTRY_FILE=\$\{gis_registry_container_file\}/);
     assert.match(remote, /\.gis-mcp-file-registry-v1/);
