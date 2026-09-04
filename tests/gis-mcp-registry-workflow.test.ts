@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
     chmodSync,
+    linkSync,
     mkdirSync,
     mkdtempSync,
     readFileSync,
     rmSync,
+    writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -216,6 +218,439 @@ test('GIS 인증이 완전 미설정이면 기존 배포를 유지하고 JSON �
     );
 });
 
+test('GIS JSON bootstrap은 승인된 수동 dispatch와 durable prepared state에만 결합된다', () => {
+    assert.match(
+        dockerBuildWorkflow,
+        /gis_mcp_activation_id:[\s\S]*?required: false[\s\S]*?type: string/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /gis_mcp_token_commitment:[\s\S]*?required: false[\s\S]*?type: string/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /EXPECTED_GIS_MCP_ACTIVATION_ID:.*inputs\.gis_mcp_activation_id/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /EXPECTED_GIS_MCP_TOKEN_COMMITMENT:.*inputs\.gis_mcp_token_commitment/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /gis-mcp-activation-approval:[\s\S]*?needs: preflight[\s\S]*?github\.event_name == 'workflow_dispatch'[\s\S]*?environment: gis-mcp-registry/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /needs: \[preflight, build-and-push, gis-mcp-activation-approval\][\s\S]*?if: >-[\s\S]*?always\(\) &&[\s\S]*?!cancelled\(\) &&[\s\S]*?needs\.preflight\.result == 'success'[\s\S]*?needs\.build-and-push\.result == 'success'[\s\S]*?needs\.gis-mcp-activation-approval\.result == 'success'[\s\S]*?needs\.gis-mcp-activation-approval\.result == 'skipped'/
+    );
+
+    const bootstrapStart = dockerBuildWorkflow.indexOf(
+        'elif [[ "${gis_registry_json_definition_count}" == "1" ]]'
+    );
+    const disabledStart = dockerBuildWorkflow.indexOf(
+        'elif [[ "${gis_registry_file_definition_count}" == "0" ]]',
+        bootstrapStart
+    );
+    assert.ok(bootstrapStart >= 0);
+    assert.ok(disabledStart > bootstrapStart);
+    const bootstrapGate = dockerBuildWorkflow.slice(bootstrapStart, disabledStart);
+    assert.match(
+        bootstrapGate,
+        /legal_registry_marker_present.*-ne 1[\s\S]*?legal_registry_required_at_start.*-ne 1[\s\S]*?legal_registry_finalization_required.*-ne 0[\s\S]*?committed legal file-registry mode/
+    );
+    assert.match(bootstrapGate, /validate_gis_initial_activation_dispatch/);
+    assert.match(bootstrapGate, /load_gis_initial_activation_binding/);
+    assert.match(
+        dockerBuildWorkflow,
+        /validate_gis_initial_activation_dispatch\(\)[\s\S]*?DEPLOY_EVENT_NAME.*!= "workflow_dispatch"[\s\S]*?DEPLOY_RUN_ATTEMPT.*!= "1"/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /gis_initial_activation_prepared_path="\$\{HOME\}\/alimtalk-proxy\/\.gis-mcp-initial-activation-prepared-v1"/
+    );
+    const bindingLoader = dockerBuildWorkflow.match(
+        /load_gis_initial_activation_binding\(\)[\s\S]*?^            }/m
+    )?.[0] ?? '';
+    assert.notEqual(bindingLoader, '');
+    assert.match(bindingLoader, /stat -c '%u'/);
+    assert.match(bindingLoader, /stat -c '%a'.*!= "600"/s);
+    assert.match(bindingLoader, /binding_lines\[0\].*version=1/s);
+    assert.match(bindingLoader, /binding_lines\[1\].*activationId=/s);
+    assert.match(bindingLoader, /binding_lines\[2\].*clientId=/s);
+    assert.match(bindingLoader, /binding_lines\[3\].*gitSha=/s);
+    assert.match(bindingLoader, /binding_lines\[4\].*runtimeEnvSha256=/s);
+    assert.match(bindingLoader, /binding_lines\[5\].*tokenCommitment=/s);
+    assert.match(
+        bindingLoader,
+        /prepared_id.*EXPECTED_GIS_MCP_ACTIVATION_ID/s
+    );
+    assert.match(
+        bindingLoader,
+        /require_current_git_sha.*prepared_git_sha.*DEPLOY_GIT_SHA/s
+    );
+    assert.match(
+        bindingLoader,
+        /prepared_env_sha256.*sha256sum -- \.env/s
+    );
+    assert.match(
+        bindingLoader,
+        /prepared_commitment.*EXPECTED_GIS_MCP_TOKEN_COMMITMENT/s
+    );
+    assert.match(
+        bootstrapGate,
+        /gis_initial_activation_require_current_git_sha=1[\s\S]*?running_file_mode_at_start.*-eq 1[\s\S]*?gis_initial_activation_require_current_git_sha=0[\s\S]*?load_gis_initial_activation_binding \\\n+\s+"\$\{gis_initial_activation_prepared_path\}" 1 \\\n+\s+"\$\{gis_initial_activation_require_current_git_sha\}"/
+    );
+    assert.match(bootstrapGate, /gis_initial_activation_handoff_required=1/);
+
+    const commitmentStart = dockerBuildWorkflow.indexOf(
+        'if [[ "${gis_initial_activation_handoff_required}" -eq 1 ]] \\\n              && [[ "${gis_registry_json_source_at_start}" -eq 1 ]]; then'
+    );
+    const commitmentEnd = dockerBuildWorkflow.indexOf(
+        'if [[ -e "${legal_registry_host_dir}"',
+        commitmentStart
+    );
+    assert.ok(commitmentStart >= 0);
+    assert.ok(commitmentEnd > commitmentStart);
+    const contentBinding = dockerBuildWorkflow.slice(
+        commitmentStart,
+        commitmentEnd
+    );
+    assert.match(contentBinding, /clients\.length !== 1/);
+    assert.match(contentBinding, /client\?\.clientId !== expectedClientId/);
+    assert.match(
+        contentBinding,
+        /JSON\.stringify\(\{\s*version: 1,\s*operationId: activationId,\s*action: "add",\s*clientId: client\.clientId,\s*tokenSha256: client\.tokenSha256,/s
+    );
+    assert.match(
+        contentBinding,
+        /gis_initial_activation_actual_commitment[\s\S]*?EXPECTED_GIS_MCP_TOKEN_COMMITMENT/
+    );
+
+    assert.match(
+        dockerBuildWorkflow,
+        /gis_registry_json_source_at_start.*-ne 1[\s\S]*?activation inputs are allowed only for a staged JSON bootstrap/
+    );
+    assert.ok(
+        bootstrapStart <
+            dockerBuildWorkflow.indexOf(
+                'node dist/cli/gis-mcp-registry.js init-from-env'
+            )
+    );
+
+    const bootstrapState = bootstrapGate.match(
+        /gis_initial_activation_handoff_required=1\s+gis_registry_active_for_deployment=1\s+gis_registry_finalization_required=1\s+gis_registry_needs_next_env=1\s+gis_registry_json_source_at_start=1/
+    )?.[0] ?? '';
+    assert.notEqual(bootstrapState, '');
+    assert.doesNotMatch(bootstrapState, /gis_registry_required_at_start=1/);
+    const stateExecution = spawnSync('/bin/bash', ['-c', `
+        set -euo pipefail
+        gis_initial_activation_handoff_required=0
+        gis_registry_active_for_deployment=0
+        gis_registry_finalization_required=0
+        gis_registry_required_at_start=0
+        gis_registry_needs_next_env=0
+        gis_registry_json_source_at_start=0
+        ${bootstrapState}
+        printf '%s' "${'${gis_initial_activation_handoff_required}'}|${'${gis_registry_active_for_deployment}'}|${'${gis_registry_finalization_required}'}|${'${gis_registry_required_at_start}'}|${'${gis_registry_needs_next_env}'}|${'${gis_registry_json_source_at_start}'}"
+    `], { encoding: 'utf8' });
+    assert.equal(stateExecution.status, 0, stateExecution.stderr);
+    assert.equal(stateExecution.stdout, '1|1|1|0|1|1');
+    assert.match(
+        dockerBuildWorkflow,
+        /if \[\[ "\$\{gis_registry_marker_present\}" -eq 1 \]\] \\\n\s+\|\| \[\[ "\$\{gis_registry_required_at_start\}" -eq 1 \]\]; then[\s\S]*?Configured GIS MCP file registry failed validation[\s\S]*?gis_registry_initialization="\$\(/
+    );
+});
+
+test('GIS 초기 활성화 prepared state는 migration health commit 뒤 durable receipt로 소비된다', () => {
+    assert.match(
+        dockerBuildWorkflow,
+        /gis_initial_activation_receipts_dir="\$\{HOME\}\/alimtalk-proxy\/\.gis-mcp-initial-activation-receipts"/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /consume_gis_initial_activation_handoff\(\)[\s\S]*?deployment_phase.*committed/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /consume_gis_initial_activation_handoff\(\)[\s\S]*?GIS_MCP_TOKEN_REGISTRY_FILE=.*gis_registry_container_file[\s\S]*?GIS_MCP_TOKEN_REGISTRY_JSON[\s\S]*?gis_registry_marker/s
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /verify_gis_initial_activation_registry_attestation\(\)[\s\S]*?node dist\/cli\/gis-mcp-registry\.js attest-client[\s\S]*?--client-id "\$\{gis_initial_activation_client_id\}"[\s\S]*?--operation-id "\$\{EXPECTED_GIS_MCP_ACTIVATION_ID\}"[\s\S]*?tokenCommitment=\$\{EXPECTED_GIS_MCP_TOKEN_COMMITMENT\}/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /consume_gis_initial_activation_handoff\(\)[\s\S]*?verify_gis_initial_activation_registry_attestation/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /mkdir -m 700 -- "\$\{gis_initial_activation_receipts_dir\}"/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /mv -- "\$\{gis_initial_activation_prepared_path\}" \\\n+\s+"\$\{gis_initial_activation_receipt_path\}"/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /sync -f "\$\{gis_initial_activation_receipt_path\}"[\s\S]*?sync -f "\$\{gis_initial_activation_receipts_dir\}"/
+    );
+
+    const commitPoint = dockerBuildWorkflow.lastIndexOf(
+        'deployment_phase="committed"'
+    );
+    const markerValidation = dockerBuildWorkflow.lastIndexOf(
+        'CLEANUP_FAILED: GIS MCP migration marker validation failed.'
+    );
+    const consumeCall = dockerBuildWorkflow.lastIndexOf(
+        '! consume_gis_initial_activation_handoff'
+    );
+    assert.ok(commitPoint >= 0);
+    assert.ok(markerValidation > commitPoint);
+    assert.ok(consumeCall > markerValidation);
+});
+
+test('GIS file-mode commit 뒤 prepared/receipt 복구는 동일 binding과 registry attestation으로 멱등 완결된다', () => {
+    const recoveryStart = dockerBuildWorkflow.indexOf(
+        'gis_initial_activation_prepared_present=0'
+    );
+    const recoveryEnd = dockerBuildWorkflow.indexOf(
+        'shopt -s nullglob',
+        recoveryStart
+    );
+    assert.ok(recoveryStart >= 0);
+    assert.ok(recoveryEnd > recoveryStart);
+    const recovery = dockerBuildWorkflow.slice(recoveryStart, recoveryEnd);
+
+    assert.match(
+        recovery,
+        /gis_registry_json_source_at_start.*-ne 1[\s\S]*?gis_registry_active_for_deployment.*-eq 1/
+    );
+    assert.match(recovery, /validate_gis_initial_activation_dispatch/);
+    assert.match(
+        recovery,
+        /gis_initial_activation_require_current_git_sha=1[\s\S]*?gis_registry_marker_present.*-eq 1[\s\S]*?running_file_mode_at_start.*-eq 1[\s\S]*?gis_initial_activation_require_current_git_sha=0/
+    );
+    assert.match(
+        recovery,
+        /load_gis_initial_activation_binding \\\n\s+"\$\{gis_initial_activation_prepared_path\}" 0 \\\n\s+"\$\{gis_initial_activation_require_current_git_sha\}"/
+    );
+    assert.match(
+        recovery,
+        /recovery receipt requires the committed file-registry marker[\s\S]*?load_gis_initial_activation_binding \\\n\s+"\$\{gis_initial_activation_receipt_path\}" 0 0/
+    );
+    assert.match(
+        recovery,
+        /prepared_git_sha.*!=.*DEPLOY_GIT_SHA[\s\S]*?running_file_mode_at_start.*-ne 1[\s\S]*?binding_sha_drift=1[\s\S]*?historical_finalization_required=1/
+    );
+    const orphanGuardStart = dockerBuildWorkflow.indexOf(
+        'gis_registry_orphan_next_envs=('
+    );
+    const orphanGuardEnd = dockerBuildWorkflow.indexOf(
+        'if ! docker container inspect "${CONTAINER_NAME}"',
+        orphanGuardStart
+    );
+    const orphanGuard = dockerBuildWorkflow.slice(
+        orphanGuardStart,
+        orphanGuardEnd
+    );
+    assert.match(
+        orphanGuard,
+        /orphan_next_envs\[@\].*ne 1[\s\S]*?handoff_required.*-ne 1[\s\S]*?json_source_at_start.*-ne 1[\s\S]*?needs_next_env.*-ne 1/
+    );
+    assert.match(
+        orphanGuard,
+        /stat -c '%d:%i'[\s\S]*?sha256sum[\s\S]*?stat -c '%u'[\s\S]*?stat -c '%g'[\s\S]*?stat -c '%a'[\s\S]*?stat -c '%h'/
+    );
+    assert.match(
+        orphanGuard,
+        /awk '[\s\S]*?GIS_MCP_TOKEN_REGISTRY_FILE=[\s\S]*?cmp -s -[\s\S]*?stat -c '%d:%i'[\s\S]*?rm -f/
+    );
+    assert.match(recovery, /gis_initial_activation_recovery_required=1/);
+    assert.match(
+        recovery,
+        /prepared activation cannot be consumed outside active file mode/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /gis_initial_activation_handoff_required.*-eq 1.*\n\s+&& \[\[ "\$\{gis_registry_json_source_at_start\}" -eq 1 \]\]; then[\s\S]*?staged runtime environment changed/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /gis_registry_finalization_required.*-ne 1[\s\S]*?gis_initial_activation_handoff_required.*-eq 1[\s\S]*?consume_gis_initial_activation_handoff[\s\S]*?activation recovery receipt could not be committed/
+    );
+    const precommitAttestation = dockerBuildWorkflow.indexOf(
+        'GIS MCP registry does not match the approved initial activation binding.'
+    );
+    const candidateStart = dockerBuildWorkflow.indexOf(
+        'docker run -d \\\n              --name "${CANDIDATE_CONTAINER}"'
+    );
+    assert.ok(precommitAttestation >= 0);
+    assert.ok(candidateStart > precommitAttestation);
+
+    const consumeFunction = dockerBuildWorkflow.match(
+        /consume_gis_initial_activation_handoff\(\)[\s\S]*?^            }/m
+    )?.[0] ?? '';
+    assert.notEqual(consumeFunction, '');
+    assert.equal(
+        consumeFunction.match(
+            /gitSha=\$\{gis_initial_activation_prepared_git_sha\}/g
+        )?.length,
+        3
+    );
+    assert.doesNotMatch(consumeFunction, /gitSha=\$\{DEPLOY_GIT_SHA\}/);
+});
+
+test('GIS 과거 SHA 복구는 기존 committed container만 증명하고 image를 교체하지 않는다', () => {
+    const fastPathStart = dockerBuildWorkflow.indexOf(
+        'if [[ "${gis_initial_activation_recovery_required}" -eq 1 ]] \\\n              && [[ "${gis_initial_activation_binding_sha_drift}" -eq 1 ]]; then'
+    );
+    const fastPathEnd = dockerBuildWorkflow.indexOf(
+        'manifest_attestation="$(',
+        fastPathStart
+    );
+    assert.ok(fastPathStart >= 0);
+    assert.ok(fastPathEnd > fastPathStart);
+    const fastPath = dockerBuildWorkflow.slice(fastPathStart, fastPathEnd);
+
+    assert.match(
+        fastPath,
+        /historical_finalization_required.*-eq 0[\s\S]*?marker_present.*-ne 1[\s\S]*?finalization_required.*-ne 0/
+    );
+    assert.match(
+        fastPath,
+        /historical_finalization_required.*-eq 1[\s\S]*?marker_present.*-ne 0[\s\S]*?running_file_mode_at_start.*-ne 1/
+    );
+    assert.match(
+        fastPath,
+        /legal_registry_marker_present.*-ne 1[\s\S]*?legal_registry_finalization_required.*-ne 0/
+    );
+    assert.match(
+        fastPath,
+        /docker container inspect "\$\{CONTAINER_NAME\}"[\s\S]*?State\.Running[\s\S]*?CANDIDATE_CONTAINER/
+    );
+    assert.match(fastPath, /verify_file_registry_container_contract/);
+    assert.match(fastPath, /verify_gis_file_registry_container_contract/);
+    assert.match(fastPath, /verify_status_ok "\$\{CONTAINER_NAME\}" 3100/);
+    assert.match(fastPath, /verify_legal_registry_health/);
+    assert.match(fastPath, /verify_gis_registry_health/);
+    assert.match(fastPath, /verify_gis_initial_activation_running_git_sha/);
+    assert.match(
+        dockerBuildWorkflow,
+        /verify_gis_initial_activation_running_git_sha\(\)[\s\S]*?health\.gitSha[\s\S]*?EXPECTED_INITIAL_ACTIVATION_GIT_SHA/
+    );
+    assert.match(
+        fastPath,
+        /deployment_phase="committed"[\s\S]*?historical GIS file-only environment[\s\S]*?historical GIS marker[\s\S]*?consume_gis_initial_activation_handoff[\s\S]*?deployment_phase="complete"[\s\S]*?exit 0/
+    );
+    assert.doesNotMatch(fastPath, /docker run -d|docker rename/);
+});
+
+test('GIS JSON bootstrap precommit rollback은 이 run이 만든 exact registry residue만 제거한다', () => {
+    assert.match(
+        dockerBuildWorkflow,
+        /gis_initial_activation_registry_dir_created=1[\s\S]*?stat -c '%d:%i'/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /production flock 아래에서 empty를 확인한 이 run만 residue를 소유한다[\s\S]*?gis_initial_activation_registry_cleanup_armed=1/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /cleanup_gis_initial_activation_registry_residue\(\)[\s\S]*?gis_registry_json_source_at_start.*-ne 1[\s\S]*?gis_initial_activation_recovery_required.*-ne 0/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /cleanup_gis_initial_activation_registry_residue\(\)[\s\S]*?gis_registry_marker_present.*-ne 0[\s\S]*?gis_registry_marker.*-L/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /temporaryPattern = \/\^\\\.clients\\\.json[\s\S]*?assert\.deepStrictEqual\(actual, expected\)[\s\S]*?fs\.unlinkSync[\s\S]*?fs\.rmdirSync/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /current_dir_identity[\s\S]*?gis_initial_activation_registry_dir_identity[\s\S]*?rmdir -- "\$\{gis_registry_host_dir\}"/
+    );
+    assert.match(
+        dockerBuildWorkflow,
+        /if ! cleanup_gis_initial_activation_registry_residue; then[\s\S]*?residue was preserved for review/
+    );
+    assert.doesNotMatch(
+        dockerBuildWorkflow,
+        /rm -[^\n]*"\$\{gis_registry_marker\}"/
+    );
+});
+
+test('GIS registry 재사용은 writer sibling과 hardlink residue를 동적으로 fail-close한다', () => {
+    const attestationFunction = dockerBuildWorkflow.match(
+        /attest_gis_registry_published_state\(\)[\s\S]*?^            }/m
+    )?.[0] ?? '';
+    assert.notEqual(attestationFunction, '');
+    assert.match(
+        attestationFunction,
+        /names\.length !== 1 \|\| names\[0\] !== "clients\.json"/
+    );
+    assert.match(
+        attestationFunction,
+        /registry\.uid === expectedUid[\s\S]*?registry\.gid === expectedGid[\s\S]*?0o600[\s\S]*?registry\.nlink === 1/
+    );
+
+    const script = dockerBuildWorkflow.match(
+        /\/\/ GIS_REGISTRY_DIRECTORY_ATTESTATION_START\n([\s\S]*?)\n\s+\/\/ GIS_REGISTRY_DIRECTORY_ATTESTATION_END/
+    )?.[1] ?? '';
+    assert.notEqual(script, '');
+    const root = mkdtempSync(join(tmpdir(), 'gis-registry-attestation-'));
+    const registryDir = join(root, 'registry');
+    const registryPath = join(registryDir, 'clients.json');
+    mkdirSync(registryDir, { mode: 0o700 });
+    writeFileSync(registryPath, '{"version":1,"clients":[]}\n', { mode: 0o600 });
+    chmodSync(registryPath, 0o600);
+    const runAttestation = () => spawnSync(process.execPath, ['-e', script], {
+        encoding: 'utf8',
+        env: {
+            ...process.env,
+            GIS_REGISTRY_DIRECTORY: registryDir,
+            EXPECTED_REGISTRY_UID: String(process.getuid?.() ?? 0),
+            EXPECTED_REGISTRY_GID: String(process.getgid?.() ?? 0),
+        },
+    });
+
+    try {
+        assert.equal(runAttestation().status, 0);
+
+        const lockPath = join(registryDir, 'clients.json.lock');
+        mkdirSync(lockPath, { mode: 0o700 });
+        assert.notEqual(runAttestation().status, 0);
+        rmSync(lockPath, { recursive: true });
+
+        const tempPath = join(
+            registryDir,
+            '.clients.json.123.0123456789abcdef01234567.tmp'
+        );
+        writeFileSync(tempPath, '{}\n', { mode: 0o600 });
+        assert.notEqual(runAttestation().status, 0);
+        rmSync(tempPath);
+
+        const externalHardlink = join(root, 'external-hardlink');
+        linkSync(registryPath, externalHardlink);
+        assert.notEqual(runAttestation().status, 0);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+
+    const validationAccepted = dockerBuildWorkflow.indexOf(
+        'gis_registry_client_count="${BASH_REMATCH[1]}"'
+    );
+    const siblingRejected = dockerBuildWorkflow.indexOf(
+        'GIS MCP registry directory contains writer residue or an insecure sibling.'
+    );
+    const environmentMatched = dockerBuildWorkflow.indexOf(
+        'GIS MCP file registry does not match the current EC2 JSON registry.'
+    );
+    assert.ok(validationAccepted >= 0);
+    assert.ok(siblingRejected > validationAccepted);
+    assert.ok(environmentMatched > siblingRejected);
+});
+
 test('.env.example의 기본 상태는 GIS 인증 변수를 정의하지 않아 disabled 배포와 일치한다', () => {
     const activeDefinitions = envExample
         .split(/\r?\n/)
@@ -260,6 +695,27 @@ test('배포 rollback은 GIS commit 전후 경계와 기존 법률 file registry
     assert.match(
         dockerBuildWorkflow,
         /legal_registry_finalization_required.*-ne 1.*gis_registry_finalization_required.*-ne 1.*had_previous/s
+    );
+    const rollbackFunction = dockerBuildWorkflow.match(
+        /rollback\(\)[\s\S]*?\n            postcommit_cleanup\(\)/
+    )?.[0] ?? '';
+    assert.notEqual(rollbackFunction, '');
+    const survivingContainerGate = rollbackFunction.indexOf(
+        'gis_registry_residue_containers_absent=1'
+    );
+    const registryResidueCleanup = rollbackFunction.indexOf(
+        'cleanup_gis_initial_activation_registry_residue',
+        survivingContainerGate
+    );
+    assert.ok(survivingContainerGate >= 0);
+    assert.ok(registryResidueCleanup > survivingContainerGate);
+    assert.match(
+        rollbackFunction.slice(survivingContainerGate, registryResidueCleanup),
+        /CANDIDATE_CONTAINER[\s\S]*?new_container_attempted[\s\S]*?CONTAINER_NAME[\s\S]*?residue_containers_absent=0/
+    );
+    assert.match(
+        rollbackFunction,
+        /residue remains mounted and was preserved/
     );
 });
 

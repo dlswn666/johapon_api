@@ -109,6 +109,112 @@ provider key, proxy 원문, client bearer, registry JSON, digest는 출력하지
 성공을 뜻하지 않는다. Caddy baseline hash나 상태가 예상과 다르면 템플릿으로
 덮어쓰지 말고 실제 운영 구성을 별도로 검토한다.
 
+## 최초 활성화 승인·배포·공개 순서
+
+최초 활성화는 `.github/workflows/gis-mcp-initial-activation.yml`의
+`prepare → status → publish`와 `.github/workflows/docker-build.yml`의 승인된 수동
+배포를 조합한다. EC2에서 Git 저장소를 pull하거나 checkout하지 않는다. GitHub Actions가
+승인된 `main` revision으로 immutable GHCR 이미지를 만든 뒤 EC2에 그 digest를 배포하는
+기존 간접 연동만 사용한다.
+
+초기 client도 별도 `ADMIN`/`USER` role을 갖지 않는다. GIS registry entry는
+`clientId + tokenSha256`이고 인증된 모든 entry가 동일한 read-only `gis:read` scope를
+받는다. 따라서 “일반 사용자 추가”는 개인정보 없는 client ID로 별도 bearer를 등록하는
+것을 뜻한다. 현재 Mac client처럼 `codex-mac-gis-202609` 형식을 쓰고, 사람 이름·이메일·
+전화번호를 client ID에 넣지 않는다.
+
+1. client raw bearer를 로컬에서 생성해 macOS Keychain 같은 client secret store에만
+   저장한다. raw bearer를 GitHub, EC2 명령행, 저장소, 로그에 넣지 않는다.
+2. bearer의 SHA-256 digest와 다음 canonical JSON의 commitment를 로컬에서 계산한다.
+   environment `gis-mcp-registry`의 임시 secret
+   `GIS_MCP_REGISTRY_PENDING_SHA256`에는 digest만 둔다.
+
+   ```text
+   SHA-256(JSON.stringify({
+     version: 1,
+     operationId: "<activation-id>",
+     action: "add",
+     clientId: "<client-id>",
+     tokenSha256: "<64-hex-token-digest>"
+   }))
+   ```
+
+3. 보호 environment 승인 후 initial activation workflow를 다음 동일 binding으로
+   `prepare` 실행한다.
+   `activation_id`, `client_id`, 감사에서 확인한 `expected_caddyfile_sha256`,
+   `pending_digest_commitment`를 입력한다. workflow와 원격 operator가 digest를 각각
+   commitment에 재결합하며, digest는 마스킹 후 SSH stdin 한 줄로만 보낸다.
+4. `prepare`는 현재 배포 SHA·법률 MCP `1/1`·GIS disabled `0/0`·loopback 3100·
+   legal-only Caddy exact baseline을 다시 확인한다. 그 뒤 EC2 `.env`에만 단일-client
+   JSON registry, proxy digest, Host allowlist와 필요한 경우 canonical VWorld domain을
+   staging한다. GIS proxy raw는 EC2 root process가 새로 만들고 root-only Caddy candidate에만
+   저장한다. 이 단계에서는 현재 Caddyfile/container를 바꾸지 않아 `/gis-mcp`를 공개하지 않는다.
+5. 성공한 prepare는 deploy-user 소유 mode `600`의
+   `.gis-mcp-initial-activation-prepared-v1`을 다음 6줄로 원자 게시한다.
+
+   ```text
+   version=1
+   activationId=<activation-id>
+   clientId=<client-id>
+   gitSha=<40-hex-main-revision>
+   runtimeEnvSha256=<64-hex-staged-env-digest>
+   tokenCommitment=<64-hex-commitment>
+   ```
+
+   prepare 결과와 6줄 binding을 확인하면 임시 GitHub
+   `GIS_MCP_REGISTRY_PENDING_SHA256`을 즉시 삭제한다. 이후 `status`, Docker 배포,
+   `publish`, `recover`는 digest secret 없이 receipt·commitment로 검증한다.
+
+6. Docker workflow를 `workflow_dispatch`로 실행하면서 같은
+   `gis_mcp_activation_id`, `gis_mcp_token_commitment`를 입력한다. 일반 `push`와 GitHub
+   re-run은 JSON bootstrap을 거부한다. 배포는 준비 파일의 SHA·`.env` digest·commitment를
+   검증하고, 새 이미지의 no-network helper로 file registry를 만든 뒤 candidate/final health와
+   registry attestation을 통과해야 commit한다.
+7. 배포 commit 뒤에만 준비 파일을
+   `.gis-mcp-initial-activation-receipts/<activation-id>`로 atomic rename한다. 같은 6줄을
+   유지하므로 publish는 승인된 staged env가 실제 배포에서 소비됐음을 다시 증명할 수 있다.
+8. initial activation workflow의 `status`가 `deployed`인지 확인한 뒤 같은 binding으로
+   `publish`한다. publish는 file-only env, marker, UID `1001` registry, client commitment,
+   GIS `vworld_and_data_portal` health와 기존 법률 MCP health를 모두 확인한 뒤에만 root-only
+   Caddy candidate를 설치·재시작한다.
+9. publish는 public GIS 무인증/잘못된 bearer `401`, loopback proxy 증명 없음 `403`,
+   public 법률 MCP 무인증 `401`, loopback 법률 MCP proxy 증명 없음 `403`을 확인한다.
+   실패하면 원래 Caddy를 복구하며, 어느 쪽 endpoint인지 증명할 수 없으면 exit `75`
+   `COMMIT_STATE_UNKNOWN`으로 닫는다.
+10. publish와 실제 client `tools/list`, 5개 provider live 호출까지 확인한다. 임시 GitHub
+    digest secret이 prepare 직후 삭제됐는지도 다시 확인한다. Codex client 설정 파일 작성과
+    client-side 승인/연결은 별도 gate이며, 설정 파일만 존재하는 상태를 연결 완료로 보고하지 않는다.
+
+`rollback`은 준비 파일이 아직 있고 deployment receipt·file marker·registry가 모두 없는
+배포 전 단계에서만 허용한다. 배포가 file migration을 commit한 뒤에는 구 JSON env로
+돌리지 않는다. state-changing operation의 GitHub re-run은 금지한다. exit `75` 또는
+`.gis-mcp-initial-activation-commit-unknown`이 보이면 mutation을 재시도하지 말고 같은
+binding의 `status`로 관찰한 뒤 `recover`로 현재 endpoint를 수렴시킨다.
+unknown marker는 prepare 당시 Git SHA와 승인된 Caddy SHA도 보존하므로 그 뒤 `main`이
+이동해도 과거 receipt/state와 교차검증한다. Caddy 두 파일 교체 또는 container 재시작
+중 중단된 경우 `recover`는 root-only backup으로 legal-only endpoint를 먼저 복구한다.
+publish가 성공하고 backup/stage 정리만 실패하면 `status`는 `cleanupRequired=true`와
+exit `71`을 반환하며, `recover`가 활성 endpoint를 재증명한 뒤 잔여 복사본만 제거한다.
+
+### Acceptance checklist
+
+- [ ] 기획/분석: 최신 `main`의 감사 run이 `stageReady=true`이고 VWorld 서비스 URL,
+  Caddy baseline SHA, 현재 API revision을 별도 증거로 확인했다.
+- [ ] 구현: `prepare` receipt의 6개 필드와 Docker dispatch의 ID·SHA·commitment가 정확히
+  일치하며, EC2에는 Git checkout이 없다.
+- [ ] 구현: 일반 GIS client는 별도 client ID/digest 한 건이고 registry/client scope는
+  read-only `gis:read`이며 raw bearer는 client secret store에만 있다.
+- [ ] 리뷰: 법률 `/mcp`, fallback API route, `encode gzip`, Caddy image/network/volume/
+  restart contract가 candidate에도 보존됐다.
+- [ ] 검증: Docker migration 후 marker, file-only env, registry owner/mode, commitment,
+  GIS/법률 health가 모두 통과했다.
+- [ ] 검증: publish의 public/loopback `401/403` 경계와 client `tools/list`가 통과했다.
+- [ ] 검증: partial Caddy swap, prepare intent-only, publish cleanup-only interruption이
+  각각 `recover`로 legal-only 또는 완료 상태에 수렴하고, 과거 activation Git SHA를 유지했다.
+- [ ] 검증: 다섯 GIS 도구의 실제 provider 호출과 출처 metadata를 확인했다.
+- [ ] 완료: 임시 GitHub digest secret을 삭제했고, client 설정·승인·실제 연결 상태를
+  서로 구분해 기록했다.
+
 ## 소수 client 초대·폐기·회전
 
 client ID는 개인정보 없는 lowercase 영문·숫자·단일 하이픈 조합으로 정한다.
@@ -193,6 +299,8 @@ api.tonghari.kr {
     handle {
         reverse_proxy 127.0.0.1:3100
     }
+
+    encode gzip
 }
 ```
 
@@ -221,10 +329,9 @@ enabled_tools = [
 2. 건축HUB 운영계정과 호출량을 확인하고 필요하면 활용사례 등록 후 증설한다.
 3. geocoder 결과를 영구 저장하지 않고 모든 응답에 VWorld 출처를 유지한다.
 4. Caddy/API의 proxy raw/digest가 같은 발급 쌍인지 값을 출력하지 않고 확인한다.
-5. 최초 배포 전 EC2 `.env`에 1~32개 client의
-   `GIS_MCP_TOKEN_REGISTRY_JSON`을 중복 없이 정확히 한 번 설정한다. file·JSON·legacy
-   중 정확히 하나만 설정되어야 하며 이 운영 설정은 코드 배포와 별도로
-   승인한다.
+5. 최초 배포 전 승인된 initial activation `prepare`로 EC2 `.env`에 초기 client 한 건의
+   `GIS_MCP_TOKEN_REGISTRY_JSON`을 중복 없이 정확히 한 번 staging한다. file·JSON·legacy
+   중 정확히 하나만 설정되어야 하며 운영 설정은 코드 배포와 별도로 승인한다.
 6. 배포 후 `GET /health`에서 `gisMcpConfigurationValid=true`,
    `gisMcpAuthMode=client_registry`, `gisMcpAuthSource=file_registry`,
    `gisMcpProviderMode=vworld_and_data_portal`과 등록 client/token count 일치를 확인한다.

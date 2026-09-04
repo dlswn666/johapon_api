@@ -16,6 +16,14 @@ on:
         description: '승인된 LAND_AREA_SYNC allowlist target 수 (enabled=true일 때 필수)'
         required: false
         type: string
+      gis_mcp_activation_id:
+        description: '승인된 GIS MCP 초기 활성화 ID (JSON bootstrap일 때 필수)'
+        required: false
+        type: string
+      gis_mcp_token_commitment:
+        description: '승인된 GIS MCP 초기 활성화 token commitment SHA-256 (JSON bootstrap일 때 필수)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -40,6 +48,10 @@ jobs:
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
           EC2_SSH_FINGERPRINT: ${{ secrets.EC2_SSH_FINGERPRINT }}
+          GIS_MCP_ACTIVATION_ID: ${{ inputs.gis_mcp_activation_id || '' }}
+          GIS_MCP_TOKEN_COMMITMENT: ${{ inputs.gis_mcp_token_commitment || '' }}
+          DEPLOY_EVENT_NAME: ${{ github.event_name }}
+          DEPLOY_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
 
@@ -65,6 +77,35 @@ jobs:
             echo "::error::Missing required deployment secrets: ${missing_list%, }."
             exit 1
           fi
+
+          if [[ -n "${GIS_MCP_ACTIVATION_ID}" || -n "${GIS_MCP_TOKEN_COMMITMENT}" ]]; then
+            [[ "${DEPLOY_EVENT_NAME}" == "workflow_dispatch" ]] \
+              || { echo "::error::GIS MCP initial activation requires workflow_dispatch."; exit 1; }
+            [[ "${DEPLOY_RUN_ATTEMPT}" == "1" ]] \
+              || { echo "::error::GIS MCP initial activation cannot run from a re-run attempt."; exit 1; }
+            [[ "${#GIS_MCP_ACTIVATION_ID}" -ge 8 \
+              && "${#GIS_MCP_ACTIVATION_ID}" -le 64 \
+              && "${GIS_MCP_ACTIVATION_ID}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
+              || { echo "::error::Invalid GIS MCP activation ID."; exit 1; }
+            [[ "${GIS_MCP_TOKEN_COMMITMENT}" =~ ^[0-9a-f]{64}$ ]] \
+              || { echo "::error::Invalid GIS MCP token commitment."; exit 1; }
+          fi
+
+  gis-mcp-activation-approval:
+    name: Approve GIS MCP initial activation
+    needs: preflight
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.gis_mcp_activation_id != '' || inputs.gis_mcp_token_commitment != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: gis-mcp-registry
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm protected activation approval
+        shell: bash
+        run: echo "Protected GIS MCP initial activation approval granted."
 
   quality-gates:
     name: Tests, TypeScript and writer guard
@@ -158,7 +199,24 @@ jobs:
 
   deploy:
     name: Deploy and verify exact revision
-    needs: [preflight, build-and-push]
+    needs: [preflight, build-and-push, gis-mcp-activation-approval]
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.build-and-push.result == 'success' &&
+      (
+        (
+          github.event_name == 'workflow_dispatch' &&
+          (inputs.gis_mcp_activation_id != '' || inputs.gis_mcp_token_commitment != '') &&
+          needs.gis-mcp-activation-approval.result == 'success'
+        ) ||
+        (
+          !(github.event_name == 'workflow_dispatch' &&
+            (inputs.gis_mcp_activation_id != '' || inputs.gis_mcp_token_commitment != '')) &&
+          needs.gis-mcp-activation-approval.result == 'skipped'
+        )
+      )
     runs-on: ubuntu-latest
     # production lock 40분 + operation lock 45분 + 실제 배포/rollback 30분을
     # 모두 command/job 취소 전에 완료하고 후처리 여유를 남긴다.
@@ -174,8 +232,11 @@ jobs:
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEPLOY_EVENT_NAME: ${{ github.event_name }}
+          DEPLOY_RUN_ATTEMPT: ${{ github.run_attempt }}
           EXPECTED_ALLOWLIST_DIGEST: ${{ inputs.land_area_sync_allowlist_sha256 || '' }}
           EXPECTED_ALLOWLIST_COUNT: ${{ inputs.land_area_sync_allowlist_count || '' }}
+          EXPECTED_GIS_MCP_ACTIVATION_ID: ${{ inputs.gis_mcp_activation_id || '' }}
+          EXPECTED_GIS_MCP_TOKEN_COMMITMENT: ${{ inputs.gis_mcp_token_commitment || '' }}
           DEPLOY_IMAGE_REPOSITORY: ${{ env.IMAGE_REPOSITORY }}
           DEPLOY_GIT_SHA: ${{ github.sha }}
           DEPLOY_IMAGE_DIGEST: ${{ needs.build-and-push.outputs.image_digest }}
@@ -186,7 +247,7 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           fingerprint: ${{ secrets.EC2_SSH_FINGERPRINT }}
           command_timeout: 120m
-          envs: GHCR_USERNAME,GHCR_TOKEN,DEPLOY_EVENT_NAME,EXPECTED_ALLOWLIST_DIGEST,EXPECTED_ALLOWLIST_COUNT,DEPLOY_IMAGE_REPOSITORY,DEPLOY_GIT_SHA,DEPLOY_IMAGE_DIGEST,DEPLOY_BUILD_TIME
+          envs: GHCR_USERNAME,GHCR_TOKEN,DEPLOY_EVENT_NAME,DEPLOY_RUN_ATTEMPT,EXPECTED_ALLOWLIST_DIGEST,EXPECTED_ALLOWLIST_COUNT,EXPECTED_GIS_MCP_ACTIVATION_ID,EXPECTED_GIS_MCP_TOKEN_COMMITMENT,DEPLOY_IMAGE_REPOSITORY,DEPLOY_GIT_SHA,DEPLOY_IMAGE_DIGEST,DEPLOY_BUILD_TIME
           script: |
             set -Eeuo pipefail
 
@@ -270,6 +331,18 @@ jobs:
             gis_registry_finalization_required=0
             gis_registry_needs_next_env=0
             gis_registry_json_source_at_start=0
+            gis_initial_activation_handoff_required=0
+            gis_initial_activation_recovery_required=0
+            gis_initial_activation_binding_sha_drift=0
+            gis_initial_activation_historical_finalization_required=0
+            gis_initial_activation_running_file_mode_at_start=0
+            gis_initial_activation_prepared_path="${HOME}/alimtalk-proxy/.gis-mcp-initial-activation-prepared-v1"
+            gis_initial_activation_receipts_dir="${HOME}/alimtalk-proxy/.gis-mcp-initial-activation-receipts"
+            gis_initial_activation_receipt_path=""
+            gis_initial_activation_client_id=""
+            gis_initial_activation_registry_dir_created=0
+            gis_initial_activation_registry_dir_identity=""
+            gis_initial_activation_registry_cleanup_armed=0
             deployment_runtime_env="${HOME}/alimtalk-proxy/.env"
             deployment_phase="precommit"
 
@@ -277,6 +350,7 @@ jobs:
               GHCR_USERNAME \
               GHCR_TOKEN \
               DEPLOY_EVENT_NAME \
+              DEPLOY_RUN_ATTEMPT \
               DEPLOY_IMAGE_REPOSITORY \
               DEPLOY_GIT_SHA \
               DEPLOY_IMAGE_DIGEST \
@@ -292,6 +366,86 @@ jobs:
               echo "Runtime .env must exist as a regular, non-symlink file on EC2."
               false
             fi
+
+            validate_gis_initial_activation_dispatch() {
+              if [[ "${DEPLOY_EVENT_NAME}" != "workflow_dispatch" ]]; then
+                echo "GIS MCP initial activation requires an explicit workflow_dispatch."
+                return 1
+              fi
+              if [[ "${DEPLOY_RUN_ATTEMPT}" != "1" ]]; then
+                echo "GIS MCP initial activation cannot run from a re-run attempt."
+                return 1
+              fi
+              if [[ "${#EXPECTED_GIS_MCP_ACTIVATION_ID}" -lt 8 \
+                || "${#EXPECTED_GIS_MCP_ACTIVATION_ID}" -gt 64 \
+                || ! "${EXPECTED_GIS_MCP_ACTIVATION_ID}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+                echo "GIS MCP initial activation requires a valid activation ID."
+                return 1
+              fi
+              if [[ ! "${EXPECTED_GIS_MCP_TOKEN_COMMITMENT}" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "GIS MCP initial activation requires a valid token commitment."
+                return 1
+              fi
+            }
+
+            load_gis_initial_activation_binding() {
+              local binding_path="$1"
+              local require_runtime_env_match="$2"
+              local require_current_git_sha="$3"
+              local actual_runtime_env_sha256=""
+              local -a binding_lines=()
+
+              if [[ "${require_runtime_env_match}" != "0" \
+                && "${require_runtime_env_match}" != "1" ]] \
+                || [[ "${require_current_git_sha}" != "0" \
+                  && "${require_current_git_sha}" != "1" ]]; then
+                echo "GIS MCP initial activation binding policy is invalid."
+                return 1
+              fi
+
+              if [[ ! -f "${binding_path}" || -L "${binding_path}" ]] \
+                || [[ "$(stat -c '%u' "${binding_path}" 2>/dev/null)" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${binding_path}" 2>/dev/null)" != "600" ]]; then
+                echo "GIS MCP initial activation binding is missing or insecure."
+                return 1
+              fi
+              mapfile -t binding_lines < "${binding_path}"
+              if [[ "${#binding_lines[@]}" != "6" ]] \
+                || [[ "${binding_lines[0]:-}" != "version=1" ]] \
+                || [[ ! "${binding_lines[1]:-}" =~ ^activationId=([a-z0-9]+(-[a-z0-9]+)*)$ ]] \
+                || [[ ! "${binding_lines[2]:-}" =~ ^clientId=([a-z0-9]+(-[a-z0-9]+)*)$ ]] \
+                || [[ ! "${binding_lines[3]:-}" =~ ^gitSha=([0-9a-f]{40})$ ]] \
+                || [[ ! "${binding_lines[4]:-}" =~ ^runtimeEnvSha256=([0-9a-f]{64})$ ]] \
+                || [[ ! "${binding_lines[5]:-}" =~ ^tokenCommitment=([0-9a-f]{64})$ ]]; then
+                echo "GIS MCP initial activation binding has an invalid schema."
+                return 1
+              fi
+
+              gis_initial_activation_prepared_id="${binding_lines[1]#activationId=}"
+              gis_initial_activation_client_id="${binding_lines[2]#clientId=}"
+              gis_initial_activation_prepared_git_sha="${binding_lines[3]#gitSha=}"
+              gis_initial_activation_prepared_env_sha256="${binding_lines[4]#runtimeEnvSha256=}"
+              gis_initial_activation_prepared_commitment="${binding_lines[5]#tokenCommitment=}"
+              if [[ "${#gis_initial_activation_prepared_id}" -lt 8 \
+                || "${#gis_initial_activation_prepared_id}" -gt 64 \
+                || "${#gis_initial_activation_client_id}" -gt 64 ]] \
+                || [[ "${gis_initial_activation_prepared_id}" != "${EXPECTED_GIS_MCP_ACTIVATION_ID}" ]] \
+                || { [[ "${require_current_git_sha}" == "1" ]] \
+                  && [[ "${gis_initial_activation_prepared_git_sha}" != "${DEPLOY_GIT_SHA}" ]]; } \
+                || [[ "${gis_initial_activation_prepared_commitment}" != "${EXPECTED_GIS_MCP_TOKEN_COMMITMENT}" ]]; then
+                echo "GIS MCP initial activation dispatch does not match its durable binding."
+                return 1
+              fi
+              if [[ "${require_runtime_env_match}" == "1" ]]; then
+                actual_runtime_env_sha256="$(sha256sum -- .env | awk '{print $1}')"
+                if [[ "${gis_initial_activation_prepared_env_sha256}" \
+                  != "${actual_runtime_env_sha256}" ]]; then
+                  echo "GIS MCP initial activation runtime environment does not match its durable binding."
+                  return 1
+                fi
+              fi
+              actual_runtime_env_sha256=""
+            }
 
             env_owner="$(stat -c '%U' .env)"
             env_mode="$(stat -c '%a' .env)"
@@ -428,6 +582,30 @@ jobs:
               grep -Ec '^GIS_MCP_TOKEN_SHA256=.+$' .env || true
             )"
 
+            gis_initial_activation_running_environment=""
+            gis_initial_activation_running_mount=""
+            if docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1 \
+              && [[ "$(docker container inspect --format '{{.State.Running}}' "${CONTAINER_NAME}")" == "true" ]]; then
+              gis_initial_activation_running_environment="$(
+                docker container inspect \
+                  --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                  "${CONTAINER_NAME}"
+              )"
+              gis_initial_activation_running_mount="$(
+                docker container inspect --format \
+                  '{{range .Mounts}}{{if eq .Destination "/run/secrets/tonghari-gis-mcp"}}{{.Type}}|{{.RW}}|{{.Source}}{{println}}{{end}}{{end}}' \
+                  "${CONTAINER_NAME}"
+              )"
+              if [[ "$(grep -Fxc "GIS_MCP_TOKEN_REGISTRY_FILE=${gis_registry_container_file}" <<< "${gis_initial_activation_running_environment}" || true)" == "1" ]] \
+                && [[ "$(grep -Ec '^GIS_MCP_TOKEN_REGISTRY_JSON=' <<< "${gis_initial_activation_running_environment}" || true)" == "0" ]] \
+                && [[ "$(grep -Ec '^GIS_MCP_TOKEN_SHA256=' <<< "${gis_initial_activation_running_environment}" || true)" == "0" ]] \
+                && [[ "${gis_initial_activation_running_mount}" == "bind|false|${gis_registry_host_dir}" ]]; then
+                gis_initial_activation_running_file_mode_at_start=1
+              fi
+            fi
+            gis_initial_activation_running_environment=""
+            gis_initial_activation_running_mount=""
+
             gis_registry_marker_present=0
             if [[ -e "${gis_registry_marker}" || -L "${gis_registry_marker}" ]]; then
               if [[ ! -f "${gis_registry_marker}" || -L "${gis_registry_marker}" ]] \
@@ -464,6 +642,49 @@ jobs:
                 && [[ "${gis_registry_file_nonempty_count}" == "0" ]] \
                 && [[ "${gis_registry_legacy_nonempty_count}" == "0" ]]; then
                 # 최초 1회만 EC2의 기존 JSON registry를 file로 이전한다.
+                if [[ "${legal_registry_marker_present}" -ne 1 ]] \
+                  || [[ "${legal_registry_required_at_start}" -ne 1 ]] \
+                  || [[ "${legal_registry_finalization_required}" -ne 0 ]] \
+                  || [[ "${legal_registry_needs_next_env}" -ne 0 ]] \
+                  || [[ "${legal_registry_json_source_at_start}" -ne 0 ]]; then
+                  echo "GIS MCP initial activation requires committed legal file-registry mode."
+                  false
+                fi
+                validate_gis_initial_activation_dispatch
+                gis_initial_activation_require_current_git_sha=1
+                if [[ "${gis_initial_activation_running_file_mode_at_start}" -eq 1 ]]; then
+                  # 이전 run의 final health 이후 끊긴 경우만 과거 binding을 읽는다.
+                  gis_initial_activation_require_current_git_sha=0
+                fi
+                load_gis_initial_activation_binding \
+                  "${gis_initial_activation_prepared_path}" 1 \
+                  "${gis_initial_activation_require_current_git_sha}"
+                if [[ "${gis_initial_activation_prepared_git_sha}" != "${DEPLOY_GIT_SHA}" ]]; then
+                  if [[ "${gis_initial_activation_running_file_mode_at_start}" -ne 1 ]]; then
+                    echo "GIS MCP JSON bootstrap requires the current deployment SHA."
+                    false
+                  fi
+                  gis_initial_activation_binding_sha_drift=1
+                  gis_initial_activation_historical_finalization_required=1
+                  gis_initial_activation_recovery_required=1
+                fi
+                if [[ -e "${gis_initial_activation_receipts_dir}" \
+                  || -L "${gis_initial_activation_receipts_dir}" ]]; then
+                  if [[ ! -d "${gis_initial_activation_receipts_dir}" \
+                    || -L "${gis_initial_activation_receipts_dir}" ]] \
+                    || [[ "$(stat -c '%u' "${gis_initial_activation_receipts_dir}" 2>/dev/null)" != "$(id -u)" ]] \
+                    || [[ "$(stat -c '%a' "${gis_initial_activation_receipts_dir}" 2>/dev/null)" != "700" ]]; then
+                    echo "GIS MCP initial activation receipts directory is insecure."
+                    false
+                  fi
+                  gis_initial_activation_receipt_path="${gis_initial_activation_receipts_dir}/${gis_initial_activation_prepared_id}"
+                  if [[ -e "${gis_initial_activation_receipt_path}" \
+                    || -L "${gis_initial_activation_receipt_path}" ]]; then
+                    echo "GIS MCP initial activation ID has already been consumed."
+                    false
+                  fi
+                fi
+                gis_initial_activation_handoff_required=1
                 gis_registry_active_for_deployment=1
                 gis_registry_finalization_required=1
                 gis_registry_needs_next_env=1
@@ -480,14 +701,148 @@ jobs:
               fi
             fi
 
+            gis_initial_activation_prepared_present=0
+            if [[ -e "${gis_initial_activation_prepared_path}" \
+              || -L "${gis_initial_activation_prepared_path}" ]]; then
+              gis_initial_activation_prepared_present=1
+            fi
+            if [[ "${gis_registry_json_source_at_start}" -ne 1 ]] \
+              && [[ "${gis_registry_active_for_deployment}" -eq 1 ]] \
+              && { [[ "${gis_initial_activation_prepared_present}" -eq 1 ]] \
+                || [[ -n "${EXPECTED_GIS_MCP_ACTIVATION_ID}" ]] \
+                || [[ -n "${EXPECTED_GIS_MCP_TOKEN_COMMITMENT}" ]]; }; then
+              # file-mode/marker commit 뒤 receipt rename 전에 끊긴 activation만
+              # 같은 dispatch binding으로 멱등 완결한다.
+              validate_gis_initial_activation_dispatch
+              gis_initial_activation_require_current_git_sha=1
+              if [[ "${gis_registry_marker_present}" -eq 1 ]] \
+                || [[ "${gis_initial_activation_running_file_mode_at_start}" -eq 1 ]]; then
+                # marker 완료 또는 이전 run의 running file-mode commit만 과거 SHA를 허용한다.
+                gis_initial_activation_require_current_git_sha=0
+              fi
+              if [[ "${gis_initial_activation_prepared_present}" -eq 1 ]]; then
+                load_gis_initial_activation_binding \
+                  "${gis_initial_activation_prepared_path}" 0 \
+                  "${gis_initial_activation_require_current_git_sha}"
+                gis_initial_activation_receipt_path="${gis_initial_activation_receipts_dir}/${EXPECTED_GIS_MCP_ACTIVATION_ID}"
+                if [[ -e "${gis_initial_activation_receipts_dir}" \
+                  || -L "${gis_initial_activation_receipts_dir}" ]]; then
+                  if [[ ! -d "${gis_initial_activation_receipts_dir}" \
+                    || -L "${gis_initial_activation_receipts_dir}" ]] \
+                    || [[ "$(stat -c '%u' "${gis_initial_activation_receipts_dir}" 2>/dev/null)" != "$(id -u)" ]] \
+                    || [[ "$(stat -c '%a' "${gis_initial_activation_receipts_dir}" 2>/dev/null)" != "700" ]] \
+                    || [[ -e "${gis_initial_activation_receipt_path}" \
+                      || -L "${gis_initial_activation_receipt_path}" ]]; then
+                    echo "GIS MCP recovery receipt state conflicts with the prepared binding."
+                    false
+                  fi
+                fi
+              else
+                if [[ "${gis_registry_marker_present}" -ne 1 ]]; then
+                  echo "GIS MCP recovery receipt requires the committed file-registry marker."
+                  false
+                fi
+                if [[ ! -d "${gis_initial_activation_receipts_dir}" \
+                  || -L "${gis_initial_activation_receipts_dir}" ]] \
+                  || [[ "$(stat -c '%u' "${gis_initial_activation_receipts_dir}" 2>/dev/null)" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' "${gis_initial_activation_receipts_dir}" 2>/dev/null)" != "700" ]]; then
+                  echo "GIS MCP recovery receipt directory is missing or insecure."
+                  false
+                fi
+                gis_initial_activation_receipt_path="${gis_initial_activation_receipts_dir}/${EXPECTED_GIS_MCP_ACTIVATION_ID}"
+                load_gis_initial_activation_binding \
+                  "${gis_initial_activation_receipt_path}" 0 0
+              fi
+              if [[ "${gis_initial_activation_prepared_git_sha}" != "${DEPLOY_GIT_SHA}" ]]; then
+                if [[ "${gis_registry_marker_present}" -ne 1 ]] \
+                  && [[ "${gis_initial_activation_running_file_mode_at_start}" -ne 1 ]]; then
+                  echo "GIS MCP activation SHA drift requires a committed running file-mode container."
+                  false
+                fi
+                gis_initial_activation_binding_sha_drift=1
+                if [[ "${gis_registry_marker_present}" -ne 1 ]]; then
+                  gis_initial_activation_historical_finalization_required=1
+                fi
+              fi
+              gis_initial_activation_handoff_required=1
+              gis_initial_activation_recovery_required=1
+            elif [[ "${gis_registry_json_source_at_start}" -ne 1 ]] \
+              && [[ "${gis_initial_activation_prepared_present}" -eq 1 ]]; then
+              echo "GIS MCP prepared activation cannot be consumed outside active file mode."
+              false
+            fi
+
+            if [[ "${gis_registry_json_source_at_start}" -ne 1 ]] \
+              && [[ "${gis_initial_activation_recovery_required}" -ne 1 ]] \
+              && [[ -n "${EXPECTED_GIS_MCP_ACTIVATION_ID}" \
+                || -n "${EXPECTED_GIS_MCP_TOKEN_COMMITMENT}" ]]; then
+              echo "GIS MCP activation inputs are allowed only for a staged JSON bootstrap."
+              false
+            fi
+
             shopt -s nullglob
             gis_registry_orphan_next_envs=(
               "${HOME}/alimtalk-proxy"/.env.gis-mcp.next.*
             )
             shopt -u nullglob
             if (( ${#gis_registry_orphan_next_envs[@]} > 0 )); then
-              echo "CLEANUP_FAILED: orphan GIS MCP next env requires manual review."
-              false
+              if [[ "${#gis_registry_orphan_next_envs[@]}" -ne 1 ]] \
+                || [[ "${gis_initial_activation_handoff_required}" -ne 1 ]] \
+                || [[ "${gis_registry_json_source_at_start}" -ne 1 ]] \
+                || [[ "${gis_registry_needs_next_env}" -ne 1 ]]; then
+                echo "CLEANUP_FAILED: orphan GIS MCP next env requires manual review."
+                false
+              fi
+              gis_registry_orphan_next_env="${gis_registry_orphan_next_envs[0]}"
+              gis_registry_orphan_next_env_identity="$(
+                stat -c '%d:%i' "${gis_registry_orphan_next_env}" 2>/dev/null
+              )"
+              gis_registry_orphan_next_env_sha256="$(
+                sha256sum -- "${gis_registry_orphan_next_env}" 2>/dev/null \
+                  | awk '{print $1}'
+              )"
+              if [[ -z "${gis_registry_orphan_next_env_identity}" ]] \
+                || [[ ! "${gis_registry_orphan_next_env_sha256}" =~ ^[0-9a-f]{64}$ ]] \
+                || [[ ! -f "${gis_registry_orphan_next_env}" ]] \
+                || [[ -L "${gis_registry_orphan_next_env}" ]] \
+                || [[ "$(stat -c '%u' "${gis_registry_orphan_next_env}" 2>/dev/null)" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%g' "${gis_registry_orphan_next_env}" 2>/dev/null)" != "$(id -g)" ]] \
+                || [[ "$(stat -c '%a' "${gis_registry_orphan_next_env}" 2>/dev/null)" != "600" ]] \
+                || [[ "$(stat -c '%h' "${gis_registry_orphan_next_env}" 2>/dev/null)" != "1" ]]; then
+                echo "CLEANUP_FAILED: staged GIS MCP next env is insecure."
+                false
+              fi
+              export GIS_REGISTRY_CONTAINER_FILE="${gis_registry_container_file}"
+              if ! awk '
+                /^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_FILE[[:space:]]*=/ { next }
+                /^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=/ { next }
+                /^[[:space:]]*GIS_MCP_TOKEN_SHA256[[:space:]]*=/ { next }
+                { print }
+                END {
+                  print "GIS_MCP_TOKEN_REGISTRY_FILE=" \
+                    ENVIRON["GIS_REGISTRY_CONTAINER_FILE"]
+                }
+              ' .env | cmp -s - "${gis_registry_orphan_next_env}"; then
+                unset GIS_REGISTRY_CONTAINER_FILE
+                echo "CLEANUP_FAILED: staged GIS MCP next env does not match the current runtime environment."
+                false
+              fi
+              unset GIS_REGISTRY_CONTAINER_FILE
+              if [[ "$(stat -c '%d:%i' "${gis_registry_orphan_next_env}" 2>/dev/null)" \
+                != "${gis_registry_orphan_next_env_identity}" ]] \
+                || [[ "$(sha256sum -- "${gis_registry_orphan_next_env}" 2>/dev/null | awk '{print $1}')" \
+                  != "${gis_registry_orphan_next_env_sha256}" ]] \
+                || ! rm -f -- "${gis_registry_orphan_next_env}" \
+                || [[ -e "${gis_registry_orphan_next_env}" \
+                  || -L "${gis_registry_orphan_next_env}" ]]; then
+                echo "CLEANUP_FAILED: staged GIS MCP next env could not be retired."
+                false
+              fi
+              sync -f "${HOME}/alimtalk-proxy" || false
+              gis_registry_orphan_next_env=""
+              gis_registry_orphan_next_env_identity=""
+              gis_registry_orphan_next_env_sha256=""
+              gis_registry_orphan_next_envs=()
             fi
             if ! docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1 \
               && docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
@@ -726,6 +1081,363 @@ jobs:
                     ' >/dev/null 2>&1
             }
 
+            verify_gis_initial_activation_running_git_sha() {
+              local container_name="$1"
+              local port="$2"
+
+              curl -fsS --connect-timeout 2 --max-time 5 \
+                "http://127.0.0.1:${port}/health" \
+                | docker exec -i \
+                    -e EXPECTED_INITIAL_ACTIVATION_GIT_SHA="${gis_initial_activation_prepared_git_sha}" \
+                    "${container_name}" \
+                    node -e '
+                      let body = "";
+                      process.stdin.setEncoding("utf8");
+                      process.stdin.on("data", (chunk) => { body += chunk; });
+                      process.stdin.on("end", () => {
+                        try {
+                          const health = JSON.parse(body);
+                          const valid = health.status === "ok"
+                            && health.gitSha
+                              === process.env.EXPECTED_INITIAL_ACTIVATION_GIT_SHA;
+                          process.exit(valid ? 0 : 1);
+                        } catch {
+                          process.exit(1);
+                        }
+                      });
+                    ' >/dev/null 2>&1
+            }
+
+            attest_gis_registry_published_state() {
+              docker run --rm \
+                --network none \
+                --read-only \
+                --cap-drop ALL \
+                --security-opt no-new-privileges \
+                -e "GIS_REGISTRY_DIRECTORY=${gis_registry_container_dir}" \
+                -e EXPECTED_REGISTRY_UID=1001 \
+                -e EXPECTED_REGISTRY_GID=1001 \
+                --mount \
+                  "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir},readonly" \
+                "${IMAGE}" \
+                node -e '
+                  // GIS_REGISTRY_DIRECTORY_ATTESTATION_START
+                  const fs = require("node:fs");
+                  const dir = process.env.GIS_REGISTRY_DIRECTORY || "";
+                  const expectedUid = Number(process.env.EXPECTED_REGISTRY_UID);
+                  const expectedGid = Number(process.env.EXPECTED_REGISTRY_GID);
+                  if (!dir || !Number.isSafeInteger(expectedUid)
+                    || !Number.isSafeInteger(expectedGid)) {
+                    process.exit(1);
+                  }
+                  let names;
+                  try {
+                    names = fs.readdirSync(dir);
+                  } catch {
+                    process.exit(1);
+                  }
+                  if (names.length !== 1 || names[0] !== "clients.json") {
+                    process.exit(1);
+                  }
+                  let registry;
+                  try {
+                    registry = fs.lstatSync(`${dir}/clients.json`);
+                  } catch {
+                    process.exit(1);
+                  }
+                  const valid = registry.isFile()
+                    && !registry.isSymbolicLink()
+                    && registry.uid === expectedUid
+                    && registry.gid === expectedGid
+                    && (registry.mode & 0o7777) === 0o600
+                    && registry.nlink === 1;
+                  process.exit(valid ? 0 : 1);
+                  // GIS_REGISTRY_DIRECTORY_ATTESTATION_END
+                ' >/dev/null 2>&1
+            }
+
+            verify_gis_initial_activation_registry_attestation() {
+              gis_initial_activation_registry_attestation="$(
+                docker run --rm \
+                  --network none \
+                  --read-only \
+                  --cap-drop ALL \
+                  --security-opt no-new-privileges \
+                  --mount \
+                    "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir},readonly" \
+                  "${IMAGE}" \
+                  node dist/cli/gis-mcp-registry.js attest-client \
+                    --path "${gis_registry_container_file}" \
+                    --client-id "${gis_initial_activation_client_id}" \
+                    --operation-id "${EXPECTED_GIS_MCP_ACTIVATION_ID}"
+              )" || return 1
+              if [[ "${gis_initial_activation_registry_attestation}" != \
+                "action=attest-client clientId=${gis_initial_activation_client_id} clientCount=${gis_registry_client_count} tokenCommitment=${EXPECTED_GIS_MCP_TOKEN_COMMITMENT}" ]]; then
+                return 1
+              fi
+              gis_initial_activation_registry_attestation=""
+            }
+
+            consume_gis_initial_activation_handoff() {
+              local -a prepared_lines=()
+
+              [[ "${gis_initial_activation_handoff_required}" -eq 1 ]] || return 0
+              [[ "${deployment_phase}" == "committed" ]] || return 1
+              if [[ ! -f .env || -L .env ]] \
+                || [[ "$(stat -c '%u' .env 2>/dev/null)" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' .env 2>/dev/null)" != "600" ]] \
+                || [[ "$(grep -Fxc "GIS_MCP_TOKEN_REGISTRY_FILE=${gis_registry_container_file}" .env || true)" != "1" ]] \
+                || [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=' .env || true)" != "0" ]] \
+                || [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_SHA256[[:space:]]*=' .env || true)" != "0" ]] \
+                || [[ ! -f "${gis_registry_marker}" || -L "${gis_registry_marker}" ]] \
+                || [[ "$(stat -c '%u' "${gis_registry_marker}" 2>/dev/null)" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${gis_registry_marker}" 2>/dev/null)" != "600" ]] \
+                || [[ "$(<"${gis_registry_marker}")" != "version=1" ]]; then
+                return 1
+              fi
+
+              gis_initial_activation_receipt_path="${gis_initial_activation_receipts_dir}/${EXPECTED_GIS_MCP_ACTIVATION_ID}"
+              if [[ -e "${gis_initial_activation_receipts_dir}" \
+                || -L "${gis_initial_activation_receipts_dir}" ]]; then
+                if [[ ! -d "${gis_initial_activation_receipts_dir}" \
+                  || -L "${gis_initial_activation_receipts_dir}" ]] \
+                  || [[ "$(stat -c '%u' "${gis_initial_activation_receipts_dir}" 2>/dev/null)" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' "${gis_initial_activation_receipts_dir}" 2>/dev/null)" != "700" ]]; then
+                  return 1
+                fi
+                if [[ -e "${gis_initial_activation_receipt_path}" \
+                  || -L "${gis_initial_activation_receipt_path}" ]]; then
+                  if [[ -e "${gis_initial_activation_prepared_path}" \
+                    || -L "${gis_initial_activation_prepared_path}" ]] \
+                    || [[ ! -f "${gis_initial_activation_receipt_path}" \
+                      || -L "${gis_initial_activation_receipt_path}" ]] \
+                    || [[ "$(stat -c '%u' "${gis_initial_activation_receipt_path}" 2>/dev/null)" != "$(id -u)" ]] \
+                    || [[ "$(stat -c '%a' "${gis_initial_activation_receipt_path}" 2>/dev/null)" != "600" ]]; then
+                    return 1
+                  fi
+                  mapfile -t prepared_lines < "${gis_initial_activation_receipt_path}"
+                  if [[ "${#prepared_lines[@]}" != "6" ]] \
+                    || [[ "${prepared_lines[0]:-}" != "version=1" ]] \
+                    || [[ "${prepared_lines[1]:-}" != "activationId=${EXPECTED_GIS_MCP_ACTIVATION_ID}" ]] \
+                    || [[ "${prepared_lines[2]:-}" != "clientId=${gis_initial_activation_client_id}" ]] \
+                    || [[ "${prepared_lines[3]:-}" != "gitSha=${gis_initial_activation_prepared_git_sha}" ]] \
+                    || [[ "${prepared_lines[4]:-}" != "runtimeEnvSha256=${gis_initial_activation_prepared_env_sha256}" ]] \
+                    || [[ "${prepared_lines[5]:-}" != "tokenCommitment=${EXPECTED_GIS_MCP_TOKEN_COMMITMENT}" ]]; then
+                    return 1
+                  fi
+                  if ! verify_gis_initial_activation_registry_attestation; then
+                    return 1
+                  fi
+                  sync -f "${gis_initial_activation_receipt_path}" || return 1
+                  sync -f "${gis_initial_activation_receipts_dir}" || return 1
+                  return 0
+                fi
+              fi
+
+              if [[ ! -f "${gis_initial_activation_prepared_path}" \
+                || -L "${gis_initial_activation_prepared_path}" ]] \
+                || [[ "$(stat -c '%u' "${gis_initial_activation_prepared_path}" 2>/dev/null)" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${gis_initial_activation_prepared_path}" 2>/dev/null)" != "600" ]]; then
+                return 1
+              fi
+              mapfile -t prepared_lines < "${gis_initial_activation_prepared_path}"
+              if [[ "${#prepared_lines[@]}" != "6" ]] \
+                || [[ "${prepared_lines[0]:-}" != "version=1" ]] \
+                || [[ "${prepared_lines[1]:-}" != "activationId=${EXPECTED_GIS_MCP_ACTIVATION_ID}" ]] \
+                || [[ "${prepared_lines[2]:-}" != "clientId=${gis_initial_activation_client_id}" ]] \
+                || [[ "${prepared_lines[3]:-}" != "gitSha=${gis_initial_activation_prepared_git_sha}" ]] \
+                || [[ "${prepared_lines[4]:-}" != "runtimeEnvSha256=${gis_initial_activation_prepared_env_sha256}" ]] \
+                || [[ "${prepared_lines[5]:-}" != "tokenCommitment=${EXPECTED_GIS_MCP_TOKEN_COMMITMENT}" ]]; then
+                return 1
+              fi
+
+              if ! verify_gis_initial_activation_registry_attestation; then
+                return 1
+              fi
+
+              if [[ -e "${gis_initial_activation_receipts_dir}" \
+                || -L "${gis_initial_activation_receipts_dir}" ]]; then
+                if [[ ! -d "${gis_initial_activation_receipts_dir}" \
+                  || -L "${gis_initial_activation_receipts_dir}" ]] \
+                  || [[ "$(stat -c '%u' "${gis_initial_activation_receipts_dir}" 2>/dev/null)" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' "${gis_initial_activation_receipts_dir}" 2>/dev/null)" != "700" ]]; then
+                  return 1
+                fi
+              else
+                mkdir -m 700 -- "${gis_initial_activation_receipts_dir}" || return 1
+                sync -f "${HOME}/alimtalk-proxy" || return 1
+              fi
+              if [[ -e "${gis_initial_activation_receipt_path}" \
+                || -L "${gis_initial_activation_receipt_path}" ]]; then
+                return 1
+              fi
+              mv -- "${gis_initial_activation_prepared_path}" \
+                "${gis_initial_activation_receipt_path}" || return 1
+              if [[ -e "${gis_initial_activation_prepared_path}" \
+                || -L "${gis_initial_activation_prepared_path}" ]] \
+                || [[ ! -f "${gis_initial_activation_receipt_path}" \
+                  || -L "${gis_initial_activation_receipt_path}" ]] \
+                || [[ "$(stat -c '%u' "${gis_initial_activation_receipt_path}" 2>/dev/null)" != "$(id -u)" ]] \
+                || [[ "$(stat -c '%a' "${gis_initial_activation_receipt_path}" 2>/dev/null)" != "600" ]]; then
+                return 1
+              fi
+              prepared_lines=()
+              mapfile -t prepared_lines < "${gis_initial_activation_receipt_path}"
+              if [[ "${#prepared_lines[@]}" != "6" ]] \
+                || [[ "${prepared_lines[0]:-}" != "version=1" ]] \
+                || [[ "${prepared_lines[1]:-}" != "activationId=${EXPECTED_GIS_MCP_ACTIVATION_ID}" ]] \
+                || [[ "${prepared_lines[2]:-}" != "clientId=${gis_initial_activation_client_id}" ]] \
+                || [[ "${prepared_lines[3]:-}" != "gitSha=${gis_initial_activation_prepared_git_sha}" ]] \
+                || [[ "${prepared_lines[4]:-}" != "runtimeEnvSha256=${gis_initial_activation_prepared_env_sha256}" ]] \
+                || [[ "${prepared_lines[5]:-}" != "tokenCommitment=${EXPECTED_GIS_MCP_TOKEN_COMMITMENT}" ]]; then
+                return 1
+              fi
+              sync -f "${gis_initial_activation_receipt_path}" || return 1
+              sync -f "${gis_initial_activation_receipts_dir}" || return 1
+            }
+
+            cleanup_gis_initial_activation_registry_residue() {
+              local current_dir_identity=""
+
+              if [[ "${gis_registry_json_source_at_start}" -ne 1 ]] \
+                || [[ "${gis_initial_activation_recovery_required}" -ne 0 ]] \
+                || { [[ "${gis_initial_activation_registry_dir_created}" -ne 1 ]] \
+                  && [[ "${gis_initial_activation_registry_cleanup_armed}" -ne 1 ]]; }; then
+                return 0
+              fi
+              # marker/file-mode가 이미 커밋된 상태에서는 어떤 registry도 지우지 않는다.
+              if [[ "${gis_registry_marker_present}" -ne 0 ]] \
+                || [[ -e "${gis_registry_marker}" || -L "${gis_registry_marker}" ]]; then
+                return 1
+              fi
+              gis_cleanup_dir_uid="$(stat -c '%u' "${gis_registry_host_dir}" 2>/dev/null)"
+              gis_cleanup_dir_gid="$(stat -c '%g' "${gis_registry_host_dir}" 2>/dev/null)"
+              if [[ ! -d "${gis_registry_host_dir}" \
+                || -L "${gis_registry_host_dir}" ]] \
+                || [[ "$(stat -c '%a' "${gis_registry_host_dir}" 2>/dev/null)" != "700" ]] \
+                || { [[ "${gis_cleanup_dir_uid}:${gis_cleanup_dir_gid}" != "1001:1001" ]] \
+                  && { [[ "${gis_initial_activation_registry_dir_created}" -ne 1 ]] \
+                    || [[ "${gis_initial_activation_registry_cleanup_armed}" -ne 0 ]] \
+                    || [[ "${gis_cleanup_dir_uid}:${gis_cleanup_dir_gid}" \
+                      != "$(id -u):$(id -g)" ]]; }; }; then
+                return 1
+              fi
+              if [[ "${gis_initial_activation_registry_dir_created}" -eq 1 \
+                || "${gis_initial_activation_registry_cleanup_armed}" -eq 1 ]]; then
+                current_dir_identity="$(stat -c '%d:%i' "${gis_registry_host_dir}" 2>/dev/null)"
+                if [[ -z "${gis_initial_activation_registry_dir_identity}" ]] \
+                  || [[ "${current_dir_identity}" \
+                    != "${gis_initial_activation_registry_dir_identity}" ]]; then
+                  return 1
+                fi
+              fi
+
+              if [[ "${gis_initial_activation_registry_cleanup_armed}" -eq 1 ]]; then
+                # empty-directory attestation 뒤 이 run이 만든 exact registry artifacts만
+                # 동일 JSON 내용 검증 후 UID 1001 context에서 제거한다.
+                if ! docker run --rm \
+                  --user 1001:1001 \
+                  --network none \
+                  --read-only \
+                  --cap-drop ALL \
+                  --security-opt no-new-privileges \
+                  --env-file .env \
+                  --mount \
+                    "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir}" \
+                  "${IMAGE}" \
+                  node -e '
+                    const assert = require("node:assert/strict");
+                    const fs = require("node:fs");
+                    const dir = "/run/secrets/tonghari-gis-mcp";
+                    const registryName = "clients.json";
+                    const lockName = "clients.json.lock";
+                    const temporaryPattern = /^\.clients\.json\.[1-9][0-9]*\.[0-9a-f]{24}\.tmp$/;
+                    const names = fs.readdirSync(dir);
+                    if (names.some((name) => name !== registryName
+                      && name !== lockName && !temporaryPattern.test(name))) {
+                      process.exit(1);
+                    }
+                    const privateFileStats = new Map();
+                    const validatePrivateFile = (name) => {
+                      const file = fs.lstatSync(`${dir}/${name}`);
+                      if (!file.isFile() || file.isSymbolicLink()
+                        || file.uid !== 1001 || file.gid !== 1001
+                        || (file.mode & 0o7777) !== 0o600) {
+                        process.exit(1);
+                      }
+                      privateFileStats.set(name, file);
+                    };
+                    const privateFileNames = names.filter((name) =>
+                      name === registryName || temporaryPattern.test(name)
+                    );
+                    for (const name of privateFileNames) validatePrivateFile(name);
+                    for (const name of privateFileNames) {
+                      const file = privateFileStats.get(name);
+                      const inDirectoryLinkCount = privateFileNames.filter((otherName) => {
+                        const other = privateFileStats.get(otherName);
+                        return other.dev === file.dev && other.ino === file.ino;
+                      }).length;
+                      if (file.nlink !== inDirectoryLinkCount) process.exit(1);
+                    }
+                    if (names.includes(registryName)) {
+                      try {
+                        const actual = JSON.parse(
+                          fs.readFileSync(`${dir}/${registryName}`, "utf8")
+                        );
+                        const expected = JSON.parse(
+                          process.env.GIS_MCP_TOKEN_REGISTRY_JSON || ""
+                        );
+                        assert.deepStrictEqual(actual, expected);
+                      } catch {
+                        process.exit(1);
+                      }
+                    }
+                    for (const name of names.filter((entry) => temporaryPattern.test(entry))) {
+                      fs.unlinkSync(`${dir}/${name}`);
+                    }
+                    if (names.includes(registryName)) {
+                      const published = fs.lstatSync(`${dir}/${registryName}`);
+                      if (published.nlink !== 1) process.exit(1);
+                      fs.unlinkSync(`${dir}/${registryName}`);
+                    }
+                    if (names.includes(lockName)) {
+                      const lock = fs.lstatSync(`${dir}/${lockName}`);
+                      if (!lock.isDirectory() || lock.isSymbolicLink()
+                        || lock.uid !== 1001 || lock.gid !== 1001
+                        || (lock.mode & 0o7777) !== 0o700
+                        || fs.readdirSync(`${dir}/${lockName}`).length !== 0) {
+                        process.exit(1);
+                      }
+                      fs.rmdirSync(`${dir}/${lockName}`);
+                    }
+                    if (fs.readdirSync(dir).length !== 0) process.exit(1);
+                    const descriptor = fs.openSync(dir, fs.constants.O_RDONLY);
+                    try {
+                      fs.fsyncSync(descriptor);
+                    } finally {
+                      fs.closeSync(descriptor);
+                    }
+                  '; then
+                  return 1
+                fi
+              fi
+
+              if [[ "${gis_initial_activation_registry_dir_created}" -eq 1 ]]; then
+                current_dir_identity="$(stat -c '%d:%i' "${gis_registry_host_dir}" 2>/dev/null)"
+                if [[ "${current_dir_identity}" \
+                  != "${gis_initial_activation_registry_dir_identity}" ]] \
+                  || ! rmdir -- "${gis_registry_host_dir}" \
+                  || [[ -e "${gis_registry_host_dir}" \
+                    || -L "${gis_registry_host_dir}" ]]; then
+                  return 1
+                fi
+                sync -f "${HOME}/alimtalk-proxy" || return 1
+              fi
+              gis_initial_activation_registry_cleanup_armed=0
+              gis_initial_activation_registry_dir_created=0
+              gis_initial_activation_registry_dir_identity=""
+            }
+
             rollback() {
               local exit_code="$1"
               rollback_cleanup_failed=0
@@ -791,6 +1503,23 @@ jobs:
                   echo "ROLLBACK_FAILED: failed candidate could not be removed."
                   service_recovery_failed=1
                 fi
+              fi
+
+              gis_registry_residue_containers_absent=1
+              if docker container inspect "${CANDIDATE_CONTAINER}" >/dev/null 2>&1 \
+                || { [[ "${new_container_attempted}" -eq 1 ]] \
+                  && docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1; }; then
+                # registry를 mount할 수 있는 새 container가 남았으면 unlink하지 않는다.
+                gis_registry_residue_containers_absent=0
+              fi
+              if [[ "${gis_registry_residue_containers_absent}" -eq 1 ]]; then
+                if ! cleanup_gis_initial_activation_registry_residue; then
+                  echo "ROLLBACK_FAILED: initial GIS MCP registry residue was preserved for review."
+                  rollback_cleanup_failed=1
+                fi
+              else
+                echo "ROLLBACK_FAILED: initial GIS MCP registry residue remains mounted and was preserved."
+                rollback_cleanup_failed=1
               fi
 
               if [[ "${had_previous}" -eq 1 ]]; then
@@ -918,6 +1647,11 @@ jobs:
                 gis_registry_env_next=""
               fi
 
+              if [[ "${gis_initial_activation_handoff_required}" -eq 1 ]] \
+                && ! consume_gis_initial_activation_handoff; then
+                cleanup_failed=1
+              fi
+
               if [[ "${cleanup_failed}" -ne 0 ]]; then
                 echo "CLEANUP_FAILED: file-mode current remains active; never start the legacy rollback container."
                 exit 71
@@ -957,6 +1691,68 @@ jobs:
               | grep -Fq "@${EXPECTED_DIGEST}"; then
               echo "Pulled image digest does not match ${EXPECTED_DIGEST}."
               false
+            fi
+
+            if [[ "${gis_initial_activation_handoff_required}" -eq 1 ]] \
+              && [[ "${gis_registry_json_source_at_start}" -eq 1 ]]; then
+              gis_initial_activation_actual_env_sha256="$(sha256sum -- .env | awk '{print $1}')"
+              if [[ "${gis_initial_activation_actual_env_sha256}" \
+                != "${gis_initial_activation_prepared_env_sha256}" ]]; then
+                echo "GIS MCP staged runtime environment changed after handoff validation."
+                false
+              fi
+              gis_initial_activation_actual_env_sha256=""
+              gis_initial_activation_actual_commitment="$(
+                docker run --rm \
+                  --network none \
+                  --read-only \
+                  --cap-drop ALL \
+                  --security-opt no-new-privileges \
+                  --env-file .env \
+                  -e "GIS_MCP_ACTIVATION_ID=${EXPECTED_GIS_MCP_ACTIVATION_ID}" \
+                  -e "GIS_MCP_ACTIVATION_CLIENT_ID=${gis_initial_activation_client_id}" \
+                  "${IMAGE}" \
+                  node -e '
+                    const crypto = require("node:crypto");
+                    let registry;
+                    try {
+                      registry = JSON.parse(process.env.GIS_MCP_TOKEN_REGISTRY_JSON || "");
+                    } catch {
+                      process.exit(1);
+                    }
+                    const activationId = process.env.GIS_MCP_ACTIVATION_ID || "";
+                    const expectedClientId = process.env.GIS_MCP_ACTIVATION_CLIENT_ID || "";
+                    const clients = registry?.version === 1 && Array.isArray(registry.clients)
+                      ? registry.clients
+                      : [];
+                    if (clients.length !== 1) process.exit(1);
+                    const client = clients[0];
+                    if (client?.clientId !== expectedClientId
+                      || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(client.clientId)
+                      || !/^[0-9a-f]{64}$/.test(client.tokenSha256)) {
+                      process.exit(1);
+                    }
+                    const canonical = JSON.stringify({
+                      version: 1,
+                      operationId: activationId,
+                      action: "add",
+                      clientId: client.clientId,
+                      tokenSha256: client.tokenSha256,
+                    });
+                    process.stdout.write(
+                      crypto.createHash("sha256").update(canonical, "utf8").digest("hex")
+                    );
+                  '
+              )" || {
+                echo "GIS MCP staged JSON could not be bound to the prepared activation state."
+                false
+              }
+              if [[ "${gis_initial_activation_actual_commitment}" \
+                != "${EXPECTED_GIS_MCP_TOKEN_COMMITMENT}" ]]; then
+                echo "GIS MCP staged JSON token commitment does not match the approved activation."
+                false
+              fi
+              gis_initial_activation_actual_commitment=""
             fi
 
             if [[ -e "${legal_registry_host_dir}" || -L "${legal_registry_host_dir}" ]]; then
@@ -1121,6 +1917,13 @@ jobs:
               fi
             else
               mkdir -m 700 -- "${gis_registry_host_dir}"
+              if [[ "${gis_registry_json_source_at_start}" -eq 1 ]] \
+                && [[ "${gis_initial_activation_recovery_required}" -eq 0 ]]; then
+                gis_initial_activation_registry_dir_created=1
+                gis_initial_activation_registry_dir_identity="$(
+                  stat -c '%d:%i' "${gis_registry_host_dir}"
+                )"
+              fi
               if [[ ! -d "${gis_registry_host_dir}" || -L "${gis_registry_host_dir}" ]] \
                 || [[ "$(stat -c '%u' "${gis_registry_host_dir}")" != "$(id -u)" ]] \
                 || [[ "$(stat -c '%a' "${gis_registry_host_dir}")" != "700" ]]; then
@@ -1147,6 +1950,39 @@ jobs:
               fi
             fi
 
+            if [[ "${gis_registry_json_source_at_start}" -eq 1 ]] \
+              && [[ "${gis_initial_activation_recovery_required}" -eq 0 ]]; then
+              if docker run --rm \
+                --user 1001:1001 \
+                --network none \
+                --read-only \
+                --cap-drop ALL \
+                --security-opt no-new-privileges \
+                --mount \
+                  "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir},readonly" \
+                "${IMAGE}" \
+                node -e '
+                  const fs = require("node:fs");
+                  const names = fs.readdirSync("/run/secrets/tonghari-gis-mcp");
+                  process.exit(names.length === 0 ? 0 : 1);
+                '; then
+                # production flock 아래에서 empty를 확인한 이 run만 residue를 소유한다.
+                gis_initial_activation_attested_dir_identity="$(
+                  stat -c '%d:%i' "${gis_registry_host_dir}"
+                )"
+                if [[ -z "${gis_initial_activation_attested_dir_identity}" ]] \
+                  || { [[ "${gis_initial_activation_registry_dir_created}" -eq 1 ]] \
+                    && [[ "${gis_initial_activation_attested_dir_identity}" \
+                      != "${gis_initial_activation_registry_dir_identity}" ]]; }; then
+                  echo "GIS MCP registry directory identity changed during bootstrap."
+                  false
+                fi
+                gis_initial_activation_registry_dir_identity="${gis_initial_activation_attested_dir_identity}"
+                gis_initial_activation_attested_dir_identity=""
+                gis_initial_activation_registry_cleanup_armed=1
+              fi
+            fi
+
             gis_registry_validation=""
             if gis_registry_validation="$(
               docker run --rm \
@@ -1165,6 +2001,11 @@ jobs:
               if [[ "${gis_registry_marker_present}" -eq 1 ]] \
                 || [[ "${gis_registry_required_at_start}" -eq 1 ]]; then
                 echo "Configured GIS MCP file registry failed validation."
+                false
+              fi
+              if [[ "${gis_registry_json_source_at_start}" -eq 1 ]] \
+                && [[ "${gis_initial_activation_registry_cleanup_armed}" -ne 1 ]]; then
+                echo "GIS MCP JSON bootstrap refuses to initialize a non-empty registry directory."
                 false
               fi
 
@@ -1209,6 +2050,10 @@ jobs:
               echo "GIS MCP registry client count is outside the supported range."
               false
             fi
+            if ! attest_gis_registry_published_state; then
+              echo "GIS MCP registry directory contains writer residue or an insecure sibling."
+              false
+            fi
 
             if [[ "${gis_registry_json_source_at_start}" -eq 1 ]]; then
               gis_registry_env_match="$(
@@ -1229,6 +2074,12 @@ jobs:
                 echo "GIS MCP file registry does not match the current EC2 JSON registry."
                 false
               fi
+            fi
+
+            if [[ "${gis_initial_activation_handoff_required}" -eq 1 ]] \
+              && ! verify_gis_initial_activation_registry_attestation; then
+              echo "GIS MCP registry does not match the approved initial activation binding."
+              false
             fi
 
             if [[ "${gis_registry_needs_next_env}" -eq 1 ]]; then
@@ -1281,6 +2132,145 @@ jobs:
               && ! verify_gis_file_registry_container_contract "${CONTAINER_NAME}"; then
               echo "Running container does not satisfy the committed GIS MCP file-registry contract."
               false
+            fi
+
+            if [[ "${gis_initial_activation_recovery_required}" -eq 1 ]] \
+              && [[ "${gis_initial_activation_binding_sha_drift}" -eq 1 ]]; then
+              # 최신 main image로 교체하면 durable activation SHA와 live SHA가 갈라진다.
+              # 기존 file-mode container를 재증명한 뒤 disk finalization/receipt만 완결한다.
+              if [[ "${gis_registry_active_for_deployment}" -ne 1 ]] \
+                || [[ "${legal_registry_marker_present}" -ne 1 ]] \
+                || [[ "${legal_registry_required_at_start}" -ne 1 ]] \
+                || [[ "${legal_registry_finalization_required}" -ne 0 ]] \
+                || [[ "${legal_registry_needs_next_env}" -ne 0 ]] \
+                || [[ "${legal_registry_json_source_at_start}" -ne 0 ]] \
+                || [[ -n "${legal_registry_env_next}" ]]; then
+                echo "GIS MCP activation SHA-drift recovery requires committed legal file mode."
+                false
+              fi
+              if [[ "${gis_initial_activation_historical_finalization_required}" -eq 0 ]]; then
+                if [[ "${gis_registry_marker_present}" -ne 1 ]] \
+                  || [[ "${gis_registry_required_at_start}" -ne 1 ]] \
+                  || [[ "${gis_registry_finalization_required}" -ne 0 ]] \
+                  || [[ "${gis_registry_needs_next_env}" -ne 0 ]] \
+                  || [[ "${gis_registry_json_source_at_start}" -ne 0 ]] \
+                  || [[ -n "${gis_registry_env_next}" ]]; then
+                  echo "GIS MCP receipt-only SHA-drift recovery requires committed GIS file mode."
+                  false
+                fi
+              elif [[ "${gis_initial_activation_historical_finalization_required}" -eq 1 ]]; then
+                if [[ "${gis_registry_marker_present}" -ne 0 ]] \
+                  || [[ "${gis_registry_finalization_required}" -ne 1 ]] \
+                  || [[ "${gis_initial_activation_running_file_mode_at_start}" -ne 1 ]] \
+                  || [[ -e "${gis_registry_marker}" || -L "${gis_registry_marker}" ]]; then
+                  echo "GIS MCP historical SHA recovery has an invalid pre-marker state."
+                  false
+                fi
+                if [[ "${gis_registry_json_source_at_start}" -eq 1 ]]; then
+                  if [[ "${gis_registry_required_at_start}" -ne 0 ]] \
+                    || [[ "${gis_registry_needs_next_env}" -ne 1 ]] \
+                    || [[ -z "${gis_registry_env_next}" ]]; then
+                    echo "GIS MCP historical JSON recovery is missing its staged file-only environment."
+                    false
+                  fi
+                elif [[ "${gis_registry_json_source_at_start}" -ne 0 ]] \
+                  || { [[ "${gis_registry_needs_next_env}" -eq 1 ]] \
+                    && [[ -z "${gis_registry_env_next}" ]]; }; then
+                  echo "GIS MCP historical file recovery has an invalid environment state."
+                  false
+                fi
+              else
+                echo "GIS MCP activation historical finalization policy is invalid."
+                false
+              fi
+              if ! docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1 \
+                || [[ "$(docker container inspect --format '{{.State.Running}}' "${CONTAINER_NAME}")" != "true" ]] \
+                || docker container inspect "${CANDIDATE_CONTAINER}" >/dev/null 2>&1; then
+                echo "GIS MCP activation SHA-drift recovery requires one running committed container."
+                false
+              fi
+              if docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                if [[ "${gis_initial_activation_historical_finalization_required}" -ne 1 ]] \
+                  || [[ "$(docker container inspect --format '{{.State.Running}}' "${ROLLBACK_CONTAINER}")" == "true" ]]; then
+                  echo "GIS MCP activation SHA-drift recovery found an unsafe rollback container."
+                  false
+                fi
+              fi
+              if ! verify_file_registry_container_contract "${CONTAINER_NAME}" \
+                || ! verify_gis_file_registry_container_contract "${CONTAINER_NAME}" \
+                || ! verify_status_ok "${CONTAINER_NAME}" 3100 \
+                || ! verify_legal_registry_health "${CONTAINER_NAME}" 3100 \
+                || ! verify_gis_registry_health "${CONTAINER_NAME}" 3100 \
+                || ! verify_gis_initial_activation_running_git_sha \
+                  "${CONTAINER_NAME}" 3100; then
+                echo "Running container does not prove the durable GIS MCP activation state."
+                false
+              fi
+
+              deployment_phase="committed"
+              if [[ "${gis_initial_activation_historical_finalization_required}" -eq 1 ]]; then
+                if docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                  if ! docker rm -f "${ROLLBACK_CONTAINER}" >/dev/null 2>&1 \
+                    || docker container inspect "${ROLLBACK_CONTAINER}" >/dev/null 2>&1; then
+                    echo "CLEANUP_FAILED: historical GIS rollback container could not be removed."
+                    exit 71
+                  fi
+                fi
+
+                if [[ -n "${gis_registry_env_next}" ]]; then
+                  if ! mv -f -- "${gis_registry_env_next}" .env; then
+                    echo "CLEANUP_FAILED: historical GIS file-only environment could not be installed."
+                    exit 71
+                  fi
+                  gis_registry_env_next=""
+                  gis_registry_runtime_env="${HOME}/alimtalk-proxy/.env"
+                  deployment_runtime_env="${HOME}/alimtalk-proxy/.env"
+                fi
+                if [[ ! -f .env || -L .env ]] \
+                  || [[ "$(stat -c '%u' .env)" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' .env)" != "600" ]] \
+                  || [[ "$(grep -Fxc "GIS_MCP_TOKEN_REGISTRY_FILE=${gis_registry_container_file}" .env || true)" != "1" ]] \
+                  || [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=' .env || true)" != "0" ]] \
+                  || [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_SHA256[[:space:]]*=' .env || true)" != "0" ]]; then
+                  echo "CLEANUP_FAILED: historical GIS file-only environment validation failed."
+                  exit 71
+                fi
+
+                gis_registry_marker_next=""
+                if ! gis_registry_marker_next="$(
+                  mktemp "${HOME}/alimtalk-proxy/.gis-mcp-file-registry-v1.next.XXXXXX"
+                )" \
+                  || ! chmod 600 "${gis_registry_marker_next}" \
+                  || ! printf 'version=1\n' > "${gis_registry_marker_next}" \
+                  || ! mv -- "${gis_registry_marker_next}" "${gis_registry_marker}"; then
+                  if [[ -n "${gis_registry_marker_next}" ]]; then
+                    rm -f -- "${gis_registry_marker_next}" >/dev/null 2>&1 || true
+                  fi
+                  echo "CLEANUP_FAILED: historical GIS marker installation failed."
+                  exit 71
+                fi
+                gis_registry_marker_next=""
+                if [[ ! -f "${gis_registry_marker}" || -L "${gis_registry_marker}" ]] \
+                  || [[ "$(stat -c '%u' "${gis_registry_marker}")" != "$(id -u)" ]] \
+                  || [[ "$(stat -c '%a' "${gis_registry_marker}")" != "600" ]] \
+                  || [[ "$(<"${gis_registry_marker}")" != "version=1" ]]; then
+                  echo "CLEANUP_FAILED: historical GIS marker validation failed."
+                  exit 71
+                fi
+                gis_registry_marker_present=1
+                gis_registry_required_at_start=1
+                gis_registry_finalization_required=0
+                gis_registry_needs_next_env=0
+                gis_registry_json_source_at_start=0
+                gis_initial_activation_historical_finalization_required=0
+              fi
+              if ! consume_gis_initial_activation_handoff; then
+                echo "CLEANUP_FAILED: GIS MCP activation SHA-drift receipt could not be committed."
+                exit 71
+              fi
+              deployment_phase="complete"
+              echo "GIS MCP activation receipt recovered without replacing the running image."
+              exit 0
             fi
 
             manifest_attestation="$(
@@ -1611,6 +2601,13 @@ jobs:
                 gis_registry_cleanup_failed=1
               fi
 
+              if [[ "${gis_registry_cleanup_failed}" -eq 0 ]] \
+                && [[ "${gis_initial_activation_handoff_required}" -eq 1 ]] \
+                && ! consume_gis_initial_activation_handoff; then
+                echo "CLEANUP_FAILED: GIS MCP activation handoff receipt could not be committed."
+                gis_registry_cleanup_failed=1
+              fi
+
               if [[ -n "${gis_registry_marker_next}" ]]; then
                 rm -f -- "${gis_registry_marker_next}" >/dev/null 2>&1 || true
               fi
@@ -1627,6 +2624,13 @@ jobs:
                 exit 71
               fi
               echo "GIS MCP file-registry migration committed and legacy rollback removed."
+            fi
+
+            if [[ "${gis_registry_finalization_required}" -ne 1 ]] \
+              && [[ "${gis_initial_activation_handoff_required}" -eq 1 ]] \
+              && ! consume_gis_initial_activation_handoff; then
+              echo "CLEANUP_FAILED: GIS MCP activation recovery receipt could not be committed."
+              exit 71
             fi
 
             if [[ "${legal_registry_finalization_required}" -ne 1 ]] \

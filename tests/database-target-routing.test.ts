@@ -337,7 +337,10 @@ test('배포 workflow는 GHCR digest와 EC2 env 단일 원본으로 안전하게
     assert.match(workflow, /printf '%s' "\$\{GHCR_TOKEN\}"[\s\\]+\| docker login ghcr\.io --username "\$\{GHCR_USERNAME\}" --password-stdin/);
     assert.match(workflow, /docker pull "\$\{IMAGE\}"\s+logout_registry/);
     assert.match(workflow, /needs: quality-gates/);
-    assert.match(workflow, /needs: \[preflight, build-and-push\]/);
+    assert.match(
+        workflow,
+        /needs: \[preflight, build-and-push, gis-mcp-activation-approval\]/
+    );
     for (const name of [
         'DEV_API_JWT_SECRET',
         'DEV_SUPABASE_URL',
@@ -349,7 +352,7 @@ test('배포 workflow는 GHCR digest와 EC2 env 단일 원본으로 안전하게
     }
     assert.match(
         workflow,
-        /envs: GHCR_USERNAME,GHCR_TOKEN,DEPLOY_EVENT_NAME,EXPECTED_ALLOWLIST_DIGEST,EXPECTED_ALLOWLIST_COUNT,DEPLOY_IMAGE_REPOSITORY,DEPLOY_GIT_SHA,DEPLOY_IMAGE_DIGEST,DEPLOY_BUILD_TIME/
+        /envs: GHCR_USERNAME,GHCR_TOKEN,DEPLOY_EVENT_NAME,DEPLOY_RUN_ATTEMPT,EXPECTED_ALLOWLIST_DIGEST,EXPECTED_ALLOWLIST_COUNT,EXPECTED_GIS_MCP_ACTIVATION_ID,EXPECTED_GIS_MCP_TOKEN_COMMITMENT,DEPLOY_IMAGE_REPOSITORY,DEPLOY_GIT_SHA,DEPLOY_IMAGE_DIGEST,DEPLOY_BUILD_TIME/
     );
     const remoteScriptMarker = '          script: |\n';
     const remoteScriptStart = workflow.indexOf(remoteScriptMarker);
