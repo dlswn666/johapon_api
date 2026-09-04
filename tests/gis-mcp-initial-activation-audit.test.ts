@@ -60,6 +60,19 @@ test('원격 감사는 current disabled 상태와 Caddy exact baseline을 검사
     assert.match(remoteScript, /LEGAL_MCP_PROXY_TOKEN_SHA256/);
     assert.match(remoteScript, /candidateConfiguration=%s/);
     assert.match(remoteScript, /getGisMcpConfigurationStateV1/);
+    assert.match(remoteScript, /expected_vworld_domain='www\.tonghari\.kr'/);
+    assert.match(remoteScript, /single_nonempty_state VWORLD_DOMAIN/);
+    assert.match(remoteScript, /vworldLegacyDomain=%s/);
+    assert.match(remoteScript, /vworld_legacy_domain_state\}" == missing/);
+    assert.match(remoteScript, /missing-bootstrapable/);
+    assert.match(remoteScript, /present-matched/);
+    assert.match(remoteScript, /-e VWORLD_API_DOMAIN="\$\{expected_vworld_domain\}"/);
+    assert.match(remoteScript, /--cap-drop ALL --cap-add NET_BIND_SERVICE/);
+    assert.match(remoteScript, /--tmpfs \/config:rw,nosuid,nodev,noexec,size=4194304/);
+    assert.match(remoteScript, /--tmpfs \/data:rw,nosuid,nodev,noexec,size=4194304/);
+    assert.match(remoteScript, /caddyExecutable=%s/);
+    assert.match(remoteScript, /caddy version/);
+    assert.match(remoteScript, /caddy_container_state=not-tested/);
 });
 
 test('감사 cleanup과 production lock은 동일 실행이 만든 정확한 inode만 다룬다', () => {

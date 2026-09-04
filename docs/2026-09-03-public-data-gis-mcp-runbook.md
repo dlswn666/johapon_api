@@ -93,7 +93,13 @@ cleanup 실패는 폐기된 env token을 복원하지 않고 새 file-mode conta
 EC2 fingerprint 고정 SSH 연결을 사용하며, production lock 아래에서 다음 항목의
 상태만 출력한다.
 
-- VWorld·건축HUB key 및 VWorld domain의 존재·형식
+- VWorld·건축HUB key 및 VWorld domain의 존재·형식. 최초 활성화
+  직전에 `VWORLD_API_DOMAIN`과 legacy `VWORLD_DOMAIN`이 모두 없으면
+  저장소 canonical 기본값 `www.tonghari.kr`을 prepare 단계에서
+  명시적으로 추가할 수 있는 `missing-bootstrapable`로 판정한다.
+  이 호스트는 prepare 전 VWorld 인증키 관리의 서비스 URL과 다시
+  일치하는지 확인한다. 두 변수 중 다른 값이 이미 있거나 legacy
+  변수가 남아 있으면 덮어쓰지 않고 감사를 중단한다.
 - GIS 인증 source, proxy digest, Host allowlist, file marker·registry의 미설정 여부
 - 현재 container가 `disabled`와 client/token `0/0`인지 여부
 - `/opt/caddy/Caddyfile`, root-only proxy env, Caddy container가 문서화한 baseline인지 여부

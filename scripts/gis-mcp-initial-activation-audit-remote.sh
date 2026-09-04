@@ -71,7 +71,9 @@ single_nonempty_state() {
 
 vworld_key_state="$(single_nonempty_state VWORLD_API_KEY)"
 vworld_domain_state="$(single_nonempty_state VWORLD_API_DOMAIN)"
+vworld_legacy_domain_state="$(single_nonempty_state VWORLD_DOMAIN)"
 data_portal_key_state="$(single_nonempty_state DATA_PORTAL_API_KEY)"
+expected_vworld_domain='www.tonghari.kr'
 
 if [[ "${vworld_domain_state}" == "present" ]]; then
   vworld_domain="$(
@@ -79,10 +81,23 @@ if [[ "${vworld_domain_state}" == "present" ]]; then
   )"
   if [[ "${vworld_domain}" == '*' || "${vworld_domain}" =~ [[:space:]/?#@] \
     || "${vworld_domain}" == *://* || "${vworld_domain}" == *:* \
-    || ! "${vworld_domain}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+    || ! "${vworld_domain}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ \
+    || "${vworld_domain}" != "${expected_vworld_domain}" ]]; then
+    vworld_domain_state=invalid
+  elif [[ "${vworld_legacy_domain_state}" == "missing" ]]; then
+    vworld_domain_state=present-matched
+  else
     vworld_domain_state=invalid
   fi
   unset vworld_domain
+elif [[ "${vworld_domain_state}" == "missing" \
+  && "${vworld_legacy_domain_state}" == "missing" ]]; then
+  vworld_domain_state=missing-bootstrapable
+else
+  vworld_domain_state=invalid
+fi
+if [[ "${vworld_legacy_domain_state}" != "missing" ]]; then
+  vworld_legacy_domain_state=present-or-invalid
 fi
 
 candidate_configuration_state=invalid
@@ -96,6 +111,7 @@ if docker container inspect alimtalk-proxy >/dev/null 2>&1 \
         --network none --read-only --cap-drop ALL \
         --security-opt no-new-privileges \
         --env-file "${runtime_env}" \
+        -e VWORLD_API_DOMAIN="${expected_vworld_domain}" \
         -e GIS_MCP_TOKEN_REGISTRY_FILE= \
         -e GIS_MCP_TOKEN_SHA256= \
         -e 'GIS_MCP_TOKEN_REGISTRY_JSON={"version":1,"clients":[{"clientId":"activation-audit","tokenSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}' \
@@ -115,7 +131,7 @@ if docker container inspect alimtalk-proxy >/dev/null 2>&1 \
           };
           const state = getGisMcpConfigurationStateV1({
             vworldApiKey: process.env.VWORLD_API_KEY || "",
-            vworldApiDomain: process.env.VWORLD_API_DOMAIN || process.env.VWORLD_DOMAIN || "www.tonghari.kr",
+            vworldApiDomain: process.env.VWORLD_API_DOMAIN || "",
             dataPortalApiKey: normalizeDataPortalApiKey(process.env.DATA_PORTAL_API_KEY),
             tokenSha256: process.env.GIS_MCP_TOKEN_SHA256 || "",
             tokenRegistryJson: process.env.GIS_MCP_TOKEN_REGISTRY_JSON || "",
@@ -212,6 +228,7 @@ sudo_state=unavailable
 caddyfile_state=unavailable
 caddyfile_sha256=unavailable
 caddy_env_state=unavailable
+caddy_executable_state=unavailable
 caddy_container_state=unavailable
 legal_proxy_pair_state=unavailable
 legal_proxy_route_state=unavailable
@@ -339,17 +356,35 @@ if sudo -n true >/dev/null 2>&1; then
       && "${caddy_data_mount}" == 'volume|true|caddy_data' \
       && "${caddy_config_volume}" == 'volume|true|caddy_config' ]]; then
       if sudo -n docker run --rm \
-        --network none --read-only --cap-drop ALL \
+        --network none --read-only --cap-drop ALL --cap-add NET_BIND_SERVICE \
         --security-opt no-new-privileges \
-        -e LEGAL_MCP_PROXY_TOKEN=activation-audit-placeholder-legal \
-        -e GIS_MCP_PROXY_TOKEN=activation-audit-placeholder-gis \
-        -v "${caddyfile}:/etc/caddy/Caddyfile:ro" \
-        "${caddy_image_id}" caddy validate \
-          --config /etc/caddy/Caddyfile --adapter caddyfile \
-          >/dev/null 2>&1; then
-        caddy_container_state=supported
+        --tmpfs /config:rw,nosuid,nodev,noexec,size=4194304 \
+        --tmpfs /data:rw,nosuid,nodev,noexec,size=4194304 \
+        --tmpfs /tmp:rw,nosuid,nodev,noexec,size=1048576 \
+        "${caddy_image_id}" caddy version >/dev/null 2>&1; then
+        caddy_executable_state=supported
       else
-        caddy_container_state=invalid-config
+        caddy_executable_state=incompatible
+      fi
+      if [[ "${caddy_executable_state}" == supported ]]; then
+        if sudo -n docker run --rm \
+          --network none --read-only --cap-drop ALL --cap-add NET_BIND_SERVICE \
+          --security-opt no-new-privileges \
+          --tmpfs /config:rw,nosuid,nodev,noexec,size=4194304 \
+          --tmpfs /data:rw,nosuid,nodev,noexec,size=4194304 \
+          --tmpfs /tmp:rw,nosuid,nodev,noexec,size=1048576 \
+          -e LEGAL_MCP_PROXY_TOKEN=activation-audit-placeholder-legal \
+          -e GIS_MCP_PROXY_TOKEN=activation-audit-placeholder-gis \
+          -v "${caddyfile}:/etc/caddy/Caddyfile:ro" \
+          "${caddy_image_id}" caddy validate \
+            --config /etc/caddy/Caddyfile --adapter caddyfile \
+            >/dev/null 2>&1; then
+          caddy_container_state=supported
+        else
+          caddy_container_state=invalid-config
+        fi
+      else
+        caddy_container_state=not-tested
       fi
     else
       caddy_container_state=unsupported
@@ -373,7 +408,10 @@ else
 fi
 
 stage_ready=false
-if [[ "${vworld_key_state}" == present && "${vworld_domain_state}" == present \
+if [[ "${vworld_key_state}" == present \
+  && ( "${vworld_domain_state}" == present-matched \
+    || "${vworld_domain_state}" == missing-bootstrapable ) \
+  && "${vworld_legacy_domain_state}" == missing \
   && "${data_portal_key_state}" == present && "${candidate_configuration_state}" == valid \
   && "${gis_auth_state}" == disabled \
   && "${gis_proxy_state}" == missing && "${gis_hosts_state}" == missing \
@@ -382,6 +420,7 @@ if [[ "${vworld_key_state}" == present && "${vworld_domain_state}" == present \
   && "${sudo_state}" == available \
   && "${caddyfile_state}" == supported-legal-only \
   && "${caddy_env_state}" == supported-legal-only \
+  && "${caddy_executable_state}" == supported \
   && "${caddy_container_state}" == supported \
   && "${legal_proxy_pair_state}" == matched \
   && "${legal_proxy_route_state}" == verified ]]; then
@@ -392,6 +431,7 @@ printf 'auditVersion=1\n'
 printf 'operationId=%s\n' "${AUDIT_OPERATION_ID}"
 printf 'vworldApiKey=%s\n' "${vworld_key_state}"
 printf 'vworldApiDomain=%s\n' "${vworld_domain_state}"
+printf 'vworldLegacyDomain=%s\n' "${vworld_legacy_domain_state}"
 printf 'dataPortalApiKey=%s\n' "${data_portal_key_state}"
 printf 'candidateConfiguration=%s\n' "${candidate_configuration_state}"
 printf 'gisAuth=%s\n' "${gis_auth_state}"
@@ -405,6 +445,7 @@ printf 'sudo=%s\n' "${sudo_state}"
 printf 'caddyfile=%s\n' "${caddyfile_state}"
 printf 'caddyfileSha256=%s\n' "${caddyfile_sha256}"
 printf 'caddyEnv=%s\n' "${caddy_env_state}"
+printf 'caddyExecutable=%s\n' "${caddy_executable_state}"
 printf 'caddyContainer=%s\n' "${caddy_container_state}"
 printf 'legalProxyPair=%s\n' "${legal_proxy_pair_state}"
 printf 'legalProxyRoute=%s\n' "${legal_proxy_route_state}"
