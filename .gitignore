@@ -35,3 +35,6 @@ Thumbs.db
 
 # PM2
 .pm2/
+
+# 캡처 CLI(development-land-area-evidence-capture) 로컬 실행 시 사설 출력(0600)
+.development-land-area-evidence-capture/

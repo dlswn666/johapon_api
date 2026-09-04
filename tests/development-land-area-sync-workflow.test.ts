@@ -26,6 +26,10 @@ const cli = fs.readFileSync(
     path.join(root, 'src/cli/development-land-area-sync-runner.ts'),
     'utf8'
 );
+const pagedRead = fs.readFileSync(
+    path.join(root, 'src/cli/development-land-area-paged-read.ts'),
+    'utf8'
+);
 const validatorCli = fs.readFileSync(
     path.join(root, 'src/cli/development-land-area-sync-validate.ts'),
     'utf8'
@@ -44,22 +48,32 @@ test('workflow는 protected environment secret의 actor UUID만 내부 사용하
         workflow.indexOf('workflow_dispatch:'),
         workflow.indexOf('permissions:')
     );
-    // 환경은 manifest 라벨 하나로만 결정된다 — production 라벨이면 별도 보호
-    // 환경(land-area-sync-production-write), 그 외 전부 dev 환경이다.
+    // 환경은 manifest 라벨 하나로만 결정된다 — 라벨에 '-production-' 이 있으면
+    // 별도 보호 환경(land-area-sync-production-write), 그 외 전부 dev 환경이다.
+    // (선례: development-building-registry-relation-adoption.yml)
     assert.match(
         workflow,
-        /environment: \$\{\{ inputs\.manifest == 'mia-seven-standard-267-api-readonly-production-20260812' && 'land-area-sync-production-write' \|\| 'land-area-sync-development-write' \}\}/
+        /environment: >-\n\s+\$\{\{ contains\(inputs\.manifest, '-production-'\)\n\s+&& 'land-area-sync-production-write'\n\s+\|\| 'land-area-sync-development-write' \}\}/
     );
+    // 환경 선언은 이 식 하나뿐이다 — 리터럴 라벨 비교가 남아 있으면 안 된다.
+    assert.equal((workflow.match(/^\s+environment:/gm) ?? []).length, 1);
+    assert.doesNotMatch(workflow, /inputs\.manifest ==/);
     assert.match(workflow, /GITHUB_REF.*refs\/heads\/main/);
     assert.match(workflow, /type: choice/);
     assert.match(workflow, /mia-seven-representative-20260725/);
     // actor 도 같은 라벨 식으로만 분기한다 — production 은 환경 스코프 시크릿.
     const actorExpression =
-        /ACTOR_AUTH_USER_ID: \$\{\{ inputs\.manifest == 'mia-seven-standard-267-api-readonly-production-20260812' && secrets\.PROD_GIS_SYSTEM_ADMIN_AUTH_UUID \|\| secrets\.DEV_GIS_SYSTEM_ADMIN_AUTH_UUID \}\}/g;
+        /ACTOR_AUTH_USER_ID: \$\{\{ contains\(inputs\.manifest, '-production-'\) && secrets\.PROD_GIS_SYSTEM_ADMIN_AUTH_UUID \|\| secrets\.DEV_GIS_SYSTEM_ADMIN_AUTH_UUID \}\}/g;
     assert.equal(
         (workflow.match(actorExpression) ?? []).length,
         2,
         'actor 시크릿 분기는 검증 스텝과 원격 스텝 두 곳 모두에 있어야 한다'
+    );
+    // 라벨 부분문자열이 환경을 정하므로, 라벨과 target 문서의 databaseTarget 이
+    // 어긋나면 EC2 로 가기 전에 manifest 해석 단계에서 멈춰야 한다.
+    assert.match(
+        workflow,
+        /const productionLabel =\n\s+String\(process\.env\.MANIFEST_NAME \?\? ""\)\.includes\("-production-"\);\n\s+if \(\(target\.databaseTarget === "production"\) !== productionLabel\) \{\n\s+process\.exit\(1\);/
     );
     assert.doesNotMatch(dispatchBlock, /actor_auth_user_id|auth UUID/i);
     assert.doesNotMatch(
@@ -218,8 +232,16 @@ test('미아7 278 official component·422 물건지(도로지분 7건 제외) �
         assert.match(cli, new RegExp(`['"]${table}['"]`));
     }
     assert.match(cli, /select\('\*', \{ count: 'exact' \}\)/);
-    assert.match(cli, /pageSize = 500/);
-    assert.match(cli, /\$\{code\}_TRUNCATED/);
+    // 페이징 helper 는 공용 모듈로 분리됐다 — CLI 는 그 모듈로만 읽고, 모듈은
+    // 500행 exact 페이지와 절단 시 fail-closed(_TRUNCATED)를 유지한다.
+    assert.match(
+        cli,
+        /\} from '\.\/development-land-area-paged-read';/
+    );
+    assert.doesNotMatch(cli, /const readExactPaged = |const readChunked = /);
+    assert.match(pagedRead, /DEVELOPMENT_PAGED_READ_PAGE_SIZE = 500/);
+    assert.match(pagedRead, /\$\{code\}_TRUNCATED/);
+    assert.match(pagedRead, /\$\{code\}_COUNT_INVALID/);
     assert.match(cli, /readPropertyUnitLandRights/);
 });
 
@@ -469,7 +491,15 @@ test('DB 직접 접근은 target 축 service-role read-only select이며 write�
         cli,
         /land_area_synced_at, land_area_sync_job_id/
     );
-    assert.match(cli, /\.in\('land_area_sync_job_id', syncJobIds\)/);
+    // attribution 읽기는 writer job id 를 100건 chunk 로 나눠 `.in()` 한다.
+    assert.match(
+        cli,
+        /\.in\('land_area_sync_job_id', syncJobIdChunk\)/
+    );
+    assert.match(
+        cli,
+        /readChunked\(\s*'DEVELOPMENT_WRITE_ATTRIBUTION',\s*\[\.\.\.new Set\(syncJobIds\)\]/
+    );
     assert.doesNotMatch(
         cli,
         /\.(?:insert|update|upsert|delete|rpc)\s*\(/
@@ -637,6 +667,9 @@ test('미아7 standard-267 production write 경로는 in-run 캡처 모드로만
         workflow.indexOf('*)', workflow.indexOf(`${label})`))
     );
     assert.match(workflow, new RegExp(`- ${label}`));
+    // 환경식이 라벨 부분문자열로 갈리므로 production 라벨은 반드시 '-production-'
+    // 을 포함해야 production 환경(리뷰어 승인)으로 간다.
+    assert.ok(label.includes('-production-'));
     assert.match(
         selection,
         /mia-seven-standard-267-api-readonly-production-target-20260812\.json/
@@ -675,4 +708,120 @@ test('미아7 standard-267 production write 경로는 in-run 캡처 모드로만
     );
     // dev 기본값·기존 dev 경로는 그대로다.
     assert.match(workflow, /default: mia-seven-representative-20260725/);
+});
+
+
+test('삼양동(solsam) full-1086 production read-only 캡처 라벨은 캡처 워크플로에만 있고 라벨·아티팩트 규칙을 만족한다', () => {
+    const label = 'solsam-full-1086-api-readonly-production-20260904';
+    const selection = captureWorkflow.slice(
+        captureWorkflow.indexOf(`${label})`),
+        captureWorkflow.indexOf('*)', captureWorkflow.indexOf(`${label})`))
+    );
+    assert.match(captureWorkflow, new RegExp(`- ${label}`));
+    assert.match(
+        selection,
+        /solsam-full-1086-api-readonly-production-target-20260904\.json/
+    );
+    // 활성 필지 1,086 anchor 전수 · 활성 물건지 1,607 — 캡처 카운트 검사(:135-152)
+    // 는 이 값을 target 문서의 targetCount/expectedPropertyUnitCount 와 대조한다.
+    assert.match(selection, /target_count="1086"/);
+    assert.match(selection, /property_unit_count="1607"/);
+    // 공개 아티팩트 빌드 단계의 라벨 규칙: ^[a-z0-9-]{1,100}$ 이고 19자리 숫자
+    // (PNU 형상)를 포함하면 안 된다. 아티팩트 이름은 라벨을 그대로 쓴다.
+    assert.match(label, /^[a-z0-9-]{1,100}$/);
+    assert.doesNotMatch(label, /[0-9]{19}/);
+    assert.match(
+        captureWorkflow,
+        /name: development-land-area-evidence-summary-\$\{\{ inputs\.manifest \}\}-\$\{\{ github\.run_id \}\}/
+    );
+    // 캡처 워크플로는 환경이 단일(dev backfill)이고 접속 DB 는 CLI 가 target 문서의
+    // databaseTarget 으로 고른다 — 라벨은 '-production-' 관례를 따라야 한다.
+    assert.ok(label.includes('-production-'));
+    assert.match(captureWorkflow, /environment: land-area-sync-development-backfill/);
+    // full 전수(REVIEW 집합 미확정)는 write run 워크플로에 있어서는 안 된다 —
+    // write 는 캡처로 실증된 standard 부분집합 라벨을 별도로 추가할 때만 허용한다.
+    assert.doesNotMatch(workflow, new RegExp(label));
+    assert.doesNotMatch(
+        workflow,
+        /solsam-full-1086-api-readonly-production-target-20260904\.json/
+    );
+    // 기본값(dev)은 그대로다.
+    assert.match(
+        captureWorkflow,
+        /default: mia-seven-full-278-official-components-api-readonly-20260729/
+    );
+});
+
+test('두 워크플로의 라벨·case·target 파일명은 서로 정합하고 production 여부는 라벨 부분문자열과 파일명이 일치한다', () => {
+    const dispatchOptions = (source: string): string[] => {
+        const block = source.slice(
+            source.indexOf('options:'),
+            source.indexOf('permissions:')
+        );
+        return [...block.matchAll(/^\s+- ([a-z0-9-]+)$/gm)].map(
+            (match) => match[1]
+        );
+    };
+    const caseEntries = (
+        source: string
+    ): Array<{ label: string; targetPath: string }> =>
+        [
+            ...source.matchAll(
+                /^ {12}([a-z0-9-]+)\)\n(?: {14}#[^\n]*\n)* {14}target_path="([^"]+)"/gm
+            ),
+        ].map((match) => ({ label: match[1], targetPath: match[2] }));
+
+    const captureEntries = caseEntries(captureWorkflow);
+    const runEntries = caseEntries(workflow);
+    // 파서가 아무것도 못 잡고 통과하는 일이 없도록 건수를 고정한다.
+    assert.equal(captureEntries.length, 10);
+    assert.equal(runEntries.length, 5);
+    // options ↔ case 라벨 집합이 같아야 한다(도달 불가 case·해석 불가 option 금지).
+    assert.deepEqual(
+        [...dispatchOptions(captureWorkflow)].sort(),
+        captureEntries.map((entry) => entry.label).sort()
+    );
+    assert.deepEqual(
+        [...dispatchOptions(workflow)].sort(),
+        runEntries.map((entry) => entry.label).sort()
+    );
+    for (const entry of [...captureEntries, ...runEntries]) {
+        // 라벨 규칙(공개 아티팩트 빌드 단계와 동일).
+        assert.match(entry.label, /^[a-z0-9-]{1,100}$/);
+        assert.doesNotMatch(entry.label, /[0-9]{19}/);
+        assert.match(
+            entry.targetPath,
+            /^development-land-area-sync-manifests\/[a-z0-9-]+\.json$/
+        );
+        // '-production-' 라벨 ⇔ '-production-target-' 파일 — run 워크플로의
+        // 환경식·actor 식이 이 부분문자열로 갈리므로 어긋나면 안 된다.
+        assert.equal(
+            entry.label.includes('-production-'),
+            entry.targetPath.includes('-production-target-'),
+            `${entry.label} 의 production 여부가 target 파일명과 어긋난다`
+        );
+        // case 가 가리키는 target 파일은 저장소에 실재하는 일반 파일이어야 한다 —
+        // 누락이면 dispatch 뒤(환경 승인 소모 후) Resolve 스텝에서야 죽는다.
+        const targetFile = path.join(root, entry.targetPath);
+        assert.ok(
+            fs.existsSync(targetFile) &&
+                !fs.lstatSync(targetFile).isSymbolicLink(),
+            `${entry.label} 의 target 파일이 없다: ${entry.targetPath}`
+        );
+        const size = fs.statSync(targetFile).size;
+        assert.ok(size >= 2 && size <= 1_048_576);
+    }
+    // production 라벨은 두 워크플로 합쳐 정확히 이 셋뿐이다.
+    assert.deepEqual(
+        [...new Set(
+            [...captureEntries, ...runEntries]
+                .filter((entry) => entry.label.includes('-production-'))
+                .map((entry) => entry.label)
+        )].sort(),
+        [
+            'mia-seven-full-278-official-components-api-readonly-production-20260812',
+            'mia-seven-standard-267-api-readonly-production-20260812',
+            'solsam-full-1086-api-readonly-production-20260904',
+        ]
+    );
 });

@@ -4633,7 +4633,11 @@ export function createDevelopmentPublicRunArtifact(
                 failureCode: artifact.gate.failureCode,
             },
         },
-        manifestLabel
+        manifestLabel,
+        // 공개본은 run artifact 가 선언한 target 축으로 검증한다. 기본값
+        // 'development' 에 맡기면 production run 은 항상 거부된다(미아7
+        // run 31573519967 실패 원인).
+        artifact.databaseTarget
     );
 }
 

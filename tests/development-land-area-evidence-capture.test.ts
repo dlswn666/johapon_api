@@ -1989,3 +1989,45 @@ test('미아7 standard-267 production target은 REVIEW 11 anchor를 제외한 �
         '126f2e167769b0b4aa361c7a648ec1025bd28cbf4247c48a84366213ce2b2ef1'
     );
 });
+
+const SOLSAM_FULL_1086_PRODUCTION_TARGET_URL = new URL(
+    '../development-land-area-sync-manifests/solsam-full-1086-api-readonly-production-target-20260904.json',
+    import.meta.url
+);
+
+test('삼양동 full-1086 production target은 활성 필지 전체를 anchor 로 고정한다(전수 캡처용)', () => {
+    const target = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(SOLSAM_FULL_1086_PRODUCTION_TARGET_URL, 'utf8')
+        )
+    );
+    if (target.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V3) {
+        throw new Error('v3 target expected');
+    }
+    assert.equal(target.databaseTarget, 'production');
+    assert.equal(target.unionId, '7c35ee21-34fc-4597-84db-ee63e5b0d351');
+    // 운영 SQL 실측(2026-09-04): 활성 물건지 1,607 / 활성 PNU 1,086.
+    assert.equal(target.targetCount, 1086);
+    assert.equal(target.anchors.length, 1086);
+    assert.deepEqual(target.allowedScopePnus, target.anchors);
+    assert.deepEqual(target.expectedUnionActivePnus, target.anchors);
+    assert.equal(target.expectedPropertyUnitCount, 1607);
+    assert.equal(target.expectedUnionActivePropertyUnitCount, 1607);
+    assert.equal(target.expectedUnionActivePnuCount, 1086);
+    // 미아동(1130510100) 필지만 — 다른 법정동이 섞이면 조합 identity 가 틀린 것이다.
+    assert.ok(target.anchors.every((pnu) => pnu.startsWith('11305101001')));
+    assert.ok(target.anchors.includes('1130510100107912080'));
+    // digest 핀 — 저장소 함수 재계산 값(생성기 scripts/solsam-land-area-target.ts).
+    assert.equal(
+        target.expectedUnionActivePnuDigest,
+        '0dd0fa7f02372e6fa261d1fea69197bdd91982381c13681cd591f02aa47e9b39'
+    );
+    assert.equal(
+        target.scopeDigest,
+        '63b14927a98add032fd4a8cc3efd8bd388ebda56f86829bb10d702e10b54ed05'
+    );
+    assert.equal(
+        target.manifestDigest,
+        'e00a3afba002cb3b868c8fc44c2204b4a5896ab3cad75222e6282c74f56fa5e7'
+    );
+});

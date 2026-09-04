@@ -1311,6 +1311,80 @@ test('공개 artifact는 집계와 digest allowlist만 남기고 raw 식별자·
     );
 });
 
+test('production run artifact 의 공개본은 target 축 production 으로 생성·검증되고 target 불일치는 여전히 거부한다', () => {
+    // 미아7 run 31573519967 재현: createDevelopmentPublicRunArtifact 가 기본
+    // expectedDatabaseTarget('development') 으로 검증해 production 공개본을
+    // 항상 거부하던 결함. 공개본은 run artifact 가 선언한 target 을 따라야 한다.
+    const label =
+        'solsam-standard-1-api-readonly-production-20260904';
+    const productionTarget = target([PNU], 1, 'production');
+    const productionArtifact: DevelopmentRunArtifact = {
+        ...validRunArtifact(),
+        databaseTarget: 'production',
+        manifestDigest: computeDevelopmentTargetDigest(
+            'production',
+            UNION_ID,
+            [PNU]
+        ),
+    };
+    validateDevelopmentRunArtifact(productionArtifact, productionTarget);
+
+    const publicArtifact = createDevelopmentPublicRunArtifact(
+        productionArtifact,
+        label
+    );
+    assert.equal(publicArtifact.databaseTarget, 'production');
+    assert.equal(publicArtifact.manifestLabel, label);
+    assert.doesNotThrow(() =>
+        validateDevelopmentPublicRunArtifact(
+            publicArtifact,
+            label,
+            'production'
+        )
+    );
+    // 기본값(development) 검증은 production 공개본을 계속 거부한다 — 호출자가
+    // target 을 명시하지 않은 경로는 fail-closed 그대로.
+    assert.throws(
+        () => validateDevelopmentPublicRunArtifact(publicArtifact, label),
+        /PUBLIC_RUN_ARTIFACT_INVALID/
+    );
+    // 선언 target 과 검증 target 이 어긋나면 양방향 모두 거부한다.
+    assert.throws(
+        () =>
+            validateDevelopmentPublicRunArtifact(
+                { ...publicArtifact, databaseTarget: 'development' },
+                label,
+                'production'
+            ),
+        /PUBLIC_RUN_ARTIFACT_INVALID/
+    );
+    const developmentPublicArtifact = createDevelopmentPublicRunArtifact(
+        validRunArtifact(),
+        label
+    );
+    assert.equal(developmentPublicArtifact.databaseTarget, 'development');
+    assert.throws(
+        () =>
+            validateDevelopmentPublicRunArtifact(
+                developmentPublicArtifact,
+                label,
+                'production'
+            ),
+        /PUBLIC_RUN_ARTIFACT_INVALID/
+    );
+    // 공개본에 production 식별자·secret 이 새지 않는 규칙도 target 과 무관하다.
+    const serialized = JSON.stringify(publicArtifact);
+    for (const forbiddenValue of [
+        UNION_ID,
+        PNU,
+        PROPERTY_UNIT_ID,
+        DISCOVERY_JOB_ID,
+        APPLY_JOB_ID,
+    ]) {
+        assert.doesNotMatch(serialized, new RegExp(forbiddenValue));
+    }
+});
+
 test('미아7 전체 재조회 private/public artifact는 공식 278 구성요소·300 조회 PNU·422 물건(도로지분 7건 제외)과 relation/rights 게이트를 고정한다', () => {
     const { artifact, targetManifest } =
         validFullRefreshRunArtifact();

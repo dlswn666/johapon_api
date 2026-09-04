@@ -18,6 +18,7 @@ on:
           - mia-seven-791-2280-ldareg-api-readonly-20260725
           - mia-seven-full-278-official-components-api-readonly-production-20260812
           - mia-seven-standard-267-api-readonly-production-20260812
+          - solsam-full-1086-api-readonly-production-20260904
 
 permissions:
   contents: read
@@ -117,6 +118,14 @@ jobs:
               target_path="development-land-area-sync-manifests/mia-seven-standard-267-api-readonly-production-target-20260812.json"
               target_count="267"
               property_unit_count="306"
+              ;;
+            solsam-full-1086-api-readonly-production-20260904)
+              # 삼양동(solsam) 운영 target 전수 읽기 전용 캡처 — REVIEW 집합 발견용.
+              # 활성 필지 1,086 anchor 전수·활성 물건지 1,607. 쓰기 run 라벨(standard)
+              # 은 이 캡처의 write-eligible 부분집합이 실증된 뒤에만 별도로 추가한다.
+              target_path="development-land-area-sync-manifests/solsam-full-1086-api-readonly-production-target-20260904.json"
+              target_count="1086"
+              property_unit_count="1607"
               ;;
             *)
               echo "::error::Target manifest is not repository-approved."

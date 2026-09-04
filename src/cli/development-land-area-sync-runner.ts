@@ -18,6 +18,11 @@ import {
     formatLocalhostProbeSummary,
     probeLocalhostLandAreaSyncApi,
 } from '../operations/land-area-sync-localhost-probe';
+import {
+    readChunked,
+    readExactPaged,
+    type PagedReadRow,
+} from './development-land-area-paged-read';
 
 const PRIVATE_DIRECTORY = '.development-land-area-sync';
 const INPUT_SIZE_LIMIT = 1024 * 1024;
@@ -226,107 +231,8 @@ async function main(): Promise<void> {
             },
         }
     );
-    type JsonRow = Record<string, unknown>;
-    const pageSize = 500;
-    const maxInvariantRows = 10_000;
-    const readExactPaged = async (
-        code: string,
-        fetchPage: (
-            from: number,
-            to: number
-        ) => PromiseLike<{
-            data: unknown;
-            error: unknown;
-            count: number | null;
-        }>
-    ): Promise<JsonRow[]> => {
-        const rows: JsonRow[] = [];
-        let expectedCount: number | null = null;
-        while (true) {
-            const result = await fetchPage(
-                rows.length,
-                rows.length + pageSize - 1
-            );
-            if (
-                result.error ||
-                !Array.isArray(result.data) ||
-                !Number.isSafeInteger(result.count) ||
-                (result.count as number) < 0 ||
-                (expectedCount !== null &&
-                    result.count !== expectedCount)
-            ) {
-                // PostgREST 오류 코드를 artifact에서 판독 가능한 접미로 보존한다.
-                const causeRaw = (
-                    result.error as { code?: unknown } | null
-                )?.code;
-                const cause =
-                    typeof causeRaw === 'string' &&
-                    /^[A-Za-z0-9]{1,16}$/.test(causeRaw)
-                        ? `_${causeRaw.toUpperCase()}`
-                        : result.error
-                          ? '_ERR'
-                          : '_SHAPE';
-                throw new Error(`${code}_READ_FAILED${cause}`);
-            }
-            const pageCount = result.count as number;
-            expectedCount = pageCount;
-            for (const row of result.data) {
-                if (
-                    row === null ||
-                    typeof row !== 'object' ||
-                    Array.isArray(row)
-                ) {
-                    throw new Error(`${code}_ROW_INVALID`);
-                }
-                rows.push(row as JsonRow);
-            }
-            if (
-                rows.length > maxInvariantRows ||
-                rows.length > pageCount
-            ) {
-                throw new Error(`${code}_COUNT_INVALID`);
-            }
-            if (rows.length === pageCount) return rows;
-            if (result.data.length === 0) {
-                throw new Error(`${code}_TRUNCATED`);
-            }
-        }
-    };
-    const chunks = <T>(values: T[], size = 100): T[][] => {
-        const result: T[][] = [];
-        for (let offset = 0; offset < values.length; offset += size) {
-            result.push(values.slice(offset, offset + size));
-        }
-        return result;
-    };
-    const readChunked = async (
-        code: string,
-        values: string[],
-        fetchChunk: (
-            chunk: string[],
-            from: number,
-            to: number
-        ) => PromiseLike<{
-            data: unknown;
-            error: unknown;
-            count: number | null;
-        }>
-    ): Promise<JsonRow[]> => {
-        const rows: JsonRow[] = [];
-        for (const chunk of chunks(values)) {
-            rows.push(
-                ...(await readExactPaged(
-                    code,
-                    (from, to) =>
-                        fetchChunk(chunk, from, to)
-                ))
-            );
-        }
-        if (rows.length > maxInvariantRows) {
-            throw new Error(`${code}_COUNT_INVALID`);
-        }
-        return rows;
-    };
+    // 페이징·chunk 읽기는 공용 모듈(development-land-area-paged-read)에 있다.
+    type JsonRow = PagedReadRow;
     const dedupeById = (
         code: string,
         rows: JsonRow[]
@@ -348,21 +254,23 @@ async function main(): Promise<void> {
         client,
         preflightReader: {
             async readActivePropertyUnits(unionId) {
-                const { data, error } = await developmentDatabase
-                    .from('property_units')
-                    .select(
-                        'id, pnu, land_area, land_area_source, land_area_synced_at, land_area_sync_job_id'
-                    )
-                    .eq('union_id', unionId)
-                    .eq('is_deleted', false)
-                    .order('id', { ascending: true })
-                    .range(
-                        0,
-                        target.expectedUnionActivePropertyUnitCount
-                    );
-                if (error || !Array.isArray(data)) {
-                    throw new Error('DEVELOPMENT_PREFLIGHT_READ_FAILED');
-                }
+                // 활성 물건지가 PostgREST max-rows(1,000)를 넘는 조합도 전건을
+                // 읽는다. 총행수는 exact count 로 검증하고 manifest 기대치 비교는
+                // 러너(readAndValidateDevelopmentSnapshot)가 맡는다.
+                const data = await readExactPaged(
+                    'DEVELOPMENT_PREFLIGHT',
+                    (from, to) =>
+                        developmentDatabase
+                            .from('property_units')
+                            .select(
+                                'id, pnu, land_area, land_area_source, land_area_synced_at, land_area_sync_job_id',
+                                { count: 'exact' }
+                            )
+                            .eq('union_id', unionId)
+                            .eq('is_deleted', false)
+                            .order('id', { ascending: true })
+                            .range(from, to)
+                );
                 return data.map((row: Record<string, unknown>) => {
                     const source =
                         row.land_area_source == null
@@ -404,17 +312,29 @@ async function main(): Promise<void> {
                         'DEVELOPMENT_WRITE_ATTRIBUTION_SCOPE_INVALID'
                     );
                 }
-                const { data, error } = await developmentDatabase
-                    .from('property_units')
-                    .select('id, union_id, land_area_sync_job_id')
-                    .in('land_area_sync_job_id', syncJobIds)
-                    .order('id', { ascending: true })
-                    .range(0, target.expectedPropertyUnitCount);
-                if (error || !Array.isArray(data)) {
-                    throw new Error(
-                        'DEVELOPMENT_WRITE_ATTRIBUTION_READ_FAILED'
-                    );
-                }
+                // `.in()` 은 100건씩 나눠 읽고 단일 조회와 같은 결과(유일 job id,
+                // id 오름차순)로 병합한다. 중복 제거는 하지 않는다 — job id 가
+                // 유일하면 행도 유일하고, 아니면 러너의 attribution 검증이 잡는다.
+                const data = (
+                    await readChunked(
+                        'DEVELOPMENT_WRITE_ATTRIBUTION',
+                        [...new Set(syncJobIds)],
+                        (syncJobIdChunk, from, to) =>
+                            developmentDatabase
+                                .from('property_units')
+                                .select(
+                                    'id, union_id, land_area_sync_job_id',
+                                    { count: 'exact' }
+                                )
+                                .in('land_area_sync_job_id', syncJobIdChunk)
+                                .order('id', { ascending: true })
+                                .range(from, to)
+                    )
+                ).sort((left, right) =>
+                    String(left.id ?? '').localeCompare(
+                        String(right.id ?? '')
+                    )
+                );
                 return data.map((row: Record<string, unknown>) => ({
                     id: String(row.id ?? ''),
                     unionId: String(row.union_id ?? ''),

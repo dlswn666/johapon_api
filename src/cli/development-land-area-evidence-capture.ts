@@ -26,6 +26,7 @@ import {
     captureDevelopmentLandAreaEvidence,
     type DevelopmentEvidenceCaptureAudit,
 } from '../operations/development-land-area-evidence-capture';
+import { readExactPaged } from './development-land-area-paged-read';
 
 const PRIVATE_DIRECTORY =
     '.development-land-area-evidence-capture';
@@ -321,21 +322,21 @@ export async function runDevelopmentLandAreaEvidenceCaptureCli(
                             ids
                         ),
                     async readActivePropertyIdentity(unionId) {
-                        const { data, error } = await client
-                            .from('property_units')
-                            .select('id, pnu')
-                            .eq('union_id', unionId)
-                            .eq('is_deleted', false)
-                            .order('id', { ascending: true })
-                            .range(
-                                0,
-                                target.expectedUnionActivePropertyUnitCount
-                            );
-                        if (error || !Array.isArray(data)) {
-                            throw new Error(
-                                'CAPTURE_UNION_ACTIVE_IDENTITY_READ_FAILED'
-                            );
-                        }
+                        // 활성 물건지가 PostgREST max-rows(1,000)를 넘는 조합도
+                        // 전건을 읽는다. 총행수는 exact count 로 검증하고 manifest
+                        // 기대치 비교는 assertDevelopmentEvidenceCaptureActiveIdentity
+                        // 가 맡는다.
+                        const data = await readExactPaged(
+                            'CAPTURE_UNION_ACTIVE_IDENTITY',
+                            (from, to) =>
+                                client
+                                    .from('property_units')
+                                    .select('id, pnu', { count: 'exact' })
+                                    .eq('union_id', unionId)
+                                    .eq('is_deleted', false)
+                                    .order('id', { ascending: true })
+                                    .range(from, to)
+                        );
                         return data.map(
                             (row: Record<string, unknown>) => ({
                                 id: String(row.id ?? ''),

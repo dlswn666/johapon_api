@@ -22,8 +22,15 @@ jobs:
     name: Run repository-approved development targets
     runs-on: ubuntu-latest
     # production target 은 별도 보호 환경(리뷰어 승인)을 요구한다. 환경이 곧
-    # 사람-게이트이므로 라벨→환경 매핑은 이 식 하나로만 결정된다.
-    environment: ${{ inputs.manifest == 'mia-seven-standard-267-api-readonly-production-20260812' && 'land-area-sync-production-write' || 'land-area-sync-development-write' }}
+    # 사람-게이트이므로 라벨→환경 매핑은 이 식 하나로만 결정된다 — 라벨에
+    # '-production-' 이 있으면 production 환경, 그 외 전부 development 환경.
+    # (선례: development-building-registry-relation-adoption.yml)
+    # ⚠️ production 환경은 리뷰어를 건 채로 **미리 만들어져 있어야** 한다 — GitHub 은
+    #    없는 이름을 참조하면 보호 규칙 없이 자동 생성하므로 승인 게이트가 사라진다.
+    environment: >-
+      ${{ contains(inputs.manifest, '-production-')
+          && 'land-area-sync-production-write'
+          || 'land-area-sync-development-write' }}
     timeout-minutes: 420
     steps:
       - name: Require approved main revision
@@ -57,7 +64,7 @@ jobs:
         env:
           # production 라벨은 production 환경 스코프 시크릿의 actor 를 쓴다.
           # (production DB user_auth_links 에 링크된 SYSTEM_ADMIN auth UUID)
-          ACTOR_AUTH_USER_ID: ${{ inputs.manifest == 'mia-seven-standard-267-api-readonly-production-20260812' && secrets.PROD_GIS_SYSTEM_ADMIN_AUTH_UUID || secrets.DEV_GIS_SYSTEM_ADMIN_AUTH_UUID }}
+          ACTOR_AUTH_USER_ID: ${{ contains(inputs.manifest, '-production-') && secrets.PROD_GIS_SYSTEM_ADMIN_AUTH_UUID || secrets.DEV_GIS_SYSTEM_ADMIN_AUTH_UUID }}
         run: |
           set -euo pipefail
           uuid_pattern='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -143,6 +150,14 @@ jobs:
           } = require("./dist/operations/development-land-area-sync-runner.js");
           const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
           const target = parseDevelopmentTargetManifest(read(process.argv[2]));
+          // 워크플로가 정한 환경(라벨의 '-production-' 유무)과 target 문서가 선언한
+          // databaseTarget 이 어긋나면 EC2 로 가기 전에 멈춘다 — 환경식·actor 식을
+          // 라벨 부분문자열로 일반화한 전제. (선례: relation-adoption declared_target)
+          const productionLabel =
+            String(process.env.MANIFEST_NAME ?? "").includes("-production-");
+          if ((target.databaseTarget === "production") !== productionLabel) {
+            process.exit(1);
+          }
           if (process.argv[5] === "1") {
             // in-run 캡처 모드: dev 는 repo-pinned full-refresh 마커가 필수,
             // production 은 마커가 없어야 한다(표준 계약 — dev 가드 미이식의 전제).
@@ -236,7 +251,7 @@ jobs:
           EVIDENCE_PATH: ${{ steps.manifest.outputs.evidence_path }}
           FULL_REFRESH_MODE: ${{ steps.manifest.outputs.full_refresh_mode }}
           GUARDIAN_PATH: scripts/development-land-area-sync-remote-guardian.sh
-          ACTOR_AUTH_USER_ID: ${{ inputs.manifest == 'mia-seven-standard-267-api-readonly-production-20260812' && secrets.PROD_GIS_SYSTEM_ADMIN_AUTH_UUID || secrets.DEV_GIS_SYSTEM_ADMIN_AUTH_UUID }}
+          ACTOR_AUTH_USER_ID: ${{ contains(inputs.manifest, '-production-') && secrets.PROD_GIS_SYSTEM_ADMIN_AUTH_UUID || secrets.DEV_GIS_SYSTEM_ADMIN_AUTH_UUID }}
           RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
           EXPECTED_GIT_SHA: ${{ github.sha }}
           EXPECTED_IMAGE_TAG: ghcr.io/dlswn666/alimtalk-proxy:${{ github.sha }}
