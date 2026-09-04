@@ -123,6 +123,27 @@ test('Caddy mount 검사는 escape되지 않은 유효한 Go template을 사용�
     assert.doesNotMatch(contract, /\\"/);
 });
 
+test('활성 GIS registry는 owner-only 디렉터리 내부 파일을 sudo로 검증한다', () => {
+    const contract = remote.match(
+        /verify_active_file_mode\(\) \{([\s\S]*?)\n\}/
+    )?.[1] ?? '';
+    assert.ok(contract.length > 0);
+    assert.match(
+        contract,
+        /stat -c '%u:%g:%a' "\$\{gis_registry_dir\}"\)" == 1001:1001:700/
+    );
+    assert.match(contract, /sudo -n test -f "\$\{gis_registry_file\}"/);
+    assert.match(contract, /! sudo -n test -L "\$\{gis_registry_file\}"/);
+    assert.match(
+        contract,
+        /sudo -n stat -c '%u:%g:%a' "\$\{gis_registry_file\}"\)" == 1001:1001:600/
+    );
+    assert.doesNotMatch(
+        contract,
+        /&& -f "\$\{gis_registry_file\}" && ! -L "\$\{gis_registry_file\}"/
+    );
+});
+
 test('publish는 file registry와 두 MCP health를 확인한 뒤에만 Caddy를 공개한다', () => {
     assert.match(remote, /GIS_MCP_TOKEN_REGISTRY_FILE=\$\{gis_registry_container_file\}/);
     assert.match(remote, /\.gis-mcp-file-registry-v1/);
