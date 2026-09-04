@@ -213,7 +213,7 @@ export function createGisMcpAccessAuditMiddlewareV1(
     };
 }
 
-/** `/gis-mcp`에 mount할 modern Streamable HTTP router와 종료 hook을 만든다. */
+/** `/gis-mcp`에 mount할 dual-revision Streamable HTTP router와 종료 hook을 만든다. */
 export function createGisMcpRoute(
     options: CreateGisMcpRouteOptions
 ): GisMcpRouteHandle {
@@ -230,7 +230,7 @@ export function createGisMcpRoute(
     const handler = createMcpHandler(
         () => createPublicDataMcpServer(options.dependencies),
         {
-            legacy: 'reject',
+            legacy: 'stateless',
             ...(options.onError ? { onerror: options.onError } : {}),
         }
     );

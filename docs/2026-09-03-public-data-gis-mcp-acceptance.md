@@ -54,6 +54,8 @@
 
 ### transport/security
 
+- [x] 허용 revision은 `2026-07-28`과 Codex 호환 `2025-06-18`로 고정하고,
+  2025 경로는 SDK stateless fallback만 사용한다.
 - [x] `/gis-mcp`는 전역 1MB JSON parser보다 먼저 mount하고 전용 256KB 제한을 쓴다.
 - [x] 검증 순서는 Host → Origin → Caddy HTTPS/proxy 증명 → Bearer → JSON →
   rate limit → MCP handler다.
