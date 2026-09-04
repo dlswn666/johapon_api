@@ -1007,9 +1007,11 @@ verify_active_file_mode() {
   check_user_file "${gis_marker}" && [[ "$(<"${gis_marker}")" == version=1 ]] \
     || return 1
   [[ -d "${gis_registry_dir}" && ! -L "${gis_registry_dir}" \
-    && "$(stat -c '%u:%g:%a' "${gis_registry_dir}")" == 1001:1001:700 \
-    && -f "${gis_registry_file}" && ! -L "${gis_registry_file}" \
-    && "$(stat -c '%u:%g:%a' "${gis_registry_file}")" == 1001:1001:600 ]] \
+    && "$(stat -c '%u:%g:%a' "${gis_registry_dir}")" == 1001:1001:700 ]] \
+    || return 1
+  sudo -n test -f "${gis_registry_file}" \
+    && ! sudo -n test -L "${gis_registry_file}" \
+    && [[ "$(sudo -n stat -c '%u:%g:%a' "${gis_registry_file}")" == 1001:1001:600 ]] \
     || return 1
   attestation="$(
     docker exec alimtalk-proxy \
