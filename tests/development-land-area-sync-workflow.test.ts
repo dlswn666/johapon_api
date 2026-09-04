@@ -774,8 +774,8 @@ test('두 워크플로의 라벨·case·target 파일명은 서로 정합하고 
     const captureEntries = caseEntries(captureWorkflow);
     const runEntries = caseEntries(workflow);
     // 파서가 아무것도 못 잡고 통과하는 일이 없도록 건수를 고정한다.
-    assert.equal(captureEntries.length, 10);
-    assert.equal(runEntries.length, 5);
+    assert.equal(captureEntries.length, 12);
+    assert.equal(runEntries.length, 7);
     // options ↔ case 라벨 집합이 같아야 한다(도달 불가 case·해석 불가 option 금지).
     assert.deepEqual(
         [...dispatchOptions(captureWorkflow)].sort(),
@@ -811,7 +811,7 @@ test('두 워크플로의 라벨·case·target 파일명은 서로 정합하고 
         const size = fs.statSync(targetFile).size;
         assert.ok(size >= 2 && size <= 1_048_576);
     }
-    // production 라벨은 두 워크플로 합쳐 정확히 이 셋뿐이다.
+    // production 라벨은 두 워크플로 합쳐 정확히 이 다섯뿐이다.
     assert.deepEqual(
         [...new Set(
             [...captureEntries, ...runEntries]
@@ -822,6 +822,33 @@ test('두 워크플로의 라벨·case·target 파일명은 서로 정합하고 
             'mia-seven-full-278-official-components-api-readonly-production-20260812',
             'mia-seven-standard-267-api-readonly-production-20260812',
             'solsam-full-1086-api-readonly-production-20260904',
+            'solsam-standard-a-851-api-readonly-production-20260904',
+            'solsam-standard-b-101-api-readonly-production-20260904',
         ]
     );
+    // write run 에 있는 solsam 라벨은 캡처로 실증된 standard A/B 뿐이다(전수 full 금지).
+    assert.deepEqual(
+        runEntries
+            .map((entry) => entry.label)
+            .filter((label) => label.startsWith('solsam-'))
+            .sort(),
+        [
+            'solsam-standard-a-851-api-readonly-production-20260904',
+            'solsam-standard-b-101-api-readonly-production-20260904',
+        ]
+    );
+    for (const label of [
+        'solsam-standard-a-851-api-readonly-production-20260904',
+        'solsam-standard-b-101-api-readonly-production-20260904',
+    ]) {
+        const selection = workflow.slice(
+            workflow.indexOf(`${label})`),
+            workflow.indexOf('*)', workflow.indexOf(`${label})`))
+        );
+        // 미아7 standard-267 과 같은 in-run 캡처 모드 — 커밋된 evidence/approval 파일 없음.
+        assert.match(
+            selection,
+            /db_approval_path=""[\s\S]+evidence_path=""[\s\S]+full_refresh_mode="1"/
+        );
+    }
 });

@@ -14,6 +14,8 @@ on:
           - mia-seven-parcel-singleton-196-20260725
           - mia-seven-full-278-official-components-api-readonly-20260729
           - mia-seven-standard-267-api-readonly-production-20260812
+          - solsam-standard-a-851-api-readonly-production-20260904
+          - solsam-standard-b-101-api-readonly-production-20260904
 permissions:
   contents: read
 
@@ -112,6 +114,23 @@ jobs:
               # dev full-refresh 와 같은 in-run 캡처→러너 모드이나 마커는 없다
               # (guardian 이 target 환경으로 계약을 분기한다).
               target_path="development-land-area-sync-manifests/mia-seven-standard-267-api-readonly-production-target-20260812.json"
+              db_approval_path=""
+              evidence_path=""
+              full_refresh_mode="1"
+              ;;
+            solsam-standard-a-851-api-readonly-production-20260904)
+              # 삼양동(solsam) 운영 창 A — 비-MANUAL 851 anchor(물건 965). 전수 캡처
+              # run 33858451581 의 CAPTURED 부분집합에서 감사 제외 필지를 뺀 표준 계약.
+              # 미아7 standard-267 과 같은 in-run 캡처→러너 모드, 마커 없음.
+              target_path="development-land-area-sync-manifests/solsam-standard-a-851-api-readonly-production-target-20260904.json"
+              db_approval_path=""
+              evidence_path=""
+              full_refresh_mode="1"
+              ;;
+            solsam-standard-b-101-api-readonly-production-20260904)
+              # 삼양동(solsam) 운영 창 B — MANUAL 출처 101 anchor(물건 137), 값 불변·
+              # 출처 전환. allowlist 입력 길이 상한 때문에 창 A 와 분리한다.
+              target_path="development-land-area-sync-manifests/solsam-standard-b-101-api-readonly-production-target-20260904.json"
               db_approval_path=""
               evidence_path=""
               full_refresh_mode="1"

@@ -2031,3 +2031,89 @@ test('삼양동 full-1086 production target은 활성 필지 전체를 anchor �
         'e00a3afba002cb3b868c8fc44c2204b4a5896ab3cad75222e6282c74f56fa5e7'
     );
 });
+
+const SOLSAM_STANDARD_A_851_PRODUCTION_TARGET_URL = new URL(
+    '../development-land-area-sync-manifests/solsam-standard-a-851-api-readonly-production-target-20260904.json',
+    import.meta.url
+);
+const SOLSAM_STANDARD_B_101_PRODUCTION_TARGET_URL = new URL(
+    '../development-land-area-sync-manifests/solsam-standard-b-101-api-readonly-production-target-20260904.json',
+    import.meta.url
+);
+
+test('삼양동 standard A/B production target은 전수 target의 서로소 부분집합이며 union identity 를 공유한다', () => {
+    const full = parseDevelopmentTargetManifest(
+        JSON.parse(readFileSync(SOLSAM_FULL_1086_PRODUCTION_TARGET_URL, 'utf8'))
+    );
+    const a = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(SOLSAM_STANDARD_A_851_PRODUCTION_TARGET_URL, 'utf8')
+        )
+    );
+    const b = parseDevelopmentTargetManifest(
+        JSON.parse(
+            readFileSync(SOLSAM_STANDARD_B_101_PRODUCTION_TARGET_URL, 'utf8')
+        )
+    );
+    if (
+        full.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 ||
+        a.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V3 ||
+        b.version !== DEVELOPMENT_TARGET_MANIFEST_VERSION_V3
+    ) {
+        throw new Error('v3 targets expected');
+    }
+    for (const partial of [a, b]) {
+        assert.equal(partial.databaseTarget, 'production');
+        assert.equal(partial.unionId, full.unionId);
+        // 부분집합: anchors = allowedScopePnus ⊂ full.anchors, union identity 는 전수와 동일.
+        assert.deepEqual(partial.allowedScopePnus, partial.anchors);
+        assert.ok(partial.anchors.every((pnu) => full.anchors.includes(pnu)));
+        assert.deepEqual(partial.expectedUnionActivePnus, full.expectedUnionActivePnus);
+        assert.equal(
+            partial.expectedUnionActivePnuDigest,
+            full.expectedUnionActivePnuDigest
+        );
+        assert.equal(partial.expectedUnionActivePropertyUnitCount, 1607);
+        assert.equal(partial.expectedUnionActivePnuCount, 1086);
+        assert.equal(partial.targetCount, partial.anchors.length);
+    }
+    // 창 A(비-MANUAL) 851 anchor / 물건 965, 창 B(MANUAL) 101 anchor / 물건 137 — 운영 SQL 실측(2026-09-04).
+    assert.equal(a.targetCount, 851);
+    assert.equal(a.expectedPropertyUnitCount, 965);
+    assert.equal(b.targetCount, 101);
+    assert.equal(b.expectedPropertyUnitCount, 137);
+    // 서로소 — 같은 필지가 두 창에 걸치면 approval·allowlist 가 겹친다.
+    assert.equal(a.anchors.filter((pnu) => b.anchors.includes(pnu)).length, 0);
+    // 제외 134 필지(감사 제외 51 ∪ 전수 캡처 REVIEW/FAILED 111) 는 어느 창에도 없다.
+    assert.equal(
+        full.anchors.length - a.anchors.length - b.anchors.length,
+        134
+    );
+    for (const excludedPnu of [
+        '1130510100107600091', // 760-91 편입<공부 (LEGACY, LADFRL 이면 과대)
+        '1130510100107912008', // 791-2008 자영리베라 필지별 대지권 5필지
+        '1130510100107913087', // 791-3087 등록부 오류 HOLD
+        '1130510100113540014', // 1354-14 도로, 명부 공란
+        '1130510100107912771', // 791-2771 비율형('1/4') — RATIO_DENOMINATOR_MISMATCH
+    ]) {
+        assert.ok(!a.anchors.includes(excludedPnu));
+        assert.ok(!b.anchors.includes(excludedPnu));
+    }
+    // digest 핀 — 저장소 함수 재계산 값.
+    assert.equal(
+        a.scopeDigest,
+        '9106a500d92a0800fbfde8db6c9fbd011d52ef884040c6a418adf9717caaf838'
+    );
+    assert.equal(
+        a.manifestDigest,
+        '9d7cefffc4c39783654364bc95793e5a7ddb933cac425ced76c05c750a965399'
+    );
+    assert.equal(
+        b.scopeDigest,
+        'e8529f6caa8150ac5054d69e4ff5fe2433395a047d8139fd92abd70df9665c74'
+    );
+    assert.equal(
+        b.manifestDigest,
+        '2edb14c69bff3203bbfc87ecad8cbb4d6518dce24c6df353cfef1917aa9c036e'
+    );
+});
