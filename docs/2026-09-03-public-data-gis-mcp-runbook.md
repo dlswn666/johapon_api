@@ -88,6 +88,21 @@ container를 복구한다. 통과 후에는 구 env-mode rollback 제거, file-o
 cleanup 실패는 폐기된 env token을 복원하지 않고 새 file-mode container를
 유지한 채 exit `71`로 수동 조치를 요청한다.
 
+최초 설정을 쓰기 전에는 `.github/workflows/gis-mcp-initial-activation-audit.yml`을
+`main`에서 수동 실행한다. 이 workflow는 보호 environment `gis-mcp-registry`와 기존
+EC2 fingerprint 고정 SSH 연결을 사용하며, production lock 아래에서 다음 항목의
+상태만 출력한다.
+
+- VWorld·건축HUB key 및 VWorld domain의 존재·형식
+- GIS 인증 source, proxy digest, Host allowlist, file marker·registry의 미설정 여부
+- 현재 container가 `disabled`와 client/token `0/0`인지 여부
+- `/opt/caddy/Caddyfile`, root-only proxy env, Caddy container가 문서화한 baseline인지 여부
+
+provider key, proxy 원문, client bearer, registry JSON, digest는 출력하지 않는다.
+`stageReady=true`는 최초 쓰기를 해도 되는 구조적 전제조건일 뿐 provider 실제 호출
+성공을 뜻하지 않는다. Caddy baseline hash나 상태가 예상과 다르면 템플릿으로
+덮어쓰지 말고 실제 운영 구성을 별도로 검토한다.
+
 ## 소수 client 초대·폐기·회전
 
 client ID는 개인정보 없는 lowercase 영문·숫자·단일 하이픈 조합으로 정한다.

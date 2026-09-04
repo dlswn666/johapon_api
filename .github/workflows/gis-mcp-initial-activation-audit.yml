@@ -1,0 +1,177 @@
+name: GIS MCP Initial Activation Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation_id:
+        description: 'Unique lowercase audit ID (8-64 characters)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gis-mcp-initial-activation-production
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: gis-mcp-registry
+    steps:
+      - name: Checkout exact main revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Audit EC2 GIS MCP activation prerequisites
+        shell: bash
+        env:
+          AUDIT_EVENT_NAME: ${{ github.event_name }}
+          AUDIT_REF: ${{ github.ref }}
+          AUDIT_OPERATION_ID: ${{ inputs.operation_id }}
+          AUDIT_RUN_ID: ${{ github.run_id }}
+          AUDIT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_FINGERPRINT: ${{ secrets.EC2_SSH_FINGERPRINT }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          [[ "${AUDIT_EVENT_NAME}" == "workflow_dispatch" ]] \
+            || { echo "::error::workflow_dispatch is required."; exit 1; }
+          [[ "${AUDIT_REF}" == "refs/heads/main" ]] \
+            || { echo "::error::refs/heads/main is required."; exit 1; }
+          [[ "${#AUDIT_OPERATION_ID}" -ge 8 && "${#AUDIT_OPERATION_ID}" -le 64 ]] \
+            && [[ "${AUDIT_OPERATION_ID}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
+            || { echo "::error::Invalid operation_id."; exit 1; }
+          [[ "${AUDIT_RUN_ID}" =~ ^[1-9][0-9]*$ \
+            && "${AUDIT_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::Invalid run identity."; exit 1; }
+
+          missing=0
+          for name in EC2_HOST EC2_USERNAME EC2_SSH_KEY EC2_SSH_FINGERPRINT; do
+            [[ -n "${!name:-}" ]] || missing=1
+          done
+          [[ "${missing}" -eq 0 ]] \
+            || { echo "::error::Required EC2 connection secret is missing."; exit 1; }
+          [[ "${EC2_USERNAME}" =~ ^[a-z_][a-z0-9_-]*$ ]] \
+            || { echo "::error::Invalid EC2 username."; exit 1; }
+          [[ "${#EC2_HOST}" -le 253 \
+            && "${EC2_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
+            || { echo "::error::Invalid EC2 host."; exit 1; }
+          [[ -f scripts/gis-mcp-initial-activation-audit-remote.sh \
+            && ! -L scripts/gis-mcp-initial-activation-audit-remote.sh ]] \
+            || { echo "::error::Remote audit script is missing."; exit 1; }
+          bash -n scripts/gis-mcp-initial-activation-audit-remote.sh
+
+          script_sha256="$(
+            sha256sum scripts/gis-mcp-initial-activation-audit-remote.sh \
+              | awk '{print $1}'
+          )"
+          [[ "${script_sha256}" =~ ^[0-9a-f]{64}$ ]] \
+            || { echo "::error::Remote audit script digest is invalid."; exit 1; }
+
+          local_root="${RUNNER_TEMP}/gis-mcp-activation-audit-${AUDIT_RUN_ID}-${AUDIT_RUN_ATTEMPT}"
+          install -d -m 700 "${local_root}"
+          key_path="${local_root}/id"
+          known_hosts_path="${local_root}/known_hosts"
+          install -m 600 /dev/null "${key_path}"
+          printf '%s\n' "${EC2_SSH_KEY}" > "${key_path}"
+
+          host_keys="$(ssh-keyscan -T 10 -t ed25519,ecdsa,rsa "${EC2_HOST}" 2>/dev/null)"
+          [[ -n "${host_keys}" ]] \
+            || { echo "::error::Host key scan failed."; exit 1; }
+          matched=""
+          while IFS= read -r host_key; do
+            fingerprint="$(
+              printf '%s\n' "${host_key}" \
+                | ssh-keygen -lf - -E sha256 \
+                | awk '{print $2}'
+            )"
+            if [[ "${fingerprint}" == "${EC2_SSH_FINGERPRINT}" ]]; then
+              matched="${host_key}"
+              break
+            fi
+          done <<< "${host_keys}"
+          [[ -n "${matched}" ]] \
+            || { echo "::error::EC2 fingerprint mismatch."; exit 1; }
+          printf '%s\n' "${matched}" > "${known_hosts_path}"
+          chmod 600 "${known_hosts_path}"
+
+          ssh_options=(
+            -i "${key_path}"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=8
+            -o "UserKnownHostsFile=${known_hosts_path}"
+          )
+          run_key="${AUDIT_RUN_ID}-${AUDIT_RUN_ATTEMPT}"
+          remote_parent="alimtalk-proxy/.gis-mcp-activation-audits"
+          remote_root="${remote_parent}/${run_key}"
+          remote_prepared=0
+
+          cleanup() {
+            status=$?
+            trap - EXIT INT TERM HUP
+            set +e
+            ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+              "RUN_KEY='${run_key}' REMOTE_PREPARED='${remote_prepared}' bash -s" >/dev/null 2>&1 <<'REMOTE_CLEANUP'
+          set -euo pipefail
+          [[ "${RUN_KEY}" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]]
+          [[ "${REMOTE_PREPARED}" =~ ^[01]$ ]]
+          if [[ "${REMOTE_PREPARED}" != "1" ]]; then exit 0; fi
+          root="${HOME}/alimtalk-proxy/.gis-mcp-activation-audits/${RUN_KEY}"
+          script="${root}/audit.sh"
+          [[ -d "${root}" && ! -L "${root}" \
+            && "$(stat -c '%u:%a' "${root}")" == "$(id -u):700" ]]
+          if [[ -e "${script}" || -L "${script}" ]]; then
+            [[ -f "${script}" && ! -L "${script}" \
+              && "$(stat -c '%u' "${script}")" == "$(id -u)" ]]
+            rm -f -- "${script}"
+          fi
+          if [[ -d "${root}" && ! -L "${root}" ]]; then rmdir -- "${root}"; fi
+          parent="${HOME}/alimtalk-proxy/.gis-mcp-activation-audits"
+          if [[ -d "${parent}" && ! -L "${parent}" ]]; then rmdir --ignore-fail-on-non-empty "${parent}"; fi
+          REMOTE_CLEANUP
+            cleanup_status=$?
+            rm -f -- "${key_path}" "${known_hosts_path}" >/dev/null 2>&1 || true
+            rmdir -- "${local_root}" >/dev/null 2>&1 || true
+            [[ "${cleanup_status}" -eq 0 ]] || exit 71
+            exit "${status}"
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          trap 'exit 129' HUP
+
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "RUN_KEY='${run_key}' bash -s" <<'REMOTE_PREPARE'
+          set -euo pipefail
+          umask 077
+          [[ "${RUN_KEY}" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]]
+          parent="${HOME}/alimtalk-proxy/.gis-mcp-activation-audits"
+          root="${parent}/${RUN_KEY}"
+          if [[ ! -e "${parent}" && ! -L "${parent}" ]]; then
+            mkdir -m 700 -- "${parent}"
+          fi
+          [[ -d "${parent}" && ! -L "${parent}" \
+            && "$(stat -c '%u:%a' "${parent}")" == "$(id -u):700" ]]
+          [[ ! -e "${root}" && ! -L "${root}" ]]
+          mkdir -m 700 -- "${root}"
+          REMOTE_PREPARE
+          remote_prepared=1
+
+          scp "${ssh_options[@]}" \
+            scripts/gis-mcp-initial-activation-audit-remote.sh \
+            "${EC2_USERNAME}@${EC2_HOST}:${remote_root}/audit.sh"
+
+          ssh "${ssh_options[@]}" "${EC2_USERNAME}@${EC2_HOST}" \
+            "chmod 600 '${remote_root}/audit.sh' \
+              && AUDIT_EXPECTED_SCRIPT_SHA256='${script_sha256}' \
+                 AUDIT_OPERATION_ID='${AUDIT_OPERATION_ID}' \
+                 bash '${remote_root}/audit.sh'"
