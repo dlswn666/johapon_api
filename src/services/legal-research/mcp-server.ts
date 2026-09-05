@@ -23,6 +23,7 @@ import {
     buildLegalReviewPromptMessage,
     type LegalResearchToolInputV1,
 } from './mcp-policy';
+import { TONGHARI_MCP_SUPPORTED_PROTOCOL_VERSIONS } from '../mcp-protocol';
 import {
     createLegalPacketProofV1,
     packetProofSubjectV1,
@@ -252,6 +253,9 @@ export function createLegalMcpServer(
         },
         {
             instructions: LEGAL_MCP_SERVER_INSTRUCTIONS,
+            supportedProtocolVersions: [
+                ...TONGHARI_MCP_SUPPORTED_PROTOCOL_VERSIONS,
+            ],
         }
     );
 

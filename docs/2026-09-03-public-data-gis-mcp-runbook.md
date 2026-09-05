@@ -2,7 +2,9 @@
 
 ## 운영 표면
 
-- endpoint: `POST /gis-mcp` (modern Streamable HTTP, legacy reject)
+- endpoint: `POST /gis-mcp` (MCP `2026-07-28` modern 경로와 Codex용
+  `2025-06-18` stateless 경로; 그 외 revision을 명시한 후속 요청은 거부하고
+  GET/DELETE는 405)
 - read-only tools: acceptance 문서의 versioned 5개 도구
 - prompt: 공개 데이터 검토 prompt 1개
 - resource: `tonghari-gis://policy/public-data/v1`
@@ -340,7 +342,11 @@ enabled_tools = [
 
 ```bash
 npm run gis:mcp:smoke -- --endpoint https://api.tonghari.kr/gis-mcp
+npm run gis:mcp:smoke -- --endpoint https://api.tonghari.kr/gis-mcp --protocol-version 2025-06-18
 ```
+
+두 번째 명령은 Codex와 같은 `2025-06-18` client의
+initialize → initialized → tools/list lifecycle을 검증한다.
 
 8. 정확한 테스트 PNU로 5개 도구를 각각 live 호출해 provider 성공/무자료/일시 장애
    상태와 출처표시를 확인한다. 이 live smoke 전에는 외부 MCP가 완료됐다고 보고하지 않는다.

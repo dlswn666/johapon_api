@@ -145,7 +145,7 @@ function bodyParserErrorResponse(
 }
 
 /**
- * `/mcp`에 mount할 Router와 종료 hook을 함께 만든다.
+ * `/mcp`에 mount할 dual-revision Streamable HTTP Router와 종료 hook을 함께 만든다.
  *
  * 예: `const legalMcp = createLegalMcpRoute(options); app.use('/mcp', legalMcp.router)`
  */
@@ -176,7 +176,7 @@ export function createLegalMcpRoute(
             packetSigningKey,
         }),
         {
-            legacy: 'reject',
+            legacy: 'stateless',
             ...(options.onError ? { onerror: options.onError } : {}),
         }
     );

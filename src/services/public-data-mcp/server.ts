@@ -32,6 +32,7 @@ import {
     type PublicDataMcpToolInput,
     type PublicDataMcpToolName,
 } from './policy';
+import { TONGHARI_MCP_SUPPORTED_PROTOCOL_VERSIONS } from '../mcp-protocol';
 import {
     createPublicDataMcpFailureResultV1,
 } from './provider';
@@ -274,7 +275,12 @@ export function createPublicDataMcpServer(
             name: PUBLIC_DATA_MCP_SERVER_NAME,
             version: PUBLIC_DATA_MCP_SERVER_VERSION,
         },
-        { instructions: PUBLIC_DATA_MCP_SERVER_INSTRUCTIONS }
+        {
+            instructions: PUBLIC_DATA_MCP_SERVER_INSTRUCTIONS,
+            supportedProtocolVersions: [
+                ...TONGHARI_MCP_SUPPORTED_PROTOCOL_VERSIONS,
+            ],
+        }
     );
     const readOnlyAnnotations = {
         readOnlyHint: true,

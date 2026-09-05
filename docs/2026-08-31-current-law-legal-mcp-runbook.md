@@ -2,7 +2,9 @@
 
 ## 운영 표면
 
-- modern MCP 2026-07-28 endpoint: `POST /mcp` (`legacy: reject`; bodyless GET/DELETE 세션 방식은 405)
+- MCP endpoint: `POST /mcp` (`2026-07-28` modern 경로와 Codex용
+  `2025-06-18` stateless 경로; 그 외 revision을 명시한 후속 요청은 거부하고
+  bodyless GET/DELETE는 405)
 - 공개 도구
   - `research_current_urban_renewal_law_v1`
   - `render_legal_answer_v1`
@@ -765,14 +767,17 @@ encrypted/server-side appendix로 분리하는 2-stage 구조가 필요하며 �
    - HTTP URL에는 bearer를 보내지 않는다. Caddy의 HTTP 요청은 HTTPS로만 전환되고
      평문 HTTP upstream 경로에서 MCP가 처리되지 않는지 확인한다.
    - HTTPS 인증서 hostname/chain이 유효하고 redirect 없이 최종 `/mcp`에 도달한다.
-7. 각 발급 client에서 raw token을 숨김 입력해 modern `tools/list` smoke를 실행한다.
+7. 각 발급 client에서 raw token을 숨김 입력해 협상된 revision의 `tools/list` smoke를 실행한다.
 
    ```bash
    npm run legal:mcp:smoke -- --endpoint https://api.tonghari.kr/mcp
+   npm run legal:mcp:smoke -- --endpoint https://api.tonghari.kr/mcp --protocol-version 2025-06-18
    ```
 
    이 명령은 credential·query·fragment가 없는 HTTPS endpoint만 허용하고 redirect를
-   거부하며 응답 body나 token을 출력하지 않는다. 정상 token은 HTTP 200, 폐기·오입력
+   거부하며 응답 body나 token을 출력하지 않는다. 두 번째 명령은 Codex와 같은
+   `2025-06-18` client의 initialize → initialized → tools/list lifecycle을 검증한다.
+   정상 token은 HTTP 200, 폐기·오입력
    token은 성공하지 않아야 한다. 최소 두 client가 각자 token으로 성공하고, 한
    client의 폐기가 다른 client를 막지 않는지도 회전 staging에서 확인한다.
 8. 등록된 고정 IP에서 다음 read-only provider/contract smoke를 실행한다.

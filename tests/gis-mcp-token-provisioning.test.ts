@@ -63,4 +63,61 @@ describe('GIS MCP token provisioning', () => {
         assert.equal(headers.Authorization, `Bearer ${token}`);
         assert.equal(String(captured?.body).includes(token), false);
     });
+
+    it('2025-06-18 smoke는 initialize, initialized, tools/list 순서와 SSE 응답을 검증한다', async () => {
+        const token = `tgismcp_v1_${'c'.repeat(43)}`;
+        const captured: RequestInit[] = [];
+        const fetchImpl = (async (
+            _input: string | URL | Request,
+            init?: RequestInit
+        ) => {
+            captured.push(init ?? {});
+            const body = JSON.parse(String(init?.body));
+            if (body.method === 'initialize') {
+                return new Response(
+                    `data: ${JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: 1,
+                        result: { protocolVersion: '2025-06-18' },
+                    })}\n\n`,
+                    { status: 200, headers: { 'content-type': 'text/event-stream' } }
+                );
+            }
+            if (body.method === 'notifications/initialized') {
+                return new Response(null, { status: 202 });
+            }
+            return new Response(
+                `data: ${JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: 2,
+                    result: {
+                        tools: PUBLIC_DATA_MCP_TOOL_NAMES.map((name) => ({ name })),
+                    },
+                })}\n\n`,
+                { status: 200, headers: { 'content-type': 'text/event-stream' } }
+            );
+        }) as typeof fetch;
+
+        const status = await probeGisMcpBearerV1(
+            'https://api.tonghari.kr/gis-mcp',
+            token,
+            fetchImpl,
+            '2025-06-18'
+        );
+
+        assert.equal(status, 200);
+        assert.deepEqual(
+            captured.map((init) => JSON.parse(String(init.body)).method),
+            ['initialize', 'notifications/initialized', 'tools/list']
+        );
+        for (const init of captured) {
+            const headers = init.headers as Record<string, string>;
+            const body = JSON.parse(String(init.body));
+            assert.equal(headers.Authorization, `Bearer ${token}`);
+            assert.equal(headers['MCP-Protocol-Version'], '2025-06-18');
+            assert.equal(headers['MCP-Method'], body.method);
+            assert.equal(String(init.body).includes(token), false);
+            assert.equal(body.params._meta, undefined);
+        }
+    });
 });
