@@ -10,6 +10,8 @@ import {
     LOOKUP_HOUSING_OFFICIAL_PRICE_TOOL_NAME,
     LOOKUP_LAND_RIGHT_REGISTRATION_TOOL_NAME,
     LOOKUP_PARCEL_PUBLIC_DATA_TOOL_NAME,
+    LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME,
+    LookupFullGisPublicDataInputV1Schema,
     LookupBuildingRegisterInputV1Schema,
     LookupHousingOfficialPriceInputV1Schema,
     LookupLandRightRegistrationInputV1Schema,
@@ -266,7 +268,7 @@ async function executeTool(
     }
 }
 
-/** 요청마다 만들어도 동일한 5개 read-only surface만 등록하는 순수 factory다. */
+/** 기존 5개와 전체 조회 1개의 read-only surface를 등록하는 순수 factory다. */
 export function createPublicDataMcpServer(
     dependencies: PublicDataMcpServerDependencies
 ): McpServer {
@@ -379,6 +381,18 @@ export function createPublicDataMcpServer(
         )
     );
 
+    server.registerTool(
+        LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME,
+        {
+            title: '명부 대조용 전체 GIS 공부 조회',
+            description: '주소 또는 exact PNU의 14개 GIS 자료를 항목별 출처·상태와 함께 조회한다. 표제부·전유부·층별개요·가격·대지권·건물호수조회를 포함한다. 주소 입력 시 지오코딩·역지오코딩도 조회한다. 각 자료의 hasMore와 nextOffset을 확인하고 offsets로 이어 조회한다. 면적·지분의 원래 의미를 보존하며 DB에 저장하지 않는다.',
+            inputSchema: LookupFullGisPublicDataInputV1Schema,
+            outputSchema: PublicDataMcpResultV1Schema,
+            annotations: readOnlyAnnotations,
+        },
+        (input, context) => executeTool(dependencies, LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME, input, context)
+    );
+
     server.registerPrompt(
         PUBLIC_DATA_MCP_REVIEW_PROMPT_NAME,
         {
@@ -408,7 +422,7 @@ export function createPublicDataMcpServer(
             annotations: {
                 audience: ['assistant'],
                 priority: 1,
-                lastModified: '2026-09-03T00:00:00+09:00',
+                lastModified: '2026-09-06T00:00:00+09:00',
             },
         },
         async (uri) => ({

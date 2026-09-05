@@ -5,7 +5,7 @@
 - endpoint: `POST /gis-mcp` (MCP `2026-07-28` modern 경로와 Codex용
   `2025-06-18` stateless 경로; 그 외 revision을 명시한 후속 요청은 거부하고
   GET/DELETE는 405)
-- read-only tools: acceptance 문서의 versioned 5개 도구
+- read-only tools: 기존 versioned 5개 도구 + `lookup_full_gis_public_data_v1`
 - prompt: 공개 데이터 검토 prompt 1개
 - resource: `tonghari-gis://policy/public-data/v1`
 - health: `GET /health`, `GET /health/detailed`의 `gisMcp*` 필드
@@ -361,3 +361,28 @@ initialize → initialized → tools/list lifecycle을 검증한다.
 - [VWorld 이용약관](https://www.vworld.kr/v4po_prcint_a001.do)
 - [VWorld 저작권 정책](https://www.vworld.kr/v4po_prcint_a006.do)
 - [공공데이터포털 건축HUB](https://www.data.go.kr/data/15134735/openapi.do)
+
+
+## 14개 공부 자료 전체 조회
+
+기존 5개 도구의 계약은 유지한다. 전체 비교가 필요하면 아래 도구를 호출한다.
+
+```json
+{
+  "name": "lookup_full_gis_public_data_v1",
+  "arguments": {
+    "address": "서울특별시 중구 태평로1가 31",
+    "year": 2026,
+    "limit": 10
+  }
+}
+```
+
+- 주소 또는 PNU 중 하나가 필요하다. 둘 다 입력하면 서로 일치해야 한다.
+- PNU만 입력하면 주소·좌표가 필요한 앞 3항목은 미호출로 표시한다. 14개 실호출 확인에는 주소를 사용한다.
+- 각 `steps[].pagination`의 `total`, `hasMore`, `nextOffset`을 확인한다. 다음 조회에서는 `offsets`의 해당 source ID에 `nextOffset`을 넣는다.
+- 예: `offsets: {"building_units": 10, "building_floors": 10}`. 자료별 독립 offset을 지원하며 공통 `offset`은 기본 0이다.
+- `allSourcesQueried`는 모든 자료를 요청했는지, `allRecordsReturned`는 첫 행부터 전량을 한 응답에 반환했는지 뜻한다.
+- 14항목의 개별 오류와 무자료는 그대로 보존한다. `PARTIAL`을 완료나 무자료로 바꾸지 않는다.
+- 건물호수조회는 운영자가 별도 이용허락을 확보했다고 확인한 범위에 포함된다. 일반 공개 이용조건 변경을 의미하지 않는다.
+- 표제부·전유부·층별개요를 합쳐 가상 세대나 단일 면적을 만들지 않는다. 원래 필드와 대지권 분수 문자열을 대조 자료로 사용한다.

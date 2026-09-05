@@ -201,7 +201,7 @@ describe('Codex MCP 2025-06-18 stateless 호환 계약', () => {
         await closeServer(server);
     });
 
-    it('GIS는 Codex 버전 lifecycle과 정확한 5개 도구 및 인증 principal을 유지한다', async () => {
+    it('GIS는 Codex 버전 lifecycle과 기존 5개와 전체 조회 도구 및 인증 principal을 유지한다', async () => {
         const options: LegacyRequestOptions = {
             endpoint: gisEndpoint,
             token: GIS_TOKEN,
