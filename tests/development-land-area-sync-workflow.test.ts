@@ -852,3 +852,24 @@ test('두 워크플로의 라벨·case·target 파일명은 서로 정합하고 
         );
     }
 });
+
+test('러너 CLI 입력 상한은 8 MiB 이고 guardian 은 runner exit/실패 코드를 고정 토큰 마커로 남긴다 (2026-09-06 삼양동 창 A 재발 방지)', () => {
+    // 851 anchor/965 물건 evidence(pretty JSON ≈1.1 MiB)가 1 MiB 상한에 걸려
+    // 러너가 프로브 이전에 종료했고, guardian.log 는 host 에서 만료되어 원인이
+    // 워크플로 로그 어디에도 남지 않았다.
+    assert.match(cli, /const INPUT_SIZE_LIMIT = 8 \* 1024 \* 1024;/);
+    // 고정 어휘 plain Error(CLI_*)는 코드 그대로, 그 외는 UNEXPECTED 로 뭉갠다.
+    assert.match(cli, /const FIXED_FAILURE_CODE_RE = \/\^\[A-Z\]\[A-Z0-9_\]\{1,47\}\$\//);
+    assert.match(
+        cli,
+        /`LAND_AREA_DEVELOPMENT_RUNNER_ERROR:\$\{runnerFailureCode\(error\)\}\\n`/
+    );
+    assert.match(guardian, /append_stage "RUNNER_EXIT_\$\{runner_status\}"/);
+    assert.match(
+        guardian,
+        /\^LAND_AREA_DEVELOPMENT_RUNNER_ERROR:\(\[A-Z0-9_\]\{1,48\}\)\$/
+    );
+    assert.match(guardian, /append_stage "RUNNER_ERROR_\$\{BASH_REMATCH\[1\]\}"/);
+    // 마커는 workflow 의 `^[A-Z0-9_]{1,64}$` 필터를 통과해야 한다: 13 + 48 ≤ 64.
+    assert.ok('RUNNER_ERROR_'.length + 48 <= 64);
+});

@@ -25,7 +25,11 @@ import {
 } from './development-land-area-paged-read';
 
 const PRIVATE_DIRECTORY = '.development-land-area-sync';
-const INPUT_SIZE_LIMIT = 1024 * 1024;
+// evidence 입력은 가디언 검증 단계가 in-run 캡처 산출물(≤4 MiB, compact)을
+// pretty JSON 으로 재기록한 파일이다. 851 anchor/965 물건(삼양동 창 A) 이
+// 약 1.1 MiB 로 1 MiB 상한을 넘어 CLI_INPUT_FILE_INVALID 로 즉시 종료됐으므로
+// (2026-09-06) 캡처 상한의 pretty 팽창분까지 담도록 8 MiB 로 둔다.
+const INPUT_SIZE_LIMIT = 8 * 1024 * 1024;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // target 별로 접속 가능한 Supabase 프로젝트를 exact 로 못박는다. 선언한 target 과
@@ -183,6 +187,22 @@ async function emitRunnerProbe(
             `LAND_AREA_SYNC_RUNNER_PROBE_${phase}_EXIT_99\n`
         );
     }
+}
+
+// 실패 코드 출력: ControlledRunnerError 는 code, CLI 의 고정 어휘 plain Error
+// (CLI_INPUT_FILE_INVALID 등 대문자·숫자·밑줄 48자 이내)는 message 를 그대로
+// 쓴다. 그 밖의 오류는 식별자·경로 유출을 막기 위해 UNEXPECTED_RUNNER_ERROR 다.
+// (2026-09-06 삼양동 창 A: CLI_INPUT_FILE_INVALID 가 UNEXPECTED 로 뭉개져 재현이 필요했다.)
+const FIXED_FAILURE_CODE_RE = /^[A-Z][A-Z0-9_]{1,47}$/;
+function runnerFailureCode(error: unknown): string {
+    if (
+        error instanceof Error &&
+        !(error.name === 'ControlledRunnerError') &&
+        FIXED_FAILURE_CODE_RE.test(error.message)
+    ) {
+        return error.message;
+    }
+    return controlledFailureCode(error);
 }
 
 async function main(): Promise<void> {
@@ -695,7 +715,7 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
     process.stderr.write(
-        `LAND_AREA_DEVELOPMENT_RUNNER_ERROR:${controlledFailureCode(error)}\n`
+        `LAND_AREA_DEVELOPMENT_RUNNER_ERROR:${runnerFailureCode(error)}\n`
     );
     process.exitCode = 2;
 });

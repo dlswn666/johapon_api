@@ -521,13 +521,23 @@ runner_output="$(
 runner_status="$?"
 set -e
 printf '%s\n' "${runner_output}"
-# runner의 in-process 프로브 센티널(고정 토큰)만 stage 마커로 승격한다.
+# runner exit code 는 고정 토큰으로 승격한다. guardian.log 는 host 에서 만료되므로
+# workflow 로그에 남는 마커가 사후 진단의 유일한 단서다 (2026-09-06 창 A:
+# 러너가 프로브 이전에 종료했는데 코드가 남지 않아 원인 추적에 재현이 필요했다).
+append_stage "RUNNER_EXIT_${runner_status}"
+# runner의 in-process 프로브 센티널(고정 토큰)과 controlled failure code(고정
+# 어휘, 식별자 없음)만 stage 마커로 승격한다.
 runner_probe_marker_count=0
+runner_error_marker_count=0
 while IFS= read -r runner_line; do
   if [[ "${runner_line}" =~ ^LAND_AREA_SYNC_RUNNER_PROBE_[A-Z0-9_]{1,44}$ ]] \
     && [[ "${runner_probe_marker_count}" -lt 8 ]]; then
     append_stage "${runner_line}"
     runner_probe_marker_count=$((runner_probe_marker_count + 1))
+  elif [[ "${runner_line}" =~ ^LAND_AREA_DEVELOPMENT_RUNNER_ERROR:([A-Z0-9_]{1,48})$ ]] \
+    && [[ "${runner_error_marker_count}" -lt 1 ]]; then
+    append_stage "RUNNER_ERROR_${BASH_REMATCH[1]}"
+    runner_error_marker_count=$((runner_error_marker_count + 1))
   fi
 done <<< "${runner_output}"
 final_status="${runner_status}"
