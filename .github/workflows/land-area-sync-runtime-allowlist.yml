@@ -452,6 +452,15 @@ jobs:
           legal_registry_container_file="${legal_registry_container_dir}/clients.json"
           legal_registry_marker="${application_root}/.legal-mcp-file-registry-v1"
           legal_registry_client_count=""
+          gis_registry_host_dir="${application_root}/.gis-mcp-secrets"
+          gis_registry_container_dir="/run/secrets/tonghari-gis-mcp"
+          gis_registry_container_file="${gis_registry_container_dir}/clients.json"
+          gis_registry_marker="${application_root}/.gis-mcp-file-registry-v1"
+          gis_registry_required=0
+          gis_registry_client_count="0"
+          gis_registry_mount_args=()
+          previous_gis_mount_state="absent"
+          previous_gis_health_state="disabled"
           env_backup=""
           env_next=""
           env_replaced=0
@@ -620,6 +629,153 @@ jobs:
             [[ "${actual_health}" == "${expected_health}" ]]
           }
 
+          verify_gis_container_contract() {
+            local inspected_container="$1"
+            local expected_mount="${2:-present}"
+            local configured_environment=""
+            local registry_mount=""
+            local all_mounts=""
+            local mount_type="" mount_rw="" mount_source="" mount_destination="" mount_extra=""
+            local auth_key=""
+            [[ "${expected_mount}" == "present" || "${expected_mount}" == "absent" ]] || return 1
+            configured_environment="$(
+              docker container inspect \
+                --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                "${inspected_container}"
+            )" || return 1
+            all_mounts="$(
+              docker container inspect --format \
+                '{{range .Mounts}}{{.Type}}|{{.RW}}|{{.Source}}|{{.Destination}}{{println}}{{end}}' \
+                "${inspected_container}"
+            )" || return 1
+            while IFS='|' read -r mount_type mount_rw mount_source mount_destination mount_extra; do
+              [[ -z "${mount_type}" ]] && continue
+              [[ -z "${mount_extra}" && -n "${mount_destination}" ]] || return 1
+              if [[ "${mount_source}" == "${gis_registry_host_dir}" \
+                || "${mount_source}" == "${gis_registry_host_dir}/"* \
+                || "${mount_destination}" == "${gis_registry_container_dir}" \
+                || "${mount_destination}" == "${gis_registry_container_dir}/"* \
+                || "${gis_registry_container_dir}" == "${mount_destination}/"* ]]; then
+                [[ -z "${registry_mount}" ]] || return 1
+                registry_mount="${mount_type}|${mount_rw}|${mount_source}|${mount_destination}"
+              fi
+            done <<< "${all_mounts}"
+            if [[ "${gis_registry_required}" -eq 0 ]]; then
+              for auth_key in GIS_MCP_TOKEN_REGISTRY_FILE GIS_MCP_TOKEN_REGISTRY_JSON GIS_MCP_TOKEN_SHA256; do
+                [[ "$(grep -Ec "^${auth_key}=" <<< "${configured_environment}" || true)" -le 1 ]] || return 1
+                [[ "$(grep -Ec "^${auth_key}=.+" <<< "${configured_environment}" || true)" == "0" ]] || return 1
+              done
+              [[ -z "${registry_mount}" ]]
+              return
+            fi
+            if [[ "$(grep -Fxc "GIS_MCP_TOKEN_REGISTRY_FILE=${gis_registry_container_file}" <<< "${configured_environment}" || true)" != "1" ]] \
+              || [[ "$(grep -Ec '^GIS_MCP_TOKEN_REGISTRY_FILE=' <<< "${configured_environment}" || true)" != "1" ]] \
+              || [[ "$(grep -Ec '^GIS_MCP_TOKEN_REGISTRY_JSON=' <<< "${configured_environment}" || true)" != "0" ]] \
+              || [[ "$(grep -Ec '^GIS_MCP_TOKEN_SHA256=' <<< "${configured_environment}" || true)" != "0" ]]; then
+              return 1
+            fi
+            if [[ "${expected_mount}" == "absent" ]]; then
+              [[ -z "${registry_mount}" ]]
+            else
+              [[ "${registry_mount}" == "bind|false|${gis_registry_host_dir}|${gis_registry_container_dir}" ]]
+            fi
+          }
+
+          verify_gis_health() {
+            local inspected_container="$1"
+            local port="$2"
+            local expected_state="$3"
+            curl -fsS --connect-timeout 2 --max-time 5 \
+              "http://127.0.0.1:${port}/health" \
+              | docker exec -i \
+                  -e EXPECTED_GIS_MCP_STATE="${expected_state}" \
+                  -e EXPECTED_GIS_MCP_CLIENT_COUNT="${gis_registry_client_count}" \
+                  "${inspected_container}" node -e '
+                  let body = "";
+                  process.stdin.setEncoding("utf8");
+                  process.stdin.on("data", (chunk) => { body += chunk; });
+                  process.stdin.on("end", () => {
+                    try {
+                      const health = JSON.parse(body);
+                      const f = health.features ?? {};
+                      const state = process.env.EXPECTED_GIS_MCP_STATE;
+                      const enabled = f.gisMcpConfigurationValid === true
+                        && f.gisMcpAuthMode === "client_registry"
+                        && f.gisMcpAuthSource === "file_registry"
+                        && f.gisMcpProviderMode === "vworld_and_data_portal"
+                        && String(f.gisMcpRegisteredClientCount) === process.env.EXPECTED_GIS_MCP_CLIENT_COUNT
+                        && String(f.gisMcpRegisteredTokenCount) === process.env.EXPECTED_GIS_MCP_CLIENT_COUNT;
+                      const disabled = f.gisMcpConfigurationValid === false
+                        && f.gisMcpAuthMode === "disabled"
+                        && f.gisMcpProviderMode === "disabled"
+                        && f.gisMcpRegisteredClientCount === 0
+                        && f.gisMcpRegisteredTokenCount === 0;
+                      const idle = f.landAreaSyncEnabled === false
+                        && f.landAreaSyncAllowedTargetCount === 0
+                        && f.landAreaSyncAllowedTargetsDigest === ""
+                        && health.queue?.pending === 0 && health.queue?.running === 0;
+                      const valid = health.status === "ok" && (
+                        (state === "enabled" && enabled)
+                        || (state === "disabled" && disabled && f.gisMcpAuthSource === "disabled")
+                        || (state === "repairable" && disabled && f.gisMcpAuthSource === "file_registry" && idle)
+                        || (state === "missing_mount_baseline" && disabled && f.gisMcpAuthSource === "file_registry")
+                      );
+                      process.exit(valid ? 0 : 1);
+                    } catch { process.exit(1); }
+                  });
+                ' >/dev/null 2>&1
+          }
+
+          verify_gis_repair_allowed() {
+            [[ "${RUNTIME_ACTION}" == "disable" ]] \
+              && [[ "${previous_health_attestation}" == "false:0:" ]] \
+              && [[ "$(grep -Fxc 'LAND_AREA_SYNC_ENABLED=false' "${env_path}" || true)" == "1" ]] \
+              && [[ "$(grep -Ec '^[[:space:]]*LAND_AREA_SYNC_ENABLED[[:space:]]*=' "${env_path}" || true)" == "1" ]] \
+              && [[ "$(grep -Fxc 'LAND_AREA_SYNC_ALLOWED_TARGETS=' "${env_path}" || true)" == "1" ]] \
+              && [[ "$(grep -Ec '^[[:space:]]*LAND_AREA_SYNC_ALLOWED_TARGETS[[:space:]]*=' "${env_path}" || true)" == "1" ]] \
+              && verify_gis_container_contract "${container_name}" absent \
+              && verify_gis_health "${container_name}" 3100 repairable
+          }
+
+          prepare_gis_registry_mount() {
+            local registry_validation=""
+            local auth_key=""
+            if [[ ! -e "${gis_registry_marker}" && ! -L "${gis_registry_marker}" ]]; then
+              # 미활성 설치를 보존한다. 이 workflow는 최초 활성화/인증 이전을 수행하지 않는다.
+              for auth_key in GIS_MCP_TOKEN_REGISTRY_FILE GIS_MCP_TOKEN_REGISTRY_JSON GIS_MCP_TOKEN_SHA256; do
+                [[ "$(grep -Ec "^[[:space:]]*${auth_key}[[:space:]]*=" "${env_path}" || true)" -le 1 ]] || return 1
+                [[ "$(grep -Ec "^[[:space:]]*${auth_key}[[:space:]]*=.*[^[:space:]]" "${env_path}" || true)" == "0" ]] || return 1
+              done
+              return 0
+            fi
+            [[ -f "${gis_registry_marker}" && ! -L "${gis_registry_marker}" ]] \
+              && [[ "$(stat -c '%u' "${gis_registry_marker}")" == "$(id -u)" ]] \
+              && [[ "$(stat -c '%a' "${gis_registry_marker}")" == "600" ]] \
+              && [[ "$(<"${gis_registry_marker}")" == "version=1" ]] || return 1
+            [[ "$(grep -Fxc "GIS_MCP_TOKEN_REGISTRY_FILE=${gis_registry_container_file}" "${env_path}" || true)" == "1" ]] \
+              && [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_FILE[[:space:]]*=' "${env_path}" || true)" == "1" ]] \
+              && [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_REGISTRY_JSON[[:space:]]*=' "${env_path}" || true)" == "0" ]] \
+              && [[ "$(grep -Ec '^[[:space:]]*GIS_MCP_TOKEN_SHA256[[:space:]]*=' "${env_path}" || true)" == "0" ]] || return 1
+            [[ -d "${gis_registry_host_dir}" && ! -L "${gis_registry_host_dir}" ]] \
+              && [[ "$(stat -c '%u' "${gis_registry_host_dir}")" == "1001" ]] \
+              && [[ "$(stat -c '%g' "${gis_registry_host_dir}")" == "1001" ]] \
+              && [[ "$(stat -c '%a' "${gis_registry_host_dir}")" == "700" ]] || return 1
+            registry_validation="$(
+              docker run --rm --network none --read-only --cap-drop ALL \
+                --security-opt no-new-privileges \
+                --mount "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir},readonly" \
+                "${current_image_id}" sh -c '
+                  node -e '\''const fs=require("node:fs"); const dir="/run/secrets/tonghari-gis-mcp"; const entries=fs.readdirSync(dir); const file=fs.lstatSync(dir+"/clients.json"); process.exit(entries.length===1 && entries[0]==="clients.json" && file.isFile() && file.uid===1001 && file.gid===1001 && (file.mode & 0o777)===0o600 && file.nlink===1 ? 0 : 1);'\'' \
+                  && node dist/cli/gis-mcp-registry.js validate --path /run/secrets/tonghari-gis-mcp/clients.json
+                '
+            )" || return 1
+            [[ "${registry_validation}" =~ ^clientCount=([1-9][0-9]*)$ ]] || return 1
+            gis_registry_client_count="${BASH_REMATCH[1]}"
+            (( gis_registry_client_count >= 1 && gis_registry_client_count <= 32 )) || return 1
+            gis_registry_required=1
+            gis_registry_mount_args=(--mount "type=bind,src=${gis_registry_host_dir},dst=${gis_registry_container_dir},readonly")
+          }
+
           acquire_production_lock() {
             if [[ ! -e "${production_lock_path}" && ! -L "${production_lock_path}" ]]; then
               (
@@ -773,6 +929,10 @@ jobs:
             echo "The current API container violates the legal MCP env, mount, or loopback port contract."
             false
           fi
+          if ! prepare_gis_registry_mount; then
+            echo "GIS MCP committed registry validation failed; runtime change was not started."
+            false
+          fi
           previous_health_attestation="$(
             read_health_attestation "${container_name}" 3100
           )"
@@ -877,6 +1037,29 @@ jobs:
           fi
           expected_health_attestation="${desired_enabled}:${actual_count}:${actual_digest}"
 
+          if [[ "${gis_registry_required}" -eq 1 ]]; then
+            if verify_gis_container_contract "${container_name}" present \
+              && verify_gis_health "${container_name}" 3100 enabled; then
+              previous_gis_mount_state="present"
+              previous_gis_health_state="enabled"
+            elif verify_gis_repair_allowed; then
+              # 활성화 완료 marker/registry는 그대로 두고 빠진 mount만 복구한다.
+              previous_gis_mount_state="absent"
+              previous_gis_health_state="missing_mount_baseline"
+            else
+              echo "GIS MCP state is neither healthy nor an idle disabled missing-mount recovery."
+              false
+            fi
+            expected_gis_health_state="enabled"
+          else
+            if ! verify_gis_container_contract "${container_name}" absent \
+              || ! verify_gis_health "${container_name}" 3100 disabled; then
+              echo "Uncommitted GIS MCP authentication cannot be changed by the runtime workflow."
+              false
+            fi
+            expected_gis_health_state="disabled"
+          fi
+
           if [[ "${RUNTIME_ACTION}" == "enable" ]]; then
             if (( REQUEST_SEQUENCE < last_sequence )); then
               echo "Stale enable request skipped by the runtime watermark gate."
@@ -887,7 +1070,9 @@ jobs:
                 && verify_container \
                   "${container_name}" \
                   3100 \
-                  "${expected_health_attestation}"; then
+                  "${expected_health_attestation}" \
+                && verify_gis_container_contract "${container_name}" \
+                && verify_gis_health "${container_name}" 3100 "${expected_gis_health_state}"; then
                 echo "Runtime enable request was already applied and verified."
                 exit 0
               fi
@@ -982,6 +1167,10 @@ jobs:
               rollback_failed=1
             fi
 
+            if ! verify_gis_container_contract "${container_name}" "${previous_gis_mount_state}" \
+              || ! verify_gis_health "${container_name}" 3100 "${previous_gis_health_state}"; then
+              rollback_failed=1
+            fi
             if [[ "${rollback_failed}" -ne 0 ]]; then
               echo "ROLLBACK_FAILED: manual recovery is required."
               cleanup_run_files 70
@@ -1175,18 +1364,26 @@ jobs:
             --env-file "${env_path}" \
             --mount \
               "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
+            "${gis_registry_mount_args[@]}" \
             --memory=800m \
             --memory-swap=1600m \
             "${current_image_id}" >/dev/null
           if ! verify_container \
             "${candidate_container}" \
             13100 \
-            "${expected_health_attestation}"; then
+            "${expected_health_attestation}" \
+            || ! verify_gis_container_contract "${candidate_container}" \
+            || ! verify_gis_health "${candidate_container}" 13100 "${expected_gis_health_state}"; then
             echo "Runtime candidate health attestation failed."
             false
           fi
           docker rm -f "${candidate_container}" >/dev/null
 
+          if [[ "${previous_gis_health_state}" == "missing_mount_baseline" ]] \
+            && ! verify_gis_repair_allowed; then
+            echo "GIS MCP missing-mount recovery is no longer idle and disabled."
+            false
+          fi
           docker stop "${container_name}" >/dev/null
           docker rename "${container_name}" "${rollback_container}"
           previous_renamed=1
@@ -1199,6 +1396,7 @@ jobs:
             --env-file "${env_path}" \
             --mount \
               "type=bind,src=${legal_registry_host_dir},dst=${legal_registry_container_dir},readonly" \
+            "${gis_registry_mount_args[@]}" \
             -v "${application_root}/logs:/app/logs" \
             --memory=800m \
             --memory-swap=1600m \
@@ -1206,12 +1404,14 @@ jobs:
           if ! verify_container \
             "${container_name}" \
             3100 \
-            "${expected_health_attestation}"; then
+            "${expected_health_attestation}" \
+            || ! verify_gis_container_contract "${container_name}" \
+            || ! verify_gis_health "${container_name}" 3100 "${expected_gis_health_state}"; then
             echo "Runtime container health attestation failed."
             false
           fi
 
-          # final의 env/mount/loopback/legal/land health가 모두 통과한 시점이
+          # final의 env/mount/loopback/legal/GIS/land health가 모두 통과한 시점이
           # commit point다. 이후에는 구 container나 env를 다시 활성화하지 않는다.
           transaction_phase="committed"
           rollback_cleanup_command_failed=0
