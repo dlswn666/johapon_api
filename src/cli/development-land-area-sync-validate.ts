@@ -15,7 +15,11 @@ import {
 } from '../operations/development-land-area-sync-runner';
 
 const PRIVATE_DIRECTORY = '.development-land-area-sync';
-const INPUT_SIZE_LIMIT = 3 * 1024 * 1024;
+// run artifact 는 러너가 같은 컨테이너에서 pretty JSON 으로 쓴 파일이고 union 전수
+// 스냅샷(pre/post)·원장 스냅샷·anchor 별 결과를 담는다. 851 anchor/965 물건
+// (삼양동 창 A) 규모에서 3 MiB 는 여유가 없어 러너 CLI 입력 상한과 같은 8 MiB 로
+// 맞춘다 (2026-09-06).
+const INPUT_SIZE_LIMIT = 8 * 1024 * 1024;
 
 function argument(argv: string[], key: string): string {
     const index = argv.indexOf(key);

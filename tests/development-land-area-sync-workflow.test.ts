@@ -858,6 +858,11 @@ test('러너 CLI 입력 상한은 8 MiB 이고 guardian 은 runner exit/실패 �
     // 러너가 프로브 이전에 종료했고, guardian.log 는 host 에서 만료되어 원인이
     // 워크플로 로그 어디에도 남지 않았다.
     assert.match(cli, /const INPUT_SIZE_LIMIT = 8 \* 1024 \* 1024;/);
+    const validateCli = fs.readFileSync(
+        path.join(root, 'src/cli/development-land-area-sync-validate.ts'),
+        'utf8'
+    );
+    assert.match(validateCli, /const INPUT_SIZE_LIMIT = 8 \* 1024 \* 1024;/);
     // 고정 어휘 plain Error(CLI_*)는 코드 그대로, 그 외는 UNEXPECTED 로 뭉갠다.
     assert.match(cli, /const FIXED_FAILURE_CODE_RE = \/\^\[A-Z\]\[A-Z0-9_\]\{1,47\}\$\//);
     assert.match(
