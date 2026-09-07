@@ -7,6 +7,13 @@ import type {
 } from '../gis.service';
 import { GIS_SHARED_ENDPOINTS } from '../gis-shared/endpoints';
 import {
+    LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME,
+    FULL_GIS_SOURCE_META,
+    FULL_GIS_SOURCE_IDS,
+    type LookupFullGisPublicDataInputV1,
+} from './full-lookup-contract';
+import { createFullGisLookupProvider } from './full-lookup-provider';
+import {
     LandRightLookupBudget,
     type NedFetchResult,
     type VworldAuth,
@@ -57,6 +64,11 @@ export const PUBLIC_DATA_MCP_TOOL_PROVENANCE: Record<
     PublicDataMcpToolName,
     { provider: string; source: string; attribution: string }
 > = {
+    [LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME]: {
+        provider: 'VWorld / 공공데이터포털 건축HUB',
+        source: [...new Set(FULL_GIS_SOURCE_IDS.map((id) => FULL_GIS_SOURCE_META[id].source))].join(', '),
+        attribution: `${VWORLD_ATTRIBUTION} ${DATA_PORTAL_ATTRIBUTION}`,
+    },
     [RESOLVE_ADDRESS_TO_PNU_TOOL_NAME]: {
         provider: 'VWorld',
         source: VWORLD_ADDRESS_SOURCE,
@@ -153,6 +165,8 @@ function queryFor(
     input: PublicDataMcpToolInput
 ): Record<string, unknown> {
     switch (tool) {
+        case LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME:
+            return { ...(input as LookupFullGisPublicDataInputV1) };
         case RESOLVE_ADDRESS_TO_PNU_TOOL_NAME:
             return { address: (input as ResolveAddressToPnuInputV1).address };
         case LOOKUP_PARCEL_PUBLIC_DATA_TOOL_NAME: {
@@ -399,7 +413,8 @@ function nedOutcome(result: NedFetchResult): SourceOutcome<Record<string, unknow
 
 /**
  * 기존 GIS 정규화 서비스와 transient NED client만 연결하는 공개 projection adapter다.
- * 인스펙터 원문, 내부 DB 작업, 상업 이용 제한 endpoint는 이 경계에 들어오지 않는다.
+ * 인스펙터 원문과 내부 DB 작업은 이 경계에 들어오지 않는다.
+ * 전체 조회의 별도 이용허락 범위는 2026-09-06 acceptance에 기록한다.
  */
 export function createPublicDataMcpProviderV1(
     dependencies: PublicDataMcpProviderDependenciesV1 = {}
@@ -418,6 +433,7 @@ export function createPublicDataMcpProviderV1(
         domain: configuredEnv!.VWORLD_API_DOMAIN,
     };
     const now = dependencies.now ?? Date.now;
+    let fullLookup: ReturnType<typeof createFullGisLookupProvider> | undefined;
 
     async function resolveAddress(
         input: ResolveAddressToPnuInputV1,
@@ -831,6 +847,9 @@ export function createPublicDataMcpProviderV1(
         async execute(tool, input, context) {
             context.signal.throwIfAborted();
             switch (tool) {
+                case LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME:
+                    fullLookup ??= createFullGisLookupProvider({ now });
+                    return fullLookup.execute(input as LookupFullGisPublicDataInputV1, context);
                 case RESOLVE_ADDRESS_TO_PNU_TOOL_NAME:
                     return resolveAddress(
                         input as ResolveAddressToPnuInputV1,

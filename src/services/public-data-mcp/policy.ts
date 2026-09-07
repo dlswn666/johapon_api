@@ -1,7 +1,13 @@
 import * as z from 'zod/v4';
+import {
+    LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME,
+    FullGisDataSchema,
+    type LookupFullGisPublicDataInputV1,
+} from './full-lookup-contract';
+export { LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME, LookupFullGisPublicDataInputV1Schema } from './full-lookup-contract';
 
 export const PUBLIC_DATA_MCP_SERVER_NAME = 'tonghari-public-gis';
-export const PUBLIC_DATA_MCP_SERVER_VERSION = '1.0.0';
+export const PUBLIC_DATA_MCP_SERVER_VERSION = '1.1.0';
 export const GIS_MCP_REQUIRED_SCOPE = 'gis:read' as const;
 export const GIS_MCP_CLIENT_ID = 'tonghari-gis-mcp' as const;
 
@@ -22,6 +28,7 @@ export const PUBLIC_DATA_MCP_TOOL_NAMES = [
     LOOKUP_BUILDING_REGISTER_TOOL_NAME,
     LOOKUP_HOUSING_OFFICIAL_PRICE_TOOL_NAME,
     LOOKUP_LAND_RIGHT_REGISTRATION_TOOL_NAME,
+    LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME,
 ] as const;
 
 export const PUBLIC_DATA_MCP_REVIEW_PROMPT_NAME =
@@ -108,6 +115,7 @@ export type PublicDataMcpToolName =
     (typeof PUBLIC_DATA_MCP_TOOL_NAMES)[number];
 
 export type PublicDataMcpToolInputByName = {
+    [LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME]: LookupFullGisPublicDataInputV1;
     [RESOLVE_ADDRESS_TO_PNU_TOOL_NAME]: ResolveAddressToPnuInputV1;
     [LOOKUP_PARCEL_PUBLIC_DATA_TOOL_NAME]: LookupParcelPublicDataInputV1;
     [LOOKUP_BUILDING_REGISTER_TOOL_NAME]: LookupBuildingRegisterInputV1;
@@ -164,6 +172,9 @@ export const PUBLIC_DATA_MCP_SAFE_CODES = [
     'ROWS_INVALID',
     'TOTAL_COUNT_INVALID',
     'TRANSPORT_ERROR',
+    'FULL_GIS_PARTIAL',
+    'FULL_GIS_INCOMPLETE',
+    'PNU_MISMATCH',
 ] as const;
 
 export type PublicDataMcpStatus =
@@ -190,7 +201,15 @@ export const PublicDataMcpResultV1Schema = z.object({
         hasMore: z.boolean(),
     }).strict().optional(),
     warnings: z.array(z.string().min(1).max(160)).max(30),
-}).strict();
+}).strict().superRefine((value, context) => {
+    if (value.tool !== LOOKUP_FULL_GIS_PUBLIC_DATA_TOOL_NAME) return;
+    // 전송/인증 단계의 안전 오류는 data={}이며, 실제 전체 조회 결과는 14항목 계약을 따른다.
+    if (Object.keys(value.data).length === 0 && ['FAILED', 'INCOMPLETE'].includes(value.status)) return;
+    const result = FullGisDataSchema.safeParse(value.data);
+    if (!result.success) {
+        context.addIssue({ code: 'custom', message: '전체 GIS 조회 결과가 14개 자료 계약과 다릅니다.', path: ['data'] });
+    }
+});
 
 export type PublicDataMcpResultV1 = z.infer<
     typeof PublicDataMcpResultV1Schema
@@ -215,6 +234,9 @@ export const PUBLIC_DATA_MCP_SERVER_INSTRUCTIONS = [
     '대지권등록부와 건축물대장은 참고용 공공자료이며 등기부상 권리의 존부·귀속·순위를 확정하지 않는다.',
     '기준연도와 lastUpdtDt가 있으면 함께 제시하고, asOf는 조회 시각이지 원자료의 최신 보증일이 아님을 알린다.',
     'FAILED, INCOMPLETE, PARTIAL 상태를 NO_DATA로 바꾸거나 누락 자료를 추정하지 않는다.',
+    '명부 작성·공부 대조를 위한 전체 조회에는 lookup_full_gis_public_data_v1을 사용한다. 14개 자료의 개별 상태와 pagination을 확인한다.',
+    'hasMore=true인 자료는 offsets에 해당 자료의 nextOffset을 넣어 이어 조회한다. allSourcesQueried와 allRecordsReturned를 구분한다.',
+    '표제부·전유부·층별개요 면적과 대지권 분수는 원래 의미를 유지하고, 사람별 소유지분이나 명부 적용 면적으로 자동 변환하지 않는다.',
 ].join('\n');
 
 export const PUBLIC_DATA_MCP_POLICY_V1 = `# 통하리 공개 GIS 데이터 이용 정책 v1
@@ -223,6 +245,7 @@ export const PUBLIC_DATA_MCP_POLICY_V1 = `# 통하리 공개 GIS 데이터 이�
 
 - 공개 도구는 주소/PNU로 특정한 자료를 조회하는 읽기 전용 도구다. 동기화, 내부 DB 조회·수정, 임의 endpoint 호출은 제공하지 않는다.
 - VWorld 주소·공간 조회 결과는 다른 저장소, 캐시 또는 통하리 내부 DB에 저장하지 않는다.
+- 전체 조회는 기존 인스펙터의 14개 자료를 source별로 반환하며, 건물호수조회는 운영자가 별도 이용허락을 확보한 범위에서 제공한다.
 - API key, bearer token, provider 원문 오류 body, stack, 소유자 식별정보는 결과에 포함하지 않는다.
 
 ## 출처와 기준일

@@ -22,13 +22,14 @@
 
 ## 공개 surface
 
-정확히 다음 다섯 read-only 도구만 공개한다.
+다음 기존 다섯 read-only 도구와 전체 조회 도구를 공개한다.
 
 1. `resolve_address_to_pnu_v1`
 2. `lookup_parcel_public_data_v1`
 3. `lookup_building_register_v1`
 4. `lookup_housing_official_price_v1`
 5. `lookup_land_right_registration_v1`
+6. `lookup_full_gis_public_data_v1` — 2026-09-06 추가, 14개 자료별 상태·페이지·원래 필드 의미 보존
 
 추가로 review prompt 1개와
 `tonghari-gis://policy/public-data/v1` policy resource 1개를 제공한다.
@@ -69,7 +70,7 @@
 
 - [x] `GisInspectService.rawJson`, provider error body, stack, API key, JWT, service role,
   소유자 이름/연락처를 반환하거나 로그에 남기지 않는다.
-- [x] 공공누리 제4유형으로 확인된 `buldHoCoList`를 도구·provider에서 호출하지 않는다.
+- [x] 기존 5개 도구는 `buldHoCoList`를 호출하지 않는다. 전체 조회 도구는 사용자가 별도 이용허락 확보를 확인한 2026-09-06 요청 범위에서 호출한다. 상세 정본은 `2026-09-06-gis-mcp-full-lookup-acceptance.md`다.
 - [x] 폐기된 data.go.kr `ContinuousLandInfoService`를 사용하지 않는다.
 - [x] geocoder 결과를 캐시/DB/sync job에 저장하지 않는다.
 - [x] 공시가격을 감정평가로, 대지권/건축물대장을 등기상 권리 확정으로 표현하지 않는다.
