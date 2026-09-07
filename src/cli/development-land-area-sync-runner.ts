@@ -267,11 +267,22 @@ async function main(): Promise<void> {
         }
         return [...byId.values()];
     };
+    // anchor 재시도는 고정 토큰 마커로만 남긴다 (guardian 이 stage 마커로 승격).
+    let anchorRetryCount = 0;
     const artifact = await runDevelopmentLandAreaSync({
         target,
         dbApproval,
         evidence,
         client,
+        onAnchorRetry(event) {
+            anchorRetryCount += 1;
+            const code = /^[A-Z0-9_]{1,40}$/.test(event.failureCode)
+                ? event.failureCode
+                : 'UNKNOWN';
+            process.stdout.write(
+                `LAND_AREA_SYNC_RUNNER_RETRY_${event.attempt}_${code}\n`
+            );
+        },
         preflightReader: {
             async readActivePropertyUnits(unionId) {
                 // 활성 물건지가 PostgREST max-rows(1,000)를 넘는 조합도 전건을
@@ -693,6 +704,9 @@ async function main(): Promise<void> {
         },
     });
     await writeArtifact(args.outputPath, artifact);
+    process.stdout.write(
+        `LAND_AREA_SYNC_RUNNER_RETRY_TOTAL_${anchorRetryCount}\n`
+    );
     process.stdout.write(
         `LAND_AREA_DEVELOPMENT_RUN_ARTIFACT:${artifact.gate.status}\n`
     );

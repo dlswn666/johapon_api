@@ -4036,3 +4036,253 @@ test('localhost client는 target 축 JWT로 요청한다 — production이면 ki
         'production'
     );
 });
+
+const FAILED_APPLY_JOB_ID = '55555555-5555-4555-8555-555555555555';
+
+function retryScenarioClient(input: {
+    calls: string[];
+    applyFailsUntilAttempt: number;
+}): { client: LandAreaSyncApiClient; confirmCount: () => number } {
+    let confirmCount = 0;
+    const client: LandAreaSyncApiClient = {
+        async getLatest() {
+            input.calls.push('latest');
+            return null;
+        },
+        async admitDiscovery() {
+            input.calls.push('admit-discovery');
+            return DISCOVERY_JOB_ID;
+        },
+        async getJob(_unionId, jobId) {
+            input.calls.push(`get:${jobId}`);
+            if (jobId === DISCOVERY_JOB_ID) {
+                return job(DISCOVERY_JOB_ID, {
+                    status: 'COMPLETED',
+                    scopeState: 'SINGLE_SCOPE_CONFIRMATION_REQUIRED',
+                    outcome: 'REVIEW_REQUIRED',
+                    sourceDiscoveryJobId: null,
+                });
+            }
+            if (jobId === FAILED_APPLY_JOB_ID) {
+                // scan 단계 provider 오류로 apply 가 FAILED 로 끝난 워커 job.
+                return job(FAILED_APPLY_JOB_ID, {
+                    status: 'FAILED',
+                    scopeState: 'FAILED',
+                    outcome: 'FAILED',
+                    sourceDiscoveryJobId: DISCOVERY_JOB_ID,
+                    issueCodes: ['PROVIDER_PROTOCOL_ERROR'],
+                });
+            }
+            return job(APPLY_JOB_ID, {
+                status: 'COMPLETED',
+                scopeState: 'SINGLE_PNU_CONFIRMED',
+                outcome: 'APPLIED',
+                sourceDiscoveryJobId: DISCOVERY_JOB_ID,
+            });
+        },
+        async confirmDiscovery() {
+            input.calls.push('confirm');
+            confirmCount += 1;
+            return confirmCount <= input.applyFailsUntilAttempt
+                ? FAILED_APPLY_JOB_ID
+                : APPLY_JOB_ID;
+        },
+    };
+    return { client, confirmCount: () => confirmCount };
+}
+
+test('apply job 이 FAILED 로 끝나면 같은 anchor 를 새 discovery 로 재시도하고 성공 시 PASS 한다', async () => {
+    const targetManifest = target();
+    const evidenceManifest = evidence(targetManifest);
+    const calls: string[] = [];
+    const retries: Array<{
+        pnu: string;
+        attempt: number;
+        failureCode: string;
+        nextDelayMs: number;
+    }> = [];
+    const sleeps: number[] = [];
+    const { client } = retryScenarioClient({
+        calls,
+        applyFailsUntilAttempt: 1,
+    });
+    const admissionKeys = [
+        DISCOVERY_JOB_ID,
+        FAILED_APPLY_JOB_ID,
+        DISCOVERY_JOB_ID,
+        APPLY_JOB_ID,
+    ];
+    const artifact = await runDevelopmentLandAreaSync({
+        target: targetManifest,
+        dbApproval: approval(targetManifest),
+        evidence: evidenceManifest,
+        client,
+        preflightReader: preflightReader(evidenceManifest.entries),
+        sleep: async (milliseconds) => {
+            sleeps.push(milliseconds);
+        },
+        createAdmissionKey: () => admissionKeys.shift()!,
+        onAnchorRetry: (event) => retries.push(event),
+    });
+
+    assert.equal(artifact.gate.status, 'PASS', artifact.gate.failureCode ?? undefined);
+    assert.equal(artifact.results.length, 1);
+    assert.equal(artifact.results[0].admission, 'NEW_DISCOVERY');
+    assert.equal(artifact.results[0].applyJobId, APPLY_JOB_ID);
+    assert.deepEqual(retries, [
+        {
+            pnu: PNU,
+            attempt: 1,
+            failureCode: 'APPLY_JOB_FAILED',
+            nextDelayMs: 2_000,
+        },
+    ]);
+    assert.ok(sleeps.includes(2_000));
+    assert.deepEqual(calls, [
+        'latest',
+        'admit-discovery',
+        `get:${DISCOVERY_JOB_ID}`,
+        'confirm',
+        `get:${FAILED_APPLY_JOB_ID}`,
+        'latest',
+        'admit-discovery',
+        `get:${DISCOVERY_JOB_ID}`,
+        'confirm',
+        `get:${APPLY_JOB_ID}`,
+    ]);
+});
+
+test('apply 가 계속 FAILED 면 기본 10회까지 재시도한 뒤 러너를 멈춘다', async () => {
+    const targetManifest = target();
+    const evidenceManifest = evidence(targetManifest);
+    const calls: string[] = [];
+    const retries: Array<{ attempt: number; nextDelayMs: number }> = [];
+    const { client, confirmCount } = retryScenarioClient({
+        calls,
+        applyFailsUntilAttempt: Number.MAX_SAFE_INTEGER,
+    });
+    let keyCalls = 0;
+    const artifact = await runDevelopmentLandAreaSync({
+        target: targetManifest,
+        dbApproval: approval(targetManifest),
+        evidence: evidenceManifest,
+        client,
+        // 쓰기 없이 끝나는 시나리오: postflight 가 preflight 와 같아야 한다.
+        preflightReader: preflightReader(
+            evidenceManifest.entries,
+            false,
+            APPLY_JOB_ID,
+            false
+        ),
+        sleep: async () => undefined,
+        createAdmissionKey: () =>
+            keyCalls++ % 2 === 0 ? DISCOVERY_JOB_ID : FAILED_APPLY_JOB_ID,
+        onAnchorRetry: (event) =>
+            retries.push({
+                attempt: event.attempt,
+                nextDelayMs: event.nextDelayMs,
+            }),
+    });
+
+    assert.equal(confirmCount(), 10);
+    assert.equal(
+        calls.filter((call) => call === 'admit-discovery').length,
+        10
+    );
+    assert.deepEqual(
+        retries.map((event) => event.attempt),
+        [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    );
+    // 간격은 2초×시도, 15초 상한.
+    assert.deepEqual(
+        retries.map((event) => event.nextDelayMs),
+        [2_000, 4_000, 6_000, 8_000, 10_000, 12_000, 14_000, 15_000, 15_000]
+    );
+    assert.equal(artifact.gate.status, 'FAIL');
+    assert.equal(artifact.gate.failureCode, 'APPLY_JOB_FAILED');
+    assert.equal(artifact.gate.stoppedBeforePnu, PNU);
+    assert.equal(artifact.results.length, 0);
+});
+
+test('REVIEW_REQUIRED 같은 결정적 결과는 재시도하지 않고 즉시 멈춘다', async () => {
+    const targetManifest = target();
+    const evidenceManifest = evidence(targetManifest);
+    const calls: string[] = [];
+    let retryEvents = 0;
+    const client: LandAreaSyncApiClient = {
+        async getLatest() {
+            calls.push('latest');
+            return null;
+        },
+        async admitDiscovery() {
+            calls.push('admit-discovery');
+            return DISCOVERY_JOB_ID;
+        },
+        async getJob() {
+            return job(DISCOVERY_JOB_ID, {
+                status: 'COMPLETED',
+                scopeState: 'REVIEW_REQUIRED',
+                outcome: 'REVIEW_REQUIRED',
+                sourceDiscoveryJobId: null,
+            });
+        },
+        async confirmDiscovery() {
+            throw new Error('호출되면 안 됨');
+        },
+    };
+    const artifact = await runDevelopmentLandAreaSync({
+        target: targetManifest,
+        dbApproval: approval(targetManifest),
+        evidence: evidenceManifest,
+        client,
+        preflightReader: preflightReader(
+            evidenceManifest.entries,
+            false,
+            APPLY_JOB_ID,
+            false
+        ),
+        sleep: async () => undefined,
+        createAdmissionKey: () => DISCOVERY_JOB_ID,
+        onAnchorRetry: () => {
+            retryEvents += 1;
+        },
+    });
+    assert.equal(artifact.gate.status, 'FAIL');
+    assert.equal(artifact.gate.failureCode, 'APPLY_TERMINAL_NOT_PASS');
+    assert.equal(retryEvents, 0);
+    assert.equal(
+        calls.filter((call) => call === 'admit-discovery').length,
+        1
+    );
+});
+
+test('anchorMaxAttempts 는 1~100 정수만 허용한다', async () => {
+    const targetManifest = target();
+    const evidenceManifest = evidence(targetManifest);
+    for (const anchorMaxAttempts of [0, 101, 1.5]) {
+        await assert.rejects(
+            runDevelopmentLandAreaSync({
+                target: targetManifest,
+                dbApproval: approval(targetManifest),
+                evidence: evidenceManifest,
+                client: {
+                    async getLatest() {
+                        throw new Error('호출되면 안 됨');
+                    },
+                    async admitDiscovery() {
+                        throw new Error('호출되면 안 됨');
+                    },
+                    async getJob() {
+                        throw new Error('호출되면 안 됨');
+                    },
+                    async confirmDiscovery() {
+                        throw new Error('호출되면 안 됨');
+                    },
+                },
+                preflightReader: preflightReader(evidenceManifest.entries),
+                anchorMaxAttempts,
+            }),
+            /POLL_CONFIGURATION_INVALID/
+        );
+    }
+});

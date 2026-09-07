@@ -70,6 +70,14 @@ export const DEVELOPMENT_RUN_ARTIFACT_VERSION =
 export const DEVELOPMENT_PUBLIC_RUN_ARTIFACT_VERSION =
     'land-area-development-public-run-artifact@2';
 export const DEVELOPMENT_GIS_JWT_TTL_SECONDS = 10 * 60;
+// anchor 재시도: V-World/워커의 일시 실패(job FAILED, 네트워크·5xx·429)는 같은
+// anchor 를 새 discovery 로 다시 조회한다. 결정적 결과(REVIEW_REQUIRED, 증거
+// 불일치, 차단 issue)는 재시도하지 않는다. 최대 시도 뒤에도 실패하면 기존과
+// 같이 러너를 멈춘다 (2026-09-07 삼양동 창 B: 47번째 anchor 의 apply 가
+// PROVIDER_PROTOCOL_ERROR 1회로 FAILED 되어 55 anchor 가 미실행으로 남았다).
+export const DEVELOPMENT_ANCHOR_MAX_ATTEMPTS = 10;
+export const DEVELOPMENT_ANCHOR_RETRY_BASE_DELAY_MS = 2_000;
+export const DEVELOPMENT_ANCHOR_RETRY_MAX_DELAY_MS = 15 * 1_000;
 export const DEVELOPMENT_API_QUEUE_TIMEOUT_MS = 10 * 60_000;
 export const DEVELOPMENT_JOB_POLL_SOFT_TIMEOUT_MS =
     DEVELOPMENT_API_QUEUE_TIMEOUT_MS + 60_000;
@@ -2245,6 +2253,35 @@ function hasBlockingIssue(job: LandAreaSyncApiJob): boolean {
     return codes.some((code) => blockingPattern.test(code));
 }
 
+export interface DevelopmentAnchorRetryEvent {
+    pnu: string;
+    attempt: number;
+    failureCode: string;
+    nextDelayMs: number;
+}
+
+const RETRYABLE_ANCHOR_FAILURE_CODES = new Set([
+    'DISCOVERY_OR_APPLY_JOB_FAILED',
+    'APPLY_JOB_FAILED',
+]);
+
+// 재시도 가능 = 원천/워커 job 이 FAILED 로 끝났거나(scan 단계 provider 오류 등)
+// localhost API 왕복이 네트워크·5xx·429 로 깨진 경우. 4xx(인증·검증 거부)와
+// 러너 자체의 계약 위반 코드는 재시도해도 같은 결과이므로 즉시 중단한다.
+function isRetryableAnchorFailure(error: unknown): boolean {
+    if (error instanceof ControlledApiError) {
+        return (
+            error.status === 0 ||
+            error.status === 429 ||
+            (error.status >= 500 && error.status <= 599)
+        );
+    }
+    return (
+        error instanceof ControlledRunnerError &&
+        RETRYABLE_ANCHOR_FAILURE_CODES.has(error.code)
+    );
+}
+
 function isAmbiguousAdmissionError(error: unknown): boolean {
     return (
         error instanceof ControlledApiError &&
@@ -3311,6 +3348,8 @@ export async function runDevelopmentLandAreaSync(input: {
     sleep?: (milliseconds: number) => Promise<void>;
     now?: () => Date;
     createAdmissionKey?: () => string;
+    anchorMaxAttempts?: number;
+    onAnchorRetry?: (event: DevelopmentAnchorRetryEvent) => void;
 }): Promise<DevelopmentRunArtifact> {
     validateDevelopmentRunnerManifests(
         input.target,
@@ -3325,6 +3364,8 @@ export async function runDevelopmentLandAreaSync(input: {
     const admissionReconciliationAttempts =
         input.admissionReconciliationAttempts ??
         DEVELOPMENT_ADMISSION_RECONCILIATION_ATTEMPTS;
+    const anchorMaxAttempts =
+        input.anchorMaxAttempts ?? DEVELOPMENT_ANCHOR_MAX_ATTEMPTS;
     if (
         !Number.isSafeInteger(pollIntervalMs) ||
         pollIntervalMs < 100 ||
@@ -3334,7 +3375,10 @@ export async function runDevelopmentLandAreaSync(input: {
         jobTimeoutMs > 30 * 60_000 ||
         !Number.isSafeInteger(admissionReconciliationAttempts) ||
         admissionReconciliationAttempts < 1 ||
-        admissionReconciliationAttempts > 100
+        admissionReconciliationAttempts > 100 ||
+        !Number.isSafeInteger(anchorMaxAttempts) ||
+        anchorMaxAttempts < 1 ||
+        anchorMaxAttempts > 100
     ) {
         throw new ControlledRunnerError('POLL_CONFIGURATION_INVALID');
     }
@@ -3442,7 +3486,9 @@ export async function runDevelopmentLandAreaSync(input: {
             break;
         }
         const evidence = evidenceByPnu.get(pnu)!;
-        try {
+        // 한 anchor 의 discovery→confirm→apply 한 사이클. 실패는 throw 로 올리고,
+        // 아래 재시도 루프가 재시도 가능 여부와 시도 횟수를 판정한다.
+        const attemptAnchor = async (): Promise<DevelopmentRunTargetResult> => {
             let admission: DevelopmentRunTargetResult['admission'] =
                 'RESUMED_LATEST';
             // 전체 재조회는 이전 latest/APPLIED를 재사용하지 않는다. 매 실행마다 모든
@@ -3667,6 +3713,14 @@ export async function runDevelopmentLandAreaSync(input: {
                         'JOB_POLL_SOFT_TIMEOUT_AFTER_TERMINAL'
                     );
                 }
+                // apply 가 FAILED 로 끝난 것은 원천/워커 실패다(scan 단계 provider
+                // 오류 등). REVIEW_REQUIRED 와 구분되는 코드로 던져 재시도 대상이 된다.
+                if (
+                    terminal.status === 'FAILED' ||
+                    terminal.landAreaSync?.scopeState === 'FAILED'
+                ) {
+                    throw new ControlledRunnerError('APPLY_JOB_FAILED');
+                }
             }
 
             assertAppliedTerminal(terminal);
@@ -3676,26 +3730,67 @@ export async function runDevelopmentLandAreaSync(input: {
                 false,
                 developmentFullRefresh
             );
-            for (const propertyUnitId of evidence.expectedPropertyUnitIds) {
-                observedPropertyUnitIds.add(propertyUnitId);
-            }
-            results.push(
-                resultFromJob(
-                    pnu,
-                    admission,
-                    discoveryJobId,
-                    applyJobId,
-                    terminal
-                )
+            return resultFromJob(
+                pnu,
+                admission,
+                discoveryJobId,
+                applyJobId,
+                terminal
             );
-        } catch (error) {
-            failureCode =
-                error instanceof ControlledRunnerError
-                    ? error.code
-                    : 'UNEXPECTED_RUNNER_ERROR';
-            stoppedBeforePnu = pnu;
+        };
+
+        let attempt = 0;
+        let anchorResult: DevelopmentRunTargetResult | null = null;
+        while (anchorResult === null) {
+            attempt += 1;
+            try {
+                anchorResult = await attemptAnchor();
+            } catch (error) {
+                const code =
+                    error instanceof ControlledRunnerError
+                        ? error.code
+                        : 'UNEXPECTED_RUNNER_ERROR';
+                if (
+                    attempt < anchorMaxAttempts &&
+                    isRetryableAnchorFailure(error)
+                ) {
+                    const nextDelayMs = Math.min(
+                        DEVELOPMENT_ANCHOR_RETRY_BASE_DELAY_MS * attempt,
+                        DEVELOPMENT_ANCHOR_RETRY_MAX_DELAY_MS
+                    );
+                    input.onAnchorRetry?.({
+                        pnu,
+                        attempt,
+                        failureCode: code,
+                        nextDelayMs,
+                    });
+                    await sleep(nextDelayMs);
+                    // 재시도도 새 admission 이므로 full-refresh cutoff 를 다시 본다.
+                    if (
+                        developmentFullRefresh !== null &&
+                        now().getTime() - startedAtMs >=
+                            DEVELOPMENT_FULL_REFRESH_ADMISSION_CUTOFF_MS
+                    ) {
+                        failureCode =
+                            'FULL_REFRESH_ADMISSION_CUTOFF_REACHED';
+                        stoppedBeforePnu = pnu;
+                        break;
+                    }
+                    continue;
+                }
+                // 최대 시도 소진 또는 재시도 불가 실패: 기존과 같이 러너를 멈춘다.
+                failureCode = code;
+                stoppedBeforePnu = pnu;
+                break;
+            }
+        }
+        if (anchorResult === null) {
             break;
         }
+        for (const propertyUnitId of evidence.expectedPropertyUnitIds) {
+            observedPropertyUnitIds.add(propertyUnitId);
+        }
+        results.push(anchorResult);
     }
 
     if (

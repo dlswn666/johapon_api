@@ -529,11 +529,17 @@ append_stage "RUNNER_EXIT_${runner_status}"
 # 어휘, 식별자 없음)만 stage 마커로 승격한다.
 runner_probe_marker_count=0
 runner_error_marker_count=0
+runner_retry_marker_count=0
 while IFS= read -r runner_line; do
   if [[ "${runner_line}" =~ ^LAND_AREA_SYNC_RUNNER_PROBE_[A-Z0-9_]{1,44}$ ]] \
     && [[ "${runner_probe_marker_count}" -lt 8 ]]; then
     append_stage "${runner_line}"
     runner_probe_marker_count=$((runner_probe_marker_count + 1))
+  elif [[ "${runner_line}" =~ ^LAND_AREA_SYNC_RUNNER_RETRY_[A-Z0-9_]{1,44}$ ]] \
+    && [[ "${runner_retry_marker_count}" -lt 16 ]]; then
+    # anchor 재시도(시도 번호·실패 코드)와 총계. 식별자 없는 고정 어휘만 통과한다.
+    append_stage "${runner_line}"
+    runner_retry_marker_count=$((runner_retry_marker_count + 1))
   elif [[ "${runner_line}" =~ ^LAND_AREA_DEVELOPMENT_RUNNER_ERROR:([A-Z0-9_]{1,48})$ ]] \
     && [[ "${runner_error_marker_count}" -lt 1 ]]; then
     append_stage "RUNNER_ERROR_${BASH_REMATCH[1]}"

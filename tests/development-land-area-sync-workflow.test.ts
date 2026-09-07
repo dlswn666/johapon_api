@@ -878,3 +878,20 @@ test('러너 CLI 입력 상한은 8 MiB 이고 guardian 은 runner exit/실패 �
     // 마커는 workflow 의 `^[A-Z0-9_]{1,64}$` 필터를 통과해야 한다: 13 + 48 ≤ 64.
     assert.ok('RUNNER_ERROR_'.length + 48 <= 64);
 });
+
+test('러너 anchor 재시도(최대 10회)는 고정 토큰 마커로 guardian 을 거쳐 워크플로 로그에 남는다', () => {
+    assert.match(runner, /export const DEVELOPMENT_ANCHOR_MAX_ATTEMPTS = 10;/);
+    assert.match(runner, /function isRetryableAnchorFailure\(/);
+    assert.match(runner, /throw new ControlledRunnerError\('APPLY_JOB_FAILED'\);/);
+    // CLI: 재시도마다 시도 번호·실패 코드, 종료 시 총계. 식별자(PNU 등)는 출력하지 않는다.
+    assert.match(cli, /onAnchorRetry\(event\)/);
+    assert.match(cli, /`LAND_AREA_SYNC_RUNNER_RETRY_\$\{event\.attempt\}_\$\{code\}\\n`/);
+    assert.match(cli, /`LAND_AREA_SYNC_RUNNER_RETRY_TOTAL_\$\{anchorRetryCount\}\\n`/);
+    assert.doesNotMatch(cli, /RUNNER_RETRY_[^\n]*event\.pnu/);
+    // guardian: RETRY 마커도 stage 로 승격(상한 16).
+    assert.match(
+        guardian,
+        /\^LAND_AREA_SYNC_RUNNER_RETRY_\[A-Z0-9_\]\{1,44\}\$/
+    );
+    assert.match(guardian, /runner_retry_marker_count}" -lt 16/);
+});
