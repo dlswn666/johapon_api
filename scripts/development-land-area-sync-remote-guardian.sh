@@ -535,9 +535,12 @@ while IFS= read -r runner_line; do
     && [[ "${runner_probe_marker_count}" -lt 8 ]]; then
     append_stage "${runner_line}"
     runner_probe_marker_count=$((runner_probe_marker_count + 1))
+  elif [[ "${runner_line}" =~ ^LAND_AREA_SYNC_RUNNER_RETRY_TOTAL_[0-9]{1,6}$ ]]; then
+    # 재시도 총계는 마지막에 한 번 나오므로 상한 없이 승격한다.
+    append_stage "${runner_line}"
   elif [[ "${runner_line}" =~ ^LAND_AREA_SYNC_RUNNER_RETRY_[A-Z0-9_]{1,44}$ ]] \
     && [[ "${runner_retry_marker_count}" -lt 16 ]]; then
-    # anchor 재시도(시도 번호·실패 코드)와 총계. 식별자 없는 고정 어휘만 통과한다.
+    # anchor 재시도(시도 번호·실패 코드). 식별자 없는 고정 어휘만 통과한다.
     append_stage "${runner_line}"
     runner_retry_marker_count=$((runner_retry_marker_count + 1))
   elif [[ "${runner_line}" =~ ^LAND_AREA_DEVELOPMENT_RUNNER_ERROR:([A-Z0-9_]{1,48})$ ]] \

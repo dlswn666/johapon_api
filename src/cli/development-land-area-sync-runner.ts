@@ -276,7 +276,9 @@ async function main(): Promise<void> {
         client,
         onAnchorRetry(event) {
             anchorRetryCount += 1;
-            const code = /^[A-Z0-9_]{1,40}$/.test(event.failureCode)
+            // 마커 길이 예산: 접두 28 + 시도 2 + '_' 1 + 코드 32 = 63 ≤ 워크플로의
+            // 64자 필터(초과 줄이 하나라도 있으면 stage 로그 전체가 억제된다).
+            const code = /^[A-Z0-9_]{1,32}$/.test(event.failureCode)
                 ? event.failureCode
                 : 'UNKNOWN';
             process.stdout.write(

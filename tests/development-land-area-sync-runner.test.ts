@@ -48,6 +48,9 @@ import {
     type LandAreaSyncRunnerDatabaseTarget,
     type LandAreaSyncApiJob,
     type ObservedDevelopmentLandRight,
+    ControlledApiError,
+    ControlledRunnerError,
+    isRetryableAnchorFailure,
 } from '../src/operations/development-land-area-sync-runner';
 import type { LandAreaSyncScopeSnapshot } from '../src/types/land-area-sync-job.types';
 
@@ -3440,6 +3443,8 @@ test('POST 5xx 전에 durable admission이 없으면 exact 조회를 유한 횟�
         ),
         pollIntervalMs: 100,
         admissionReconciliationAttempts: 2,
+        // reconcile 상한 자체를 검증하는 테스트라 anchor 재시도는 끈다.
+        anchorMaxRetries: 0,
         sleep: async () => undefined,
         createAdmissionKey: () => DISCOVERY_JOB_ID,
     });
@@ -4138,6 +4143,8 @@ test('apply job 이 FAILED 로 끝나면 같은 anchor 를 새 discovery 로 재
         },
     ]);
     assert.ok(sleeps.includes(2_000));
+    // 재시도마다 새 admission key 를 발급한다 (4개 전부 소진).
+    assert.equal(admissionKeys.length, 0);
     assert.deepEqual(calls, [
         'latest',
         'admit-discovery',
@@ -4152,7 +4159,7 @@ test('apply job 이 FAILED 로 끝나면 같은 anchor 를 새 discovery 로 재
     ]);
 });
 
-test('apply 가 계속 FAILED 면 기본 10회까지 재시도한 뒤 러너를 멈춘다', async () => {
+test('apply 가 계속 FAILED 면 기본 재조회 10회(총 11회 시도) 뒤 러너를 멈춘다', async () => {
     const targetManifest = target();
     const evidenceManifest = evidence(targetManifest);
     const calls: string[] = [];
@@ -4184,19 +4191,19 @@ test('apply 가 계속 FAILED 면 기본 10회까지 재시도한 뒤 러너를 
             }),
     });
 
-    assert.equal(confirmCount(), 10);
+    assert.equal(confirmCount(), 11);
     assert.equal(
         calls.filter((call) => call === 'admit-discovery').length,
-        10
+        11
     );
     assert.deepEqual(
         retries.map((event) => event.attempt),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     );
     // 간격은 2초×시도, 15초 상한.
     assert.deepEqual(
         retries.map((event) => event.nextDelayMs),
-        [2_000, 4_000, 6_000, 8_000, 10_000, 12_000, 14_000, 15_000, 15_000]
+        [2_000, 4_000, 6_000, 8_000, 10_000, 12_000, 14_000, 15_000, 15_000, 15_000]
     );
     assert.equal(artifact.gate.status, 'FAIL');
     assert.equal(artifact.gate.failureCode, 'APPLY_JOB_FAILED');
@@ -4256,10 +4263,10 @@ test('REVIEW_REQUIRED 같은 결정적 결과는 재시도하지 않고 즉시 �
     );
 });
 
-test('anchorMaxAttempts 는 1~100 정수만 허용한다', async () => {
+test('anchorMaxRetries 는 0~99 정수만 허용한다', async () => {
     const targetManifest = target();
     const evidenceManifest = evidence(targetManifest);
-    for (const anchorMaxAttempts of [0, 101, 1.5]) {
+    for (const anchorMaxRetries of [-1, 100, 1.5]) {
         await assert.rejects(
             runDevelopmentLandAreaSync({
                 target: targetManifest,
@@ -4280,9 +4287,206 @@ test('anchorMaxAttempts 는 1~100 정수만 허용한다', async () => {
                     },
                 },
                 preflightReader: preflightReader(evidenceManifest.entries),
-                anchorMaxAttempts,
+                anchorMaxRetries,
             }),
             /POLL_CONFIGURATION_INVALID/
         );
     }
+});
+
+
+test('isRetryableAnchorFailure 는 일시 실패만 재시도 대상으로 본다', () => {
+    assert.equal(isRetryableAnchorFailure(new ControlledApiError('HTTP_503', 503)), true);
+    assert.equal(isRetryableAnchorFailure(new ControlledApiError('API_NETWORK_ERROR', 0)), true);
+    assert.equal(isRetryableAnchorFailure(new ControlledApiError('HTTP_429', 429)), true);
+    assert.equal(isRetryableAnchorFailure(new ControlledApiError('FORBIDDEN', 403)), false);
+    assert.equal(isRetryableAnchorFailure(new ControlledApiError('HTTP_409', 409)), false);
+    assert.equal(
+        isRetryableAnchorFailure(new ControlledRunnerError('DISCOVERY_OR_APPLY_JOB_FAILED')),
+        true
+    );
+    assert.equal(isRetryableAnchorFailure(new ControlledRunnerError('APPLY_JOB_FAILED')), true);
+    // admission POST 5xx/네트워크 → reconcile 이 durable 부재를 확인한 코드는 새 key 로 재시도.
+    assert.equal(
+        isRetryableAnchorFailure(
+            new ControlledRunnerError('AMBIGUOUS_ADMISSION_NOT_DURABLE_HTTP_503')
+        ),
+        true
+    );
+    assert.equal(isRetryableAnchorFailure(new ControlledRunnerError('APPLY_TERMINAL_NOT_PASS')), false);
+    assert.equal(isRetryableAnchorFailure(new ControlledRunnerError('DISCOVERY_BLOCKING_ISSUE')), false);
+    assert.equal(isRetryableAnchorFailure(new ControlledRunnerError('PREFLIGHT_TARGET_PRESTATE_MISMATCH')), false);
+    assert.equal(isRetryableAnchorFailure(new Error('DISCOVERY_OR_APPLY_JOB_FAILED')), false);
+});
+
+test('discovery job 이 FAILED 로 끝나도 같은 anchor 를 재조회한다', async () => {
+    const targetManifest = target();
+    const evidenceManifest = evidence(targetManifest);
+    const calls: string[] = [];
+    const retries: string[] = [];
+    let discoveryPolls = 0;
+    const client: LandAreaSyncApiClient = {
+        async getLatest() {
+            return null;
+        },
+        async admitDiscovery() {
+            calls.push('admit-discovery');
+            return DISCOVERY_JOB_ID;
+        },
+        async getJob(_unionId, jobId) {
+            if (jobId === DISCOVERY_JOB_ID) {
+                discoveryPolls += 1;
+                if (discoveryPolls === 1) {
+                    return job(DISCOVERY_JOB_ID, {
+                        status: 'FAILED',
+                        scopeState: 'FAILED',
+                        outcome: 'FAILED',
+                        sourceDiscoveryJobId: null,
+                        issueCodes: ['PROVIDER_PROTOCOL_ERROR'],
+                    });
+                }
+                return job(DISCOVERY_JOB_ID, {
+                    status: 'COMPLETED',
+                    scopeState: 'SINGLE_SCOPE_CONFIRMATION_REQUIRED',
+                    outcome: 'REVIEW_REQUIRED',
+                    sourceDiscoveryJobId: null,
+                });
+            }
+            return job(APPLY_JOB_ID, {
+                status: 'COMPLETED',
+                scopeState: 'SINGLE_PNU_CONFIRMED',
+                outcome: 'APPLIED',
+                sourceDiscoveryJobId: DISCOVERY_JOB_ID,
+            });
+        },
+        async confirmDiscovery() {
+            calls.push('confirm');
+            return APPLY_JOB_ID;
+        },
+    };
+    const admissionKeys = [DISCOVERY_JOB_ID, DISCOVERY_JOB_ID, APPLY_JOB_ID];
+    const artifact = await runDevelopmentLandAreaSync({
+        target: targetManifest,
+        dbApproval: approval(targetManifest),
+        evidence: evidenceManifest,
+        client,
+        preflightReader: preflightReader(evidenceManifest.entries),
+        sleep: async () => undefined,
+        createAdmissionKey: () => admissionKeys.shift()!,
+        onAnchorRetry: (event) => retries.push(event.failureCode),
+    });
+    assert.equal(artifact.gate.status, 'PASS', artifact.gate.failureCode ?? undefined);
+    assert.deepEqual(retries, ['DISCOVERY_OR_APPLY_JOB_FAILED']);
+    assert.deepEqual(calls, ['admit-discovery', 'admit-discovery', 'confirm']);
+    assert.equal(admissionKeys.length, 0);
+});
+
+test('복수 anchor 에서 첫 anchor 재시도 뒤 둘째 anchor 는 첫 시도부터 정상 진행한다', async () => {
+    const SECOND_DISCOVERY_JOB_ID = '66666666-6666-4666-8666-666666666666';
+    const targetManifest = target([PNU, SECOND_PNU], 2);
+    const evidenceManifest = evidence(targetManifest, [
+        evidenceEntry(PNU, PROPERTY_UNIT_ID),
+        evidenceEntry(SECOND_PNU, SECOND_PROPERTY_UNIT_ID),
+    ]);
+    const anchorOf = (jobId: string) =>
+        jobId === SECOND_DISCOVERY_JOB_ID || jobId === SECOND_APPLY_JOB_ID
+            ? { pnu: SECOND_PNU, unit: SECOND_PROPERTY_UNIT_ID, discovery: SECOND_DISCOVERY_JOB_ID }
+            : { pnu: PNU, unit: PROPERTY_UNIT_ID, discovery: DISCOVERY_JOB_ID };
+    const retries: Array<{ pnu: string; attempt: number }> = [];
+    let confirms = 0;
+    let lastAdmittedPnu = PNU;
+    const client: LandAreaSyncApiClient = {
+        async getLatest() {
+            return null;
+        },
+        async admitDiscovery(_unionId, pnu) {
+            lastAdmittedPnu = pnu;
+            return pnu === SECOND_PNU ? SECOND_DISCOVERY_JOB_ID : DISCOVERY_JOB_ID;
+        },
+        async getJob(_unionId, jobId) {
+            const a = anchorOf(jobId);
+            const isDiscovery =
+                jobId === DISCOVERY_JOB_ID || jobId === SECOND_DISCOVERY_JOB_ID;
+            const isFailedApply = jobId === FAILED_APPLY_JOB_ID;
+            const built = job(jobId, {
+                status: isFailedApply ? 'FAILED' : 'COMPLETED',
+                scopeState: isFailedApply
+                    ? 'FAILED'
+                    : isDiscovery
+                      ? 'SINGLE_SCOPE_CONFIRMATION_REQUIRED'
+                      : 'SINGLE_PNU_CONFIRMED',
+                outcome: isFailedApply
+                    ? 'FAILED'
+                    : isDiscovery
+                      ? 'REVIEW_REQUIRED'
+                      : 'APPLIED',
+                sourceDiscoveryJobId: isDiscovery ? null : a.discovery,
+                scopeSnapshot: snapshot(a.pnu, a.unit),
+            });
+            built.landAreaSync!.anchorPnu = a.pnu;
+            return built;
+        },
+        async confirmDiscovery() {
+            confirms += 1;
+            if (lastAdmittedPnu === SECOND_PNU) return SECOND_APPLY_JOB_ID;
+            return confirms === 1 ? FAILED_APPLY_JOB_ID : APPLY_JOB_ID;
+        },
+    };
+    const admissionKeys = [
+        DISCOVERY_JOB_ID,
+        FAILED_APPLY_JOB_ID,
+        DISCOVERY_JOB_ID,
+        APPLY_JOB_ID,
+        SECOND_DISCOVERY_JOB_ID,
+        SECOND_APPLY_JOB_ID,
+    ];
+    let activeReads = 0;
+    const artifact = await runDevelopmentLandAreaSync({
+        target: targetManifest,
+        dbApproval: approval(targetManifest),
+        evidence: evidenceManifest,
+        client,
+        preflightReader: {
+            async readActivePropertyUnits() {
+                activeReads += 1;
+                const applied = activeReads > 1;
+                return [
+                    {
+                        id: PROPERTY_UNIT_ID,
+                        pnu: PNU,
+                        landArea: applied ? '161' : null,
+                        landAreaSource: applied ? ('LADFRL' as const) : ('LEGACY_UNKNOWN' as const),
+                        landAreaSyncedAt: applied ? '2026-07-25T00:01:00.000Z' : null,
+                        landAreaSyncJobId: applied ? APPLY_JOB_ID : null,
+                    },
+                    {
+                        id: SECOND_PROPERTY_UNIT_ID,
+                        pnu: SECOND_PNU,
+                        landArea: applied ? '161' : null,
+                        landAreaSource: applied ? ('LADFRL' as const) : ('LEGACY_UNKNOWN' as const),
+                        landAreaSyncedAt: applied ? '2026-07-25T00:01:00.000Z' : null,
+                        landAreaSyncJobId: applied ? SECOND_APPLY_JOB_ID : null,
+                    },
+                ];
+            },
+            async readPropertyUnitsBySyncJobIds() {
+                return [
+                    { id: PROPERTY_UNIT_ID, unionId: UNION_ID, landAreaSyncJobId: APPLY_JOB_ID },
+                    { id: SECOND_PROPERTY_UNIT_ID, unionId: UNION_ID, landAreaSyncJobId: SECOND_APPLY_JOB_ID },
+                ];
+            },
+        },
+        sleep: async () => undefined,
+        createAdmissionKey: () => admissionKeys.shift()!,
+        onAnchorRetry: (event) => retries.push({ pnu: event.pnu, attempt: event.attempt }),
+    });
+    assert.equal(artifact.gate.status, 'PASS', artifact.gate.failureCode ?? undefined);
+    assert.equal(artifact.results.length, 2);
+    assert.equal(artifact.results[0].pnu, PNU);
+    assert.equal(artifact.results[0].applyJobId, APPLY_JOB_ID);
+    assert.equal(artifact.results[1].pnu, SECOND_PNU);
+    assert.equal(artifact.results[1].applyJobId, SECOND_APPLY_JOB_ID);
+    assert.deepEqual(retries, [{ pnu: PNU, attempt: 1 }]);
+    assert.equal(confirms, 3);
+    assert.equal(admissionKeys.length, 0);
 });

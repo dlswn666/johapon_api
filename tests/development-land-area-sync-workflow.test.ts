@@ -880,7 +880,9 @@ test('러너 CLI 입력 상한은 8 MiB 이고 guardian 은 runner exit/실패 �
 });
 
 test('러너 anchor 재시도(최대 10회)는 고정 토큰 마커로 guardian 을 거쳐 워크플로 로그에 남는다', () => {
-    assert.match(runner, /export const DEVELOPMENT_ANCHOR_MAX_ATTEMPTS = 10;/);
+    assert.match(runner, /export const DEVELOPMENT_ANCHOR_MAX_RETRIES = 10;/);
+    // admission POST 5xx → durable 부재 확인 코드도 재시도 대상.
+    assert.match(runner, /startsWith\('AMBIGUOUS_ADMISSION_NOT_DURABLE'\)/);
     assert.match(runner, /function isRetryableAnchorFailure\(/);
     assert.match(runner, /throw new ControlledRunnerError\('APPLY_JOB_FAILED'\);/);
     // CLI: 재시도마다 시도 번호·실패 코드, 종료 시 총계. 식별자(PNU 등)는 출력하지 않는다.
@@ -894,4 +896,12 @@ test('러너 anchor 재시도(최대 10회)는 고정 토큰 마커로 guardian 
         /\^LAND_AREA_SYNC_RUNNER_RETRY_\[A-Z0-9_\]\{1,44\}\$/
     );
     assert.match(guardian, /runner_retry_marker_count}" -lt 16/);
+    // 총계 마커는 마지막에 나오므로 상한과 무관하게 승격한다.
+    assert.match(
+        guardian,
+        /\^LAND_AREA_SYNC_RUNNER_RETRY_TOTAL_\[0-9\]\{1,6\}\$/
+    );
+    // 마커 길이 예산: workflow 는 64자를 넘는 줄이 하나라도 있으면 stage 로그 전체를 억제한다.
+    assert.match(cli, /\/\^\[A-Z0-9_\]\{1,32\}\$\/\.test\(event\.failureCode\)/);
+    assert.ok('LAND_AREA_SYNC_RUNNER_RETRY_'.length + 2 + 1 + 32 <= 64);
 });

@@ -75,7 +75,9 @@ export const DEVELOPMENT_GIS_JWT_TTL_SECONDS = 10 * 60;
 // 불일치, 차단 issue)는 재시도하지 않는다. 최대 시도 뒤에도 실패하면 기존과
 // 같이 러너를 멈춘다 (2026-09-07 삼양동 창 B: 47번째 anchor 의 apply 가
 // PROVIDER_PROTOCOL_ERROR 1회로 FAILED 되어 55 anchor 가 미실행으로 남았다).
-export const DEVELOPMENT_ANCHOR_MAX_ATTEMPTS = 10;
+// 최초 시도 뒤 재조회 횟수. 사용자 요구 "10번 재조회했는데 계속 오류면 멈춘다"
+// 를 문자 그대로 따른다 (총 시도 = 재조회 + 1).
+export const DEVELOPMENT_ANCHOR_MAX_RETRIES = 10;
 export const DEVELOPMENT_ANCHOR_RETRY_BASE_DELAY_MS = 2_000;
 export const DEVELOPMENT_ANCHOR_RETRY_MAX_DELAY_MS = 15 * 1_000;
 export const DEVELOPMENT_API_QUEUE_TIMEOUT_MS = 10 * 60_000;
@@ -534,14 +536,14 @@ function hasExactKeys(
     return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
-class ControlledRunnerError extends Error {
+export class ControlledRunnerError extends Error {
     constructor(readonly code: string) {
         super(code);
         this.name = 'ControlledRunnerError';
     }
 }
 
-class ControlledApiError extends ControlledRunnerError {
+export class ControlledApiError extends ControlledRunnerError {
     constructor(
         code: string,
         readonly status: number
@@ -2268,7 +2270,7 @@ const RETRYABLE_ANCHOR_FAILURE_CODES = new Set([
 // 재시도 가능 = 원천/워커 job 이 FAILED 로 끝났거나(scan 단계 provider 오류 등)
 // localhost API 왕복이 네트워크·5xx·429 로 깨진 경우. 4xx(인증·검증 거부)와
 // 러너 자체의 계약 위반 코드는 재시도해도 같은 결과이므로 즉시 중단한다.
-function isRetryableAnchorFailure(error: unknown): boolean {
+export function isRetryableAnchorFailure(error: unknown): boolean {
     if (error instanceof ControlledApiError) {
         return (
             error.status === 0 ||
@@ -2276,10 +2278,16 @@ function isRetryableAnchorFailure(error: unknown): boolean {
             (error.status >= 500 && error.status <= 599)
         );
     }
-    return (
-        error instanceof ControlledRunnerError &&
-        RETRYABLE_ANCHOR_FAILURE_CODES.has(error.code)
-    );
+    if (!(error instanceof ControlledRunnerError)) {
+        return false;
+    }
+    // admission POST 의 네트워크·5xx 는 reconcile 이 admission key 로 durable job
+    // 부재를 확인한 뒤 이 코드로 바뀐다. job 이 없으므로 새 key 로 재admission 해도
+    // 중복 쓰기가 생기지 않는다 — full-refresh 운영 창에서 가장 흔한 일시 오류 경로.
+    if (error.code.startsWith('AMBIGUOUS_ADMISSION_NOT_DURABLE')) {
+        return true;
+    }
+    return RETRYABLE_ANCHOR_FAILURE_CODES.has(error.code);
 }
 
 function isAmbiguousAdmissionError(error: unknown): boolean {
@@ -3348,7 +3356,7 @@ export async function runDevelopmentLandAreaSync(input: {
     sleep?: (milliseconds: number) => Promise<void>;
     now?: () => Date;
     createAdmissionKey?: () => string;
-    anchorMaxAttempts?: number;
+    anchorMaxRetries?: number;
     onAnchorRetry?: (event: DevelopmentAnchorRetryEvent) => void;
 }): Promise<DevelopmentRunArtifact> {
     validateDevelopmentRunnerManifests(
@@ -3364,8 +3372,8 @@ export async function runDevelopmentLandAreaSync(input: {
     const admissionReconciliationAttempts =
         input.admissionReconciliationAttempts ??
         DEVELOPMENT_ADMISSION_RECONCILIATION_ATTEMPTS;
-    const anchorMaxAttempts =
-        input.anchorMaxAttempts ?? DEVELOPMENT_ANCHOR_MAX_ATTEMPTS;
+    const anchorMaxRetries =
+        input.anchorMaxRetries ?? DEVELOPMENT_ANCHOR_MAX_RETRIES;
     if (
         !Number.isSafeInteger(pollIntervalMs) ||
         pollIntervalMs < 100 ||
@@ -3376,9 +3384,9 @@ export async function runDevelopmentLandAreaSync(input: {
         !Number.isSafeInteger(admissionReconciliationAttempts) ||
         admissionReconciliationAttempts < 1 ||
         admissionReconciliationAttempts > 100 ||
-        !Number.isSafeInteger(anchorMaxAttempts) ||
-        anchorMaxAttempts < 1 ||
-        anchorMaxAttempts > 100
+        !Number.isSafeInteger(anchorMaxRetries) ||
+        anchorMaxRetries < 0 ||
+        anchorMaxRetries > 99
     ) {
         throw new ControlledRunnerError('POLL_CONFIGURATION_INVALID');
     }
@@ -3750,22 +3758,18 @@ export async function runDevelopmentLandAreaSync(input: {
                     error instanceof ControlledRunnerError
                         ? error.code
                         : 'UNEXPECTED_RUNNER_ERROR';
+                // attempt = 지금까지의 시도 수. 재조회는 anchorMaxRetries 회까지.
                 if (
-                    attempt < anchorMaxAttempts &&
+                    attempt <= anchorMaxRetries &&
                     isRetryableAnchorFailure(error)
                 ) {
                     const nextDelayMs = Math.min(
                         DEVELOPMENT_ANCHOR_RETRY_BASE_DELAY_MS * attempt,
                         DEVELOPMENT_ANCHOR_RETRY_MAX_DELAY_MS
                     );
-                    input.onAnchorRetry?.({
-                        pnu,
-                        attempt,
-                        failureCode: code,
-                        nextDelayMs,
-                    });
                     await sleep(nextDelayMs);
                     // 재시도도 새 admission 이므로 full-refresh cutoff 를 다시 본다.
+                    // 마커는 재시도가 실제로 시작될 때만 낸다(취소된 재시도는 기록하지 않는다).
                     if (
                         developmentFullRefresh !== null &&
                         now().getTime() - startedAtMs >=
@@ -3776,6 +3780,12 @@ export async function runDevelopmentLandAreaSync(input: {
                         stoppedBeforePnu = pnu;
                         break;
                     }
+                    input.onAnchorRetry?.({
+                        pnu,
+                        attempt,
+                        failureCode: code,
+                        nextDelayMs,
+                    });
                     continue;
                 }
                 // 최대 시도 소진 또는 재시도 불가 실패: 기존과 같이 러너를 멈춘다.
